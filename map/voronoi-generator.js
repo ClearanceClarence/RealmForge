@@ -6,7 +6,7 @@
 
 import { PRNG } from './prng.js';
 import { Noise } from './noise.js';
-import { NameGenerator } from './name-generator.js';
+import { NameGenerator } from './name-generator.js?v=184';
 
 // Elevation color gradient (green = low/sea level, red = high mountains)
 // Index 0 = sea level (0m), Index 255 = max height (6000m)
@@ -71,45 +71,45 @@ const PRECIP_COLORS = [
     "#66d3ff","#58cdff","#4ac6ff","#3cbfff","#2fb8fe","#23b0fc","#18a8fa","#0e9ff7"
 ];
 
-// Political map colors - diffuse varied pastels
+// Political map colors - traditional old map style (muted, earthy, hand-tinted)
 const POLITICAL_COLORS = [
-    "#E8B4B8", // Dusty rose
-    "#A7C7E7", // Powder blue
-    "#B5D8B5", // Sage green
-    "#F5DEB3", // Wheat
-    "#D4A5D9", // Orchid
-    "#F7C59F", // Apricot
-    "#98D1C4", // Seafoam
-    "#E6A8D7", // Pink lavender
-    "#C5E1A5", // Light olive
-    "#B8C5D6", // Steel blue
-    "#FADADD", // Pale pink
-    "#C9E4DE", // Mint cream
-    "#EDE7B1", // Pale goldenrod
-    "#D7BDE2", // Thistle
-    "#F0E68C", // Khaki
-    "#B0E0E6", // Powder blue light
-    "#DEB887", // Burlywood
-    "#E0BBE4", // Pale plum
-    "#98FB98", // Pale green
-    "#FFE4B5", // Moccasin
-    "#D8BFD8", // Lavender
-    "#AFEEEE", // Pale turquoise
-    "#F5F5DC", // Beige
-    "#E6E6FA", // Lavender mist
-    "#FFEFD5", // Papaya whip
-    "#D0F0C0", // Tea green
-    "#FFB6C1", // Light pink
-    "#B0C4DE", // Light steel blue
-    "#FFFACD", // Lemon chiffon
-    "#C8A2C8"  // Lilac
+    "#E8DCC4", // Aged parchment
+    "#D4C4A8", // Tan
+    "#C9D4C5", // Sage wash
+    "#DCCFB8", // Vellum
+    "#D1C6B4", // Oatmeal
+    "#C4CDBE", // Celadon mist
+    "#E0D5C0", // Cream
+    "#CBBFAA", // Wheat
+    "#D6D2C4", // Warm gray
+    "#D8CDB5", // Sand
+    "#C8D1C4", // Pale sage
+    "#E3D9C8", // Ivory
+    "#CFBFA8", // Chamois
+    "#D3CFC2", // Stone
+    "#DDD4C2", // Buff
+    "#C5C4B8", // Putty
+    "#E1D8C6", // Ecru
+    "#D0C4B0", // Fawn
+    "#CACDC3", // Silver sage
+    "#D9D0BE", // Bone
+    "#C7BFAE", // Driftwood
+    "#D5D1C5", // Ash
+    "#DED6C6", // Antique white
+    "#CCCABA", // Pebble
+    "#D7CEC0", // Mushroom
+    "#C3C7BC", // Lichen
+    "#E0D9CB", // Linen
+    "#D2C8B6", // Biscuit
+    "#CBCEC4", // Overcast
+    "#DCD4C4"  // Canvas
 ];
 
-// Ocean color for political map
-const POLITICAL_OCEAN = "#87CEEB";
+// Ocean color for political map - traditional aged blue-green
+const POLITICAL_OCEAN = "#B8C9C4";
 
-// Border color for kingdoms
-const POLITICAL_BORDER = "#3a3a3a";
+// Border color for kingdoms - subtle brown
+const POLITICAL_BORDER = "#8B7355";
 
 // Elevation constants (in meters)
 const ELEVATION = {
@@ -175,9 +175,9 @@ export class VoronoiGenerator {
         this.showEdges = true;
         this.showCenters = false;
         this.showDelaunay = false;
-        this.showRivers = true;  // Show rivers on terrain
+        this.showRivers = false;  // Show rivers on terrain
         this.showRiverSources = false;  // Show river start points
-        this.renderMode = 'political'; // 'cells', 'heightmap', 'terrain', 'precipitation', 'political'
+        this.renderMode = 'landmass'; // 'cells', 'heightmap', 'terrain', 'precipitation', 'political', 'landmass'
         this.seaLevel = 0.4;
         this.subdivisionLevel = 2;  // 0 = no subdivision, 1-4 = subdivision levels
         
@@ -669,6 +669,10 @@ export class VoronoiGenerator {
         
         this.seaLevel = seaLevel;
         
+        // Clear cached landmasses
+        this.landmasses = null;
+        this.landmassBoundaries = null;
+        
         // Initialize noise
         Noise.init(seed);
         
@@ -1080,85 +1084,131 @@ export class VoronoiGenerator {
         
         // Initialize kingdom data
         this.kingdoms = new Int16Array(this.cellCount).fill(-1); // -1 = no kingdom (ocean)
-        this.kingdomCount = numKingdoms;
         this.kingdomCapitals = [];
         this.kingdomNames = [];
         this.kingdomCentroids = [];
-        this.kingdomCells = []; // Array of arrays - cells per kingdom
+        this.kingdomCells = [];
         
-        // Select kingdom capitals (seed points) - spread across land
-        const capitals = this._selectKingdomCapitals(landCells, numKingdoms);
-        this.kingdomCapitals = capitals;
+        // First, identify all connected landmasses
+        const landmassId = new Int16Array(this.cellCount).fill(-1);
+        const landmasses = [];
+        let currentLandmass = 0;
         
-        // Initialize queues for competitive flood fill
-        const queues = capitals.map((capital, idx) => {
-            this.kingdoms[capital] = idx;
-            return [capital];
-        });
+        const landSet = new Set(landCells);
         
-        // Competitive flood fill - each kingdom expands simultaneously
-        let iterations = 0;
-        const maxIterations = this.cellCount * 2;
-        
-        while (iterations < maxIterations) {
-            let anyExpanded = false;
+        for (const startCell of landCells) {
+            if (landmassId[startCell] >= 0) continue;
             
-            for (let k = 0; k < numKingdoms; k++) {
-                if (queues[k].length === 0) continue;
+            const queue = [startCell];
+            const cells = [];
+            landmassId[startCell] = currentLandmass;
+            
+            while (queue.length > 0) {
+                const current = queue.shift();
+                cells.push(current);
                 
-                // Process one cell from this kingdom's queue
-                const current = queues[k].shift();
-                
-                // Try to claim neighbors
                 for (const neighbor of this.voronoi.neighbors(current)) {
-                    // Skip if already claimed or is ocean
-                    if (this.kingdoms[neighbor] >= 0) continue;
-                    if (this.heights[neighbor] < ELEVATION.SEA_LEVEL) continue;
-                    
-                    // Claim this cell
-                    this.kingdoms[neighbor] = k;
-                    queues[k].push(neighbor);
-                    anyExpanded = true;
+                    if (landSet.has(neighbor) && landmassId[neighbor] < 0) {
+                        landmassId[neighbor] = currentLandmass;
+                        queue.push(neighbor);
+                    }
                 }
             }
             
-            if (!anyExpanded) break;
-            iterations++;
+            landmasses.push({ cells, size: cells.length, id: currentLandmass });
+            currentLandmass++;
         }
         
-        // Handle islands - assign unclaimed land cells to nearest kingdom capital
-        let islandCells = 0;
-        for (let i = 0; i < this.cellCount; i++) {
-            if (this.heights[i] >= ELEVATION.SEA_LEVEL && this.kingdoms[i] < 0) {
-                // This is an unclaimed land cell (island)
-                const x = this.points[i * 2];
-                const y = this.points[i * 2 + 1];
+        console.log(`Found ${landmasses.length} landmasses`);
+        
+        // Sort landmasses by size (largest first)
+        landmasses.sort((a, b) => b.size - a.size);
+        
+        // Calculate total land and how to distribute kingdoms
+        const totalLand = landCells.length;
+        const minCellsForKingdom = Math.max(10, totalLand * 0.01); // At least 1% of land or 10 cells
+        
+        // Count significant landmasses (ones big enough for their own kingdom)
+        const significantLandmasses = landmasses.filter(lm => lm.size >= minCellsForKingdom);
+        const tinyLandmasses = landmasses.filter(lm => lm.size < minCellsForKingdom);
+        
+        // Distribute kingdoms across significant landmasses
+        let kingdomIdx = 0;
+        const landmassKingdoms = new Map(); // landmass id -> array of kingdom indices
+        
+        for (const landmass of significantLandmasses) {
+            const proportion = landmass.size / totalLand;
+            let kingdomsForThis = Math.max(1, Math.round(proportion * numKingdoms));
+            
+            // Cap kingdoms per landmass
+            kingdomsForThis = Math.min(kingdomsForThis, Math.floor(landmass.size / 100));
+            kingdomsForThis = Math.max(1, kingdomsForThis);
+            
+            const kingdomIndices = [];
+            
+            // Select capitals for this landmass
+            const capitals = this._selectKingdomCapitals(landmass.cells, kingdomsForThis);
+            
+            // Initialize competitive flood fill for this landmass only
+            const queues = [];
+            for (const capital of capitals) {
+                this.kingdoms[capital] = kingdomIdx;
+                this.kingdomCapitals.push(capital);
+                kingdomIndices.push(kingdomIdx);
+                queues.push([capital]);
+                kingdomIdx++;
+            }
+            
+            // Flood fill within this landmass only
+            let iterations = 0;
+            const maxIterations = landmass.cells.length * 2;
+            
+            while (iterations < maxIterations) {
+                let anyExpanded = false;
                 
-                // Find nearest capital
-                let nearestKingdom = 0;
-                let nearestDistSq = Infinity;
-                
-                for (let k = 0; k < capitals.length; k++) {
-                    const cx = this.points[capitals[k] * 2];
-                    const cy = this.points[capitals[k] * 2 + 1];
-                    const distSq = (x - cx) ** 2 + (y - cy) ** 2;
-                    if (distSq < nearestDistSq) {
-                        nearestDistSq = distSq;
-                        nearestKingdom = k;
+                for (let q = 0; q < queues.length; q++) {
+                    if (queues[q].length === 0) continue;
+                    
+                    const current = queues[q].shift();
+                    const myKingdom = this.kingdoms[current];
+                    
+                    for (const neighbor of this.voronoi.neighbors(current)) {
+                        if (this.kingdoms[neighbor] >= 0) continue;
+                        if (landmassId[neighbor] !== landmass.id) continue; // Stay on same landmass
+                        
+                        this.kingdoms[neighbor] = myKingdom;
+                        queues[q].push(neighbor);
+                        anyExpanded = true;
                     }
                 }
                 
-                this.kingdoms[i] = nearestKingdom;
-                islandCells++;
+                if (!anyExpanded) break;
+                iterations++;
             }
+            
+            landmassKingdoms.set(landmass.id, kingdomIndices);
         }
         
-        if (islandCells > 0) {
-            console.log(`Assigned ${islandCells} island cells to kingdoms`);
+        // Handle tiny landmasses - each becomes its own small kingdom
+        for (const landmass of tinyLandmasses) {
+            // Create a new kingdom for this tiny island
+            const capital = landmass.cells[0];
+            this.kingdoms[capital] = kingdomIdx;
+            this.kingdomCapitals.push(capital);
+            
+            // Assign all cells to this kingdom
+            for (const cell of landmass.cells) {
+                this.kingdoms[cell] = kingdomIdx;
+            }
+            
+            kingdomIdx++;
         }
+        
+        // Update kingdom count
+        this.kingdomCount = kingdomIdx;
         
         // Collect cells per kingdom and calculate centroids
-        for (let k = 0; k < numKingdoms; k++) {
+        for (let k = 0; k < this.kingdomCount; k++) {
             this.kingdomCells[k] = [];
         }
         
@@ -1170,7 +1220,7 @@ export class VoronoiGenerator {
         }
         
         // Calculate centroid for each kingdom
-        for (let k = 0; k < numKingdoms; k++) {
+        for (let k = 0; k < this.kingdomCount; k++) {
             const cells = this.kingdomCells[k];
             if (cells.length === 0) {
                 this.kingdomCentroids[k] = { x: 0, y: 0 };
@@ -1188,156 +1238,17 @@ export class VoronoiGenerator {
             };
         }
         
-        // Generate names for kingdoms using NameGenerator
+        // Generate names for all kingdoms
         this.nameGenerator.reset();
-        this.kingdomNames = this.nameGenerator.generateNames(numKingdoms, 'kingdom');
+        this.kingdomNames = this.nameGenerator.generateNames(this.kingdomCount, 'kingdom');
         
-        console.log(`Kingdoms generated: ${this.kingdomNames.join(', ')}`);
-        
-        // Generate counties within each kingdom
-        this._generateCounties();
-    }
-    
-    /**
-     * Generate counties within each kingdom
-     */
-    _generateCounties() {
-        if (!this.kingdoms || !this.kingdomCells) return;
-        
-        // Counties array - stores county ID for each cell
-        this.counties = new Int16Array(this.cellCount).fill(-1);
-        this.countyCount = 0;
-        
-        const countiesPerKingdom = 4; // Average counties per kingdom
-        
-        for (let k = 0; k < this.kingdomCount; k++) {
-            const kingdomCells = this.kingdomCells[k];
-            if (!kingdomCells || kingdomCells.length < 10) {
-                // Too small for counties, assign all to one county
-                for (const cell of kingdomCells) {
-                    this.counties[cell] = this.countyCount;
-                }
-                this.countyCount++;
-                continue;
-            }
-            
-            // Number of counties based on kingdom size
-            const numCounties = Math.max(2, Math.min(8, Math.floor(Math.sqrt(kingdomCells.length / 200) * countiesPerKingdom)));
-            
-            // Select county capitals within this kingdom
-            const kingdomSet = new Set(kingdomCells);
-            const shuffled = [...kingdomCells];
-            for (let i = shuffled.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-            }
-            
-            // Min distance between county capitals
-            const minDistSq = (this.width / Math.sqrt(this.kingdomCount * numCounties * 4)) ** 2;
-            
-            const countyCapitals = [];
-            for (const cell of shuffled) {
-                if (countyCapitals.length >= numCounties) break;
-                
-                const x = this.points[cell * 2];
-                const y = this.points[cell * 2 + 1];
-                
-                let tooClose = false;
-                for (const cap of countyCapitals) {
-                    const cx = this.points[cap * 2];
-                    const cy = this.points[cap * 2 + 1];
-                    if ((x - cx) ** 2 + (y - cy) ** 2 < minDistSq) {
-                        tooClose = true;
-                        break;
-                    }
-                }
-                
-                if (!tooClose) {
-                    countyCapitals.push(cell);
-                }
-            }
-            
-            // Flood fill from county capitals within kingdom only
-            const queues = countyCapitals.map((cap, idx) => {
-                const countyId = this.countyCount + idx;
-                this.counties[cap] = countyId;
-                return [cap];
-            });
-            
-            let iterations = 0;
-            const maxIter = kingdomCells.length * 2;
-            
-            while (iterations < maxIter) {
-                let expanded = false;
-                
-                for (let c = 0; c < queues.length; c++) {
-                    if (queues[c].length === 0) continue;
-                    
-                    const current = queues[c].shift();
-                    const countyId = this.countyCount + c;
-                    
-                    for (const neighbor of this.voronoi.neighbors(current)) {
-                        // Must be in same kingdom and unclaimed
-                        if (!kingdomSet.has(neighbor)) continue;
-                        if (this.counties[neighbor] >= 0) continue;
-                        
-                        this.counties[neighbor] = countyId;
-                        queues[c].push(neighbor);
-                        expanded = true;
-                    }
-                }
-                
-                if (!expanded) break;
-                iterations++;
-            }
-            
-            this.countyCount += countyCapitals.length;
-        }
-        
-        // Collect cells per county and calculate centroids
-        this.countyCells = [];
-        this.countyCentroids = [];
-        
-        for (let c = 0; c < this.countyCount; c++) {
-            this.countyCells[c] = [];
-        }
-        
-        for (let i = 0; i < this.cellCount; i++) {
-            const c = this.counties[i];
-            if (c >= 0) {
-                this.countyCells[c].push(i);
-            }
-        }
-        
-        // Calculate centroid for each county
-        for (let c = 0; c < this.countyCount; c++) {
-            const cells = this.countyCells[c];
-            if (cells.length === 0) {
-                this.countyCentroids[c] = { x: 0, y: 0 };
-                continue;
-            }
-            
-            let sumX = 0, sumY = 0;
-            for (const cell of cells) {
-                sumX += this.points[cell * 2];
-                sumY += this.points[cell * 2 + 1];
-            }
-            this.countyCentroids[c] = {
-                x: sumX / cells.length,
-                y: sumY / cells.length
-            };
-        }
-        
-        // Generate names for counties using NameGenerator
-        this.countyNames = this.nameGenerator.generateNames(this.countyCount, 'county');
-        
-        console.log(`Generated ${this.countyCount} counties`);
+        console.log(`Generated ${this.kingdomCount} kingdoms (requested ${numKingdoms})`);
     }
     
     /**
      * Select kingdom capital locations - spread across land
      */
-    _selectKingdomCapitals(landCells, count) {
+    _selectKingdomCapitals(landCells, count, existingCapitals = []) {
         // Shuffle land cells
         const shuffled = [...landCells];
         for (let i = shuffled.length - 1; i > 0; i--) {
@@ -1346,7 +1257,8 @@ export class VoronoiGenerator {
         }
         
         // Minimum distance between capitals
-        const minDistSq = (this.width / Math.sqrt(count * 2)) ** 2;
+        const totalCount = count + existingCapitals.length;
+        const minDistSq = (this.width / Math.sqrt(totalCount * 2)) ** 2;
         
         const capitals = [];
         for (const cell of shuffled) {
@@ -1355,8 +1267,10 @@ export class VoronoiGenerator {
             const x = this.points[cell * 2];
             const y = this.points[cell * 2 + 1];
             
-            // Check distance from existing capitals
+            // Check distance from existing capitals (both new and passed-in)
             let tooClose = false;
+            
+            // Check against newly selected capitals
             for (const existing of capitals) {
                 const ex = this.points[existing * 2];
                 const ey = this.points[existing * 2 + 1];
@@ -1364,6 +1278,19 @@ export class VoronoiGenerator {
                 if (distSq < minDistSq) {
                     tooClose = true;
                     break;
+                }
+            }
+            
+            // Check against passed-in existing capitals
+            if (!tooClose) {
+                for (const existing of existingCapitals) {
+                    const ex = this.points[existing * 2];
+                    const ey = this.points[existing * 2 + 1];
+                    const distSq = (x - ex) ** 2 + (y - ey) ** 2;
+                    if (distSq < minDistSq) {
+                        tooClose = true;
+                        break;
+                    }
                 }
             }
             
@@ -2211,22 +2138,19 @@ export class VoronoiGenerator {
             if (this.showRivers && this.rivers && this.rivers.length > 0) {
                 this._renderRivers(ctx, bounds);
             }
-            // Draw county borders first (most subtle)
-            if (this.counties && this.countyCount > 0) {
-                this._renderCountyBorders(ctx, bounds);
-            }
-            // Draw kingdom borders over county borders
+            // Draw kingdom borders
             if (this.kingdoms && this.kingdomCount > 0) {
                 this._renderKingdomBorders(ctx, bounds);
-            }
-            // Draw county names (small, subtle)
-            if (this.counties && this.countyCount > 0 && this.countyNames && this.countyCentroids) {
-                this._renderCountyNames(ctx, bounds);
             }
             // Draw kingdom names on top of everything
             if (this.kingdoms && this.kingdomCount > 0 && this.kingdomNames && this.kingdomCentroids) {
                 this._renderKingdomNames(ctx, bounds);
             }
+        }
+        
+        // Render landmass view (merged polygons per landmass)
+        if (this.renderMode === 'landmass') {
+            this._renderLandmassMap(ctx, bounds);
         }
         
         // Render flow mode (terrain + flow direction arrows + rivers)
@@ -2326,6 +2250,9 @@ export class VoronoiGenerator {
             return;
         }
         
+        // Build smooth coastline loops first
+        const coastLoops = this._buildSmoothCoastlineLoops();
+        
         // Standard rendering (no subdivision)
         const colorBatches = new Map();
         let visibleCount = 0;
@@ -2341,7 +2268,6 @@ export class VoronoiGenerator {
             visibleCount++;
             const elevation = this.heights[i];
             
-            // Render all cells with terrain color - lakes will be drawn on top
             const color = isGrayscale ? this._getGrayscale(elevation) : this._getElevationColor(elevation);
             
             if (!colorBatches.has(color)) {
@@ -2350,7 +2276,40 @@ export class VoronoiGenerator {
             colorBatches.get(color).push(i);
         }
         
-        // Fill and thin stroke with same color to eliminate gaps
+        // 1. Draw ocean cells first
+        const oceanColor = OCEAN_COLORS[0];
+        ctx.fillStyle = oceanColor;
+        ctx.beginPath();
+        for (const [color, indices] of colorBatches) {
+            for (const i of indices) {
+                if (this.heights[i] >= ELEVATION.SEA_LEVEL) continue;
+                const cell = this.voronoi.cellPolygon(i);
+                if (!cell || cell.length < 3) continue;
+                ctx.moveTo(cell[0][0], cell[0][1]);
+                for (let j = 1; j < cell.length; j++) {
+                    ctx.lineTo(cell[j][0], cell[j][1]);
+                }
+                ctx.closePath();
+            }
+        }
+        ctx.fill();
+        
+        // 2. Draw smooth land fill as backing layer (fills gaps at coastline)
+        // Use a mid-green color that won't be too visible
+        const backingColor = '#4a7c59';
+        ctx.fillStyle = backingColor;
+        for (const loop of coastLoops) {
+            if (loop.length < 3) continue;
+            ctx.beginPath();
+            ctx.moveTo(loop[0][0], loop[0][1]);
+            for (let i = 1; i < loop.length; i++) {
+                ctx.lineTo(loop[i][0], loop[i][1]);
+            }
+            ctx.closePath();
+            ctx.fill();
+        }
+        
+        // 3. Draw land cells on top
         ctx.lineJoin = 'round';
         ctx.lineWidth = 0.5 / this.viewport.zoom;
         
@@ -2360,6 +2319,7 @@ export class VoronoiGenerator {
             ctx.beginPath();
             
             for (const i of indices) {
+                if (this.heights[i] < ELEVATION.SEA_LEVEL) continue; // Skip ocean
                 const cell = this.voronoi.cellPolygon(i);
                 if (!cell || cell.length < 3) continue;
                 
@@ -2374,10 +2334,46 @@ export class VoronoiGenerator {
             ctx.stroke();
         }
         
-        // Render smooth lakes on top
+        // 4. Render smooth lakes on top
         if (this.lakeCells && this.lakeCells.size > 0) {
             this._renderSmoothLakes(ctx, bounds);
         }
+        
+        // 5. Mask angular edges that extend into ocean
+        if (coastLoops.length > 0) {
+            ctx.save();
+            ctx.beginPath();
+            
+            // Large outer rectangle
+            ctx.moveTo(bounds.left - 1000, bounds.top - 1000);
+            ctx.lineTo(bounds.right + 1000, bounds.top - 1000);
+            ctx.lineTo(bounds.right + 1000, bounds.bottom + 1000);
+            ctx.lineTo(bounds.left - 1000, bounds.bottom + 1000);
+            ctx.closePath();
+            
+            // Cut out smooth coastline
+            for (const loop of coastLoops) {
+                if (loop.length < 3) continue;
+                ctx.moveTo(loop[loop.length - 1][0], loop[loop.length - 1][1]);
+                for (let i = loop.length - 2; i >= 0; i--) {
+                    ctx.lineTo(loop[i][0], loop[i][1]);
+                }
+                ctx.closePath();
+            }
+            
+            ctx.clip('evenodd');
+            
+            ctx.fillStyle = oceanColor;
+            ctx.fillRect(bounds.left - 1000, bounds.top - 1000, 
+                        bounds.right - bounds.left + 2000, bounds.bottom - bounds.top + 2000);
+            
+            ctx.restore();
+        }
+        
+        // 6. Draw smooth coastline border
+        const borderColor = '#5D4E37';
+        const lineWidth = Math.max(0.8, 1.5 / this.viewport.zoom);
+        this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
         
         this.metrics.visibleCells = visibleCount;
     }
@@ -2412,21 +2408,40 @@ export class VoronoiGenerator {
     }
     
     /**
-     * Render political map showing kingdoms with old map style
-     * Only renders cells - borders and names are drawn separately for layering
+     * Render political map - clean cell-based rendering
      */
     _renderPoliticalMap(ctx, bounds) {
         if (!this.heights) return;
         
         const hasKingdoms = this.kingdoms && this.kingdomCount > 0;
-        const zoom = this.viewport.zoom;
         
-        // Batch cells by kingdom for efficient rendering
+        // Build smooth coastline loops first
+        const coastLoops = this._buildSmoothCoastlineLoops();
+        
+        // 1. Fill entire visible area with ocean
+        ctx.fillStyle = POLITICAL_OCEAN;
+        ctx.fillRect(bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top);
+        
+        // 2. Draw smooth land fill as backing layer (neutral parchment color)
+        const backingColor = '#E8DCC4';
+        ctx.fillStyle = backingColor;
+        for (const loop of coastLoops) {
+            if (loop.length < 3) continue;
+            ctx.beginPath();
+            ctx.moveTo(loop[0][0], loop[0][1]);
+            for (let i = 1; i < loop.length; i++) {
+                ctx.lineTo(loop[i][0], loop[i][1]);
+            }
+            ctx.closePath();
+            ctx.fill();
+        }
+        
+        // 3. Batch cells by kingdom for efficient rendering
         const kingdomBatches = new Map();
-        const oceanCells = [];
-        let visibleCount = 0;
         
         for (let i = 0; i < this.cellCount; i++) {
+            if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+            
             const x = this.points[i * 2];
             const y = this.points[i * 2 + 1];
             
@@ -2434,15 +2449,6 @@ export class VoronoiGenerator {
             if (x < bounds.left - margin || x > bounds.right + margin || 
                 y < bounds.top - margin || y > bounds.bottom + margin) continue;
             
-            visibleCount++;
-            
-            // Check if ocean
-            if (this.heights[i] < ELEVATION.SEA_LEVEL) {
-                oceanCells.push(i);
-                continue;
-            }
-            
-            // Get kingdom ID
             const kingdomId = hasKingdoms ? this.kingdoms[i] : 0;
             
             if (!kingdomBatches.has(kingdomId)) {
@@ -2451,22 +2457,7 @@ export class VoronoiGenerator {
             kingdomBatches.get(kingdomId).push(i);
         }
         
-        // Draw ocean cells first
-        ctx.fillStyle = POLITICAL_OCEAN;
-        ctx.beginPath();
-        for (const i of oceanCells) {
-            const cell = this.voronoi.cellPolygon(i);
-            if (!cell || cell.length < 3) continue;
-            
-            ctx.moveTo(cell[0][0], cell[0][1]);
-            for (let j = 1; j < cell.length; j++) {
-                ctx.lineTo(cell[j][0], cell[j][1]);
-            }
-            ctx.closePath();
-        }
-        ctx.fill();
-        
-        // Draw each kingdom with its color
+        // 4. Draw each kingdom with its color
         for (const [kingdomId, indices] of kingdomBatches) {
             const colorIndex = kingdomId % POLITICAL_COLORS.length;
             const color = hasKingdoms ? POLITICAL_COLORS[colorIndex] : POLITICAL_COLORS[0];
@@ -2488,7 +2479,7 @@ export class VoronoiGenerator {
             ctx.fill();
         }
         
-        // Draw lakes on top with political ocean color
+        // 5. Draw lakes on top with ocean color
         if (this.lakeCells && this.lakeCells.size > 0) {
             ctx.fillStyle = POLITICAL_OCEAN;
             for (const cellIndex of this.lakeCells) {
@@ -2505,7 +2496,676 @@ export class VoronoiGenerator {
             }
         }
         
-        this.metrics.visibleCells = visibleCount;
+        // 6. Mask angular edges that extend into ocean
+        if (coastLoops.length > 0) {
+            ctx.save();
+            ctx.beginPath();
+            
+            ctx.moveTo(bounds.left - 1000, bounds.top - 1000);
+            ctx.lineTo(bounds.right + 1000, bounds.top - 1000);
+            ctx.lineTo(bounds.right + 1000, bounds.bottom + 1000);
+            ctx.lineTo(bounds.left - 1000, bounds.bottom + 1000);
+            ctx.closePath();
+            
+            for (const loop of coastLoops) {
+                if (loop.length < 3) continue;
+                ctx.moveTo(loop[loop.length - 1][0], loop[loop.length - 1][1]);
+                for (let i = loop.length - 2; i >= 0; i--) {
+                    ctx.lineTo(loop[i][0], loop[i][1]);
+                }
+                ctx.closePath();
+            }
+            
+            ctx.clip('evenodd');
+            
+            ctx.fillStyle = POLITICAL_OCEAN;
+            ctx.fillRect(bounds.left - 1000, bounds.top - 1000, 
+                        bounds.right - bounds.left + 2000, bounds.bottom - bounds.top + 2000);
+            
+            ctx.restore();
+        }
+        
+        // 7. Draw smooth coastline border
+        const borderColor = '#5D4E37';
+        const lineWidth = Math.max(0.8, 1.5 / this.viewport.zoom);
+        this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
+    }
+    
+    /**
+     * Render landmass view - each landmass as a single merged polygon with smoothing
+     */
+    _renderLandmassMap(ctx, bounds) {
+        if (!this.heights) return;
+        
+        // Ocean color
+        const oceanColor = '#B8C9C4';
+        // Land color (parchment)
+        const landColor = '#E8DCC4';
+        // Border color
+        const borderColor = '#5D4E37';
+        
+        // Fill entire visible area with ocean
+        ctx.fillStyle = oceanColor;
+        ctx.fillRect(bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top);
+        
+        // Build smooth coastline loops
+        const smoothedLoops = this._buildSmoothCoastlineLoops();
+        
+        if (smoothedLoops.length === 0) return;
+        
+        // Use clipping to constrain land fill to smooth coastline
+        ctx.save();
+        ctx.beginPath();
+        for (const loop of smoothedLoops) {
+            if (loop.length < 3) continue;
+            ctx.moveTo(loop[0][0], loop[0][1]);
+            for (let i = 1; i < loop.length; i++) {
+                ctx.lineTo(loop[i][0], loop[i][1]);
+            }
+            ctx.closePath();
+        }
+        ctx.clip();
+        
+        // Fill land cells (clipped to smooth coastline)
+        ctx.fillStyle = landColor;
+        ctx.fillRect(bounds.left - 100, bounds.top - 100, 
+                     bounds.right - bounds.left + 200, bounds.bottom - bounds.top + 200);
+        
+        // Draw lakes on top with ocean color (still clipped)
+        if (this.lakeCells && this.lakeCells.size > 0) {
+            ctx.fillStyle = oceanColor;
+            for (const cellIndex of this.lakeCells) {
+                const cell = this.voronoi.cellPolygon(cellIndex);
+                if (!cell || cell.length < 3) continue;
+                
+                ctx.beginPath();
+                ctx.moveTo(cell[0][0], cell[0][1]);
+                for (let j = 1; j < cell.length; j++) {
+                    ctx.lineTo(cell[j][0], cell[j][1]);
+                }
+                ctx.closePath();
+                ctx.fill();
+            }
+        }
+        
+        // Restore (remove clipping)
+        ctx.restore();
+        
+        // Draw smoothed coastline border
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = Math.max(0.8, 1.5 / this.viewport.zoom);
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        
+        for (const loop of smoothedLoops) {
+            ctx.beginPath();
+            ctx.moveTo(loop[0][0], loop[0][1]);
+            for (let i = 1; i < loop.length; i++) {
+                ctx.lineTo(loop[i][0], loop[i][1]);
+            }
+            ctx.closePath();
+            ctx.stroke();
+        }
+    }
+    
+    /**
+     * Build smooth coastline loops - reusable for all render modes
+     */
+    _buildSmoothCoastlineLoops() {
+        if (!this.heights) return [];
+        
+        // Collect all coastline edges
+        const coastEdges = [];
+        
+        for (let i = 0; i < this.cellCount; i++) {
+            if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+            
+            const cell = this.voronoi.cellPolygon(i);
+            if (!cell || cell.length < 3) continue;
+            
+            const neighbors = Array.from(this.voronoi.neighbors(i));
+            
+            for (let j = 0; j < cell.length - 1; j++) {
+                const v1 = cell[j];
+                const v2 = cell[j + 1];
+                
+                const edgeMidX = (v1[0] + v2[0]) / 2;
+                const edgeMidY = (v1[1] + v2[1]) / 2;
+                
+                let neighborIdx = -1;
+                let minDist = Infinity;
+                
+                for (const n of neighbors) {
+                    const nx = this.points[n * 2];
+                    const ny = this.points[n * 2 + 1];
+                    const dist = Math.hypot(nx - edgeMidX, ny - edgeMidY);
+                    if (dist < minDist) {
+                        minDist = dist;
+                        neighborIdx = n;
+                    }
+                }
+                
+                const isCoast = neighborIdx < 0 || this.heights[neighborIdx] < ELEVATION.SEA_LEVEL;
+                
+                if (isCoast) {
+                    coastEdges.push([v1[0], v1[1], v2[0], v2[1]]);
+                }
+            }
+        }
+        
+        // Chain edges into paths using vertex adjacency
+        const vertexKey = (x, y) => `${Math.round(x * 10)},${Math.round(y * 10)}`;
+        const adjacency = new Map();
+        
+        for (const edge of coastEdges) {
+            const k1 = vertexKey(edge[0], edge[1]);
+            const k2 = vertexKey(edge[2], edge[3]);
+            
+            if (!adjacency.has(k1)) adjacency.set(k1, []);
+            if (!adjacency.has(k2)) adjacency.set(k2, []);
+            
+            adjacency.get(k1).push({ x: edge[2], y: edge[3], key: k2 });
+            adjacency.get(k2).push({ x: edge[0], y: edge[1], key: k1 });
+        }
+        
+        // Build closed loops
+        const usedEdges = new Set();
+        const loops = [];
+        
+        for (const [startKey, startNeighbors] of adjacency) {
+            if (startNeighbors.length === 0) continue;
+            
+            for (const firstNeighbor of startNeighbors) {
+                const edgeId = startKey < firstNeighbor.key ? 
+                    `${startKey}|${firstNeighbor.key}` : `${firstNeighbor.key}|${startKey}`;
+                
+                if (usedEdges.has(edgeId)) continue;
+                usedEdges.add(edgeId);
+                
+                const [sx, sy] = startKey.split(',').map(n => parseInt(n) / 10);
+                const loop = [[sx, sy], [firstNeighbor.x, firstNeighbor.y]];
+                
+                let prevKey = startKey;
+                let currentKey = firstNeighbor.key;
+                let currentX = firstNeighbor.x;
+                let currentY = firstNeighbor.y;
+                
+                for (let iter = 0; iter < 50000; iter++) {
+                    const neighbors = adjacency.get(currentKey);
+                    if (!neighbors) break;
+                    
+                    let foundNext = false;
+                    for (const next of neighbors) {
+                        if (next.key === prevKey) continue;
+                        
+                        const nextEdgeId = currentKey < next.key ? 
+                            `${currentKey}|${next.key}` : `${next.key}|${currentKey}`;
+                        
+                        if (usedEdges.has(nextEdgeId)) continue;
+                        
+                        usedEdges.add(nextEdgeId);
+                        loop.push([next.x, next.y]);
+                        
+                        prevKey = currentKey;
+                        currentKey = next.key;
+                        currentX = next.x;
+                        currentY = next.y;
+                        foundNext = true;
+                        break;
+                    }
+                    
+                    if (!foundNext) break;
+                    if (currentKey === startKey) break;
+                }
+                
+                if (loop.length >= 4) {
+                    loops.push(loop);
+                }
+            }
+        }
+        
+        // Apply Chaikin smoothing to each loop
+        const smoothedLoops = [];
+        for (const loop of loops) {
+            let smoothed = loop;
+            for (let iter = 0; iter < 2; iter++) {
+                smoothed = this._chaikinSmooth(smoothed);
+            }
+            smoothedLoops.push(smoothed);
+        }
+        
+        return smoothedLoops;
+    }
+    
+    /**
+     * Draw smooth coastline fill (used by terrain/political modes)
+     */
+    _drawSmoothCoastFill(ctx, loops, fillColor) {
+        ctx.fillStyle = fillColor;
+        for (const loop of loops) {
+            ctx.beginPath();
+            ctx.moveTo(loop[0][0], loop[0][1]);
+            for (let i = 1; i < loop.length; i++) {
+                ctx.lineTo(loop[i][0], loop[i][1]);
+            }
+            ctx.closePath();
+            ctx.fill();
+        }
+    }
+    
+    /**
+     * Draw smooth coastline stroke
+     */
+    _drawSmoothCoastStroke(ctx, loops, strokeColor, lineWidth) {
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = lineWidth;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        
+        for (const loop of loops) {
+            ctx.beginPath();
+            ctx.moveTo(loop[0][0], loop[0][1]);
+            for (let i = 1; i < loop.length; i++) {
+                ctx.lineTo(loop[i][0], loop[i][1]);
+            }
+            ctx.closePath();
+            ctx.stroke();
+        }
+    }
+    
+    /**
+     * Identify all connected landmasses
+     */
+    _identifyLandmasses() {
+        if (!this.heights) return;
+        
+        this.landmasses = [];
+        this.landmassBoundaries = null; // Clear cached boundaries
+        const visited = new Uint8Array(this.cellCount);
+        
+        for (let i = 0; i < this.cellCount; i++) {
+            if (visited[i]) continue;
+            if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+            
+            // BFS to find all connected land cells
+            const cells = [];
+            const queue = [i];
+            visited[i] = 1;
+            
+            while (queue.length > 0) {
+                const current = queue.shift();
+                cells.push(current);
+                
+                for (const neighbor of this.voronoi.neighbors(current)) {
+                    if (visited[neighbor]) continue;
+                    if (this.heights[neighbor] < ELEVATION.SEA_LEVEL) continue;
+                    
+                    visited[neighbor] = 1;
+                    queue.push(neighbor);
+                }
+            }
+            
+            this.landmasses.push({ cells, size: cells.length });
+        }
+        
+        console.log(`Identified ${this.landmasses.length} landmasses`);
+    }
+    
+    /**
+     * Build smooth boundaries for all landmasses
+     */
+    _buildLandmassBoundaries() {
+        if (!this.landmasses) return;
+        
+        this.landmassBoundaries = [];
+        
+        for (const landmass of this.landmasses) {
+            const boundaries = this._extractAndSmoothBoundary(landmass.cells);
+            this.landmassBoundaries.push(boundaries);
+        }
+    }
+    
+    /**
+     * Extract boundary and apply smoothing
+     */
+    _extractAndSmoothBoundary(cellIndices) {
+        if (!cellIndices || cellIndices.length === 0) return [];
+        
+        const cellSet = new Set(cellIndices);
+        const boundaryEdges = [];
+        
+        // For each cell, check each edge
+        for (const i of cellIndices) {
+            const cell = this.voronoi.cellPolygon(i);
+            if (!cell || cell.length < 3) continue;
+            
+            // Get neighbors
+            const neighbors = new Set(this.voronoi.neighbors(i));
+            
+            for (let j = 0; j < cell.length - 1; j++) {
+                const v1 = cell[j];
+                const v2 = cell[j + 1];
+                
+                // Check if this edge borders water
+                // An edge borders water if the cell on the other side is not land
+                let bordersWater = true;
+                
+                for (const neighbor of neighbors) {
+                    if (!cellSet.has(neighbor)) continue; // Neighbor is not in our landmass
+                    
+                    // Check if this neighbor shares this edge
+                    const neighborCell = this.voronoi.cellPolygon(neighbor);
+                    if (!neighborCell) continue;
+                    
+                    for (let k = 0; k < neighborCell.length - 1; k++) {
+                        const nv1 = neighborCell[k];
+                        const nv2 = neighborCell[k + 1];
+                        
+                        // Check if edges match (reversed direction)
+                        const d1 = Math.hypot(v1[0] - nv2[0], v1[1] - nv2[1]);
+                        const d2 = Math.hypot(v2[0] - nv1[0], v2[1] - nv1[1]);
+                        
+                        if (d1 < 1 && d2 < 1) {
+                            bordersWater = false;
+                            break;
+                        }
+                    }
+                    if (!bordersWater) break;
+                }
+                
+                if (bordersWater) {
+                    boundaryEdges.push({
+                        x1: v1[0], y1: v1[1],
+                        x2: v2[0], y2: v2[1]
+                    });
+                }
+            }
+        }
+        
+        if (boundaryEdges.length === 0) return [];
+        
+        // Chain edges into continuous loops
+        const loops = this._chainEdgesIntoLoops(boundaryEdges);
+        
+        // Apply smoothing to each loop
+        const smoothedLoops = [];
+        for (const loop of loops) {
+            if (loop.length < 4) continue;
+            
+            // Apply Chaikin smoothing (2 iterations for gentle smoothing)
+            let smoothed = loop;
+            for (let iter = 0; iter < 2; iter++) {
+                smoothed = this._chaikinSmooth(smoothed);
+            }
+            
+            smoothedLoops.push(smoothed);
+        }
+        
+        return smoothedLoops;
+    }
+    
+    /**
+     * Chain edges into continuous loops
+     */
+    _chainEdgesIntoLoops(edges) {
+        if (edges.length === 0) return [];
+        
+        const tolerance = 1.0;
+        const used = new Array(edges.length).fill(false);
+        const loops = [];
+        
+        while (true) {
+            // Find first unused edge
+            let startIdx = -1;
+            for (let i = 0; i < edges.length; i++) {
+                if (!used[i]) {
+                    startIdx = i;
+                    break;
+                }
+            }
+            
+            if (startIdx === -1) break;
+            
+            // Start a new loop
+            const loop = [];
+            used[startIdx] = true;
+            loop.push([edges[startIdx].x1, edges[startIdx].y1]);
+            loop.push([edges[startIdx].x2, edges[startIdx].y2]);
+            
+            let currentEnd = [edges[startIdx].x2, edges[startIdx].y2];
+            const loopStart = [edges[startIdx].x1, edges[startIdx].y1];
+            
+            let changed = true;
+            let iterations = 0;
+            const maxIterations = edges.length * 2;
+            
+            while (changed && iterations < maxIterations) {
+                changed = false;
+                iterations++;
+                
+                for (let i = 0; i < edges.length; i++) {
+                    if (used[i]) continue;
+                    
+                    const e = edges[i];
+                    
+                    // Check if edge connects to current end
+                    const d1Start = Math.hypot(e.x1 - currentEnd[0], e.y1 - currentEnd[1]);
+                    const d1End = Math.hypot(e.x2 - currentEnd[0], e.y2 - currentEnd[1]);
+                    
+                    if (d1Start < tolerance) {
+                        loop.push([e.x2, e.y2]);
+                        currentEnd = [e.x2, e.y2];
+                        used[i] = true;
+                        changed = true;
+                        break;
+                    } else if (d1End < tolerance) {
+                        loop.push([e.x1, e.y1]);
+                        currentEnd = [e.x1, e.y1];
+                        used[i] = true;
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (loop.length >= 4) {
+                loops.push(loop);
+            }
+        }
+        
+        return loops;
+    }
+    
+    /**
+     * Chaikin's corner-cutting algorithm for smoothing
+     */
+    _chaikinSmooth(points) {
+        if (points.length < 3) return points;
+        
+        const smoothed = [];
+        
+        for (let i = 0; i < points.length; i++) {
+            const p0 = points[i];
+            const p1 = points[(i + 1) % points.length];
+            
+            // Cut at 1/4 and 3/4 of each edge
+            const q = [
+                p0[0] * 0.75 + p1[0] * 0.25,
+                p0[1] * 0.75 + p1[1] * 0.25
+            ];
+            const r = [
+                p0[0] * 0.25 + p1[0] * 0.75,
+                p0[1] * 0.25 + p1[1] * 0.75
+            ];
+            
+            smoothed.push(q);
+            smoothed.push(r);
+        }
+        
+        return smoothed;
+    }
+    
+    /**
+     * Extract boundary edges for a region (set of cells)
+     * Returns array of closed paths (for regions with holes/islands)
+     */
+    _extractRegionBoundary(cellIndices) {
+        if (!cellIndices || cellIndices.length === 0) return [];
+        
+        const cellSet = new Set(cellIndices);
+        const boundaryEdges = [];
+        
+        // Find all edges that are on the boundary (neighbor not in region)
+        for (const i of cellIndices) {
+            const cell = this.voronoi.cellPolygon(i);
+            if (!cell || cell.length < 3) continue;
+            
+            const neighbors = Array.from(this.voronoi.neighbors(i));
+            
+            for (let j = 0; j < cell.length - 1; j++) {
+                const v1 = cell[j];
+                const v2 = cell[j + 1];
+                
+                // Find which neighbor shares this edge
+                const edgeMidX = (v1[0] + v2[0]) / 2;
+                const edgeMidY = (v1[1] + v2[1]) / 2;
+                
+                let edgeNeighbor = -1;
+                let minDist = Infinity;
+                for (const n of neighbors) {
+                    const nx = this.points[n * 2];
+                    const ny = this.points[n * 2 + 1];
+                    const distSq = (nx - edgeMidX) ** 2 + (ny - edgeMidY) ** 2;
+                    if (distSq < minDist) {
+                        minDist = distSq;
+                        edgeNeighbor = n;
+                    }
+                }
+                
+                // If neighbor is not in region (or is ocean/outside), this is a boundary edge
+                const neighborInRegion = edgeNeighbor >= 0 && cellSet.has(edgeNeighbor);
+                
+                if (!neighborInRegion) {
+                    boundaryEdges.push({
+                        x1: v1[0], y1: v1[1],
+                        x2: v2[0], y2: v2[1]
+                    });
+                }
+            }
+        }
+        
+        // Chain edges into closed paths
+        return this._chainEdgesIntoPaths(boundaryEdges);
+    }
+    
+    /**
+     * Chain edges into closed paths
+     */
+    _chainEdgesIntoPaths(edges) {
+        if (edges.length === 0) return [];
+        
+        const tolerance = 2.0;
+        const paths = [];
+        const used = new Set();
+        
+        for (let startIdx = 0; startIdx < edges.length; startIdx++) {
+            if (used.has(startIdx)) continue;
+            
+            const path = [];
+            let currentEdge = edges[startIdx];
+            used.add(startIdx);
+            
+            path.push({ x: currentEdge.x1, y: currentEdge.y1 });
+            path.push({ x: currentEdge.x2, y: currentEdge.y2 });
+            
+            // Keep extending until we close the loop or can't extend
+            let extended = true;
+            let iterations = 0;
+            const maxIter = edges.length * 2;
+            
+            while (extended && iterations < maxIter) {
+                extended = false;
+                iterations++;
+                
+                const lastPoint = path[path.length - 1];
+                const firstPoint = path[0];
+                
+                // Check if we've closed the loop
+                const closeDist = Math.abs(lastPoint.x - firstPoint.x) + Math.abs(lastPoint.y - firstPoint.y);
+                if (path.length > 3 && closeDist < tolerance) {
+                    break; // Closed loop
+                }
+                
+                // Try to extend forward
+                for (let i = 0; i < edges.length; i++) {
+                    if (used.has(i)) continue;
+                    
+                    const edge = edges[i];
+                    const d1 = Math.abs(edge.x1 - lastPoint.x) + Math.abs(edge.y1 - lastPoint.y);
+                    const d2 = Math.abs(edge.x2 - lastPoint.x) + Math.abs(edge.y2 - lastPoint.y);
+                    
+                    if (d1 < tolerance) {
+                        path.push({ x: edge.x2, y: edge.y2 });
+                        used.add(i);
+                        extended = true;
+                        break;
+                    } else if (d2 < tolerance) {
+                        path.push({ x: edge.x1, y: edge.y1 });
+                        used.add(i);
+                        extended = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (path.length >= 3) {
+                paths.push(path);
+            }
+        }
+        
+        return paths;
+    }
+    
+    /**
+     * Smooth a path using Catmull-Rom splines
+     */
+    _smoothPath(path) {
+        if (path.length < 4) return path;
+        
+        const smoothed = [];
+        const segments = 3; // Points per segment
+        
+        for (let i = 0; i < path.length; i++) {
+            const p0 = path[(i - 1 + path.length) % path.length];
+            const p1 = path[i];
+            const p2 = path[(i + 1) % path.length];
+            const p3 = path[(i + 2) % path.length];
+            
+            for (let t = 0; t < segments; t++) {
+                const s = t / segments;
+                const s2 = s * s;
+                const s3 = s2 * s;
+                
+                // Catmull-Rom coefficients
+                const x = 0.5 * (
+                    2 * p1.x +
+                    (-p0.x + p2.x) * s +
+                    (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * s2 +
+                    (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * s3
+                );
+                
+                const y = 0.5 * (
+                    2 * p1.y +
+                    (-p0.y + p2.y) * s +
+                    (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * s2 +
+                    (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * s3
+                );
+                
+                smoothed.push({ x, y });
+            }
+        }
+        
+        return smoothed;
     }
     
     /**
@@ -2530,7 +3190,6 @@ export class VoronoiGenerator {
         if (!this.kingdomNames || !this.kingdomCentroids || !this.kingdomCells) return;
         
         const zoom = this.viewport.zoom;
-        const baseFontSize = 18 / zoom;
         
         // Sort kingdoms by size (largest first get label priority)
         const kingdomOrder = [];
@@ -2545,34 +3204,64 @@ export class VoronoiGenerator {
         
         for (const kingdom of kingdomOrder) {
             const k = kingdom.index;
-            const centroid = this.kingdomCentroids[k];
             const name = this.kingdomNames[k];
+            const cells = this.kingdomCells[k];
             const cellCount = kingdom.size;
             
-            if (!centroid || !name || cellCount === 0) continue;
+            if (!name || cellCount === 0) continue;
             
-            // Skip if centroid is outside view
-            if (centroid.x < bounds.left || centroid.x > bounds.right ||
-                centroid.y < bounds.top || centroid.y > bounds.bottom) continue;
+            // Calculate kingdom bounding box and find the longest axis
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            let sumX = 0, sumY = 0;
             
-            // Scale font size based on kingdom size
-            const sizeScale = Math.min(2.2, Math.max(0.65, Math.sqrt(cellCount / 500)));
-            const fontSize = baseFontSize * sizeScale;
+            for (const cellIdx of cells) {
+                const x = this.points[cellIdx * 2];
+                const y = this.points[cellIdx * 2 + 1];
+                minX = Math.min(minX, x);
+                maxX = Math.max(maxX, x);
+                minY = Math.min(minY, y);
+                maxY = Math.max(maxY, y);
+                sumX += x;
+                sumY += y;
+            }
             
-            // Use italic style for elegance
-            ctx.font = `italic ${fontSize}px 'Times New Roman', 'Garamond', 'Baskerville', serif`;
+            const kingdomWidth = maxX - minX;
+            const kingdomHeight = maxY - minY;
+            const centerX = sumX / cellCount;
+            const centerY = sumY / cellCount;
             
-            // Measure text
-            const metrics = ctx.measureText(name);
-            const totalWidth = metrics.width;
-            const totalHeight = fontSize * 1.2;
+            // Skip if center is outside view
+            if (centerX < bounds.left - 200 || centerX > bounds.right + 200 ||
+                centerY < bounds.top - 200 || centerY > bounds.bottom + 200) continue;
             
-            // Calculate label bounding box
+            // Calculate font size based on kingdom size
+            const baseFontSize = 14 / zoom;
+            const sizeScale = Math.min(3.0, Math.max(0.6, Math.sqrt(cellCount / 300)));
+            let fontSize = baseFontSize * sizeScale;
+            
+            // Traditional cartographic font style - italic serif
+            ctx.font = `italic ${fontSize}px 'Times New Roman', 'Palatino', 'Georgia', serif`;
+            
+            // Measure text width
+            let textWidth = ctx.measureText(name).width;
+            
+            // Adjust font size to fit within kingdom
+            const maxTextWidth = Math.max(kingdomWidth, kingdomHeight) * 0.8;
+            if (textWidth > maxTextWidth && maxTextWidth > 50) {
+                fontSize = fontSize * (maxTextWidth / textWidth);
+                ctx.font = `italic ${fontSize}px 'Times New Roman', 'Palatino', 'Georgia', serif`;
+                textWidth = ctx.measureText(name).width;
+            }
+            
+            // Find the principal axis of the kingdom for text curve
+            const curveInfo = this._findKingdomTextPath(cells, centerX, centerY, kingdomWidth, kingdomHeight);
+            
+            // Calculate label bounding box (approximate)
             const labelBox = {
-                left: centroid.x - totalWidth / 2 - fontSize * 0.3,
-                right: centroid.x + totalWidth / 2 + fontSize * 0.3,
-                top: centroid.y - totalHeight / 2 - fontSize * 0.2,
-                bottom: centroid.y + totalHeight / 2 + fontSize * 0.2
+                left: centerX - textWidth / 2 - fontSize * 0.5,
+                right: centerX + textWidth / 2 + fontSize * 0.5,
+                top: centerY - fontSize - fontSize * 0.3,
+                bottom: centerY + fontSize + fontSize * 0.3
             };
             
             // Check collision with already placed labels
@@ -2590,142 +3279,157 @@ export class VoronoiGenerator {
             // Add to placed labels
             placedLabels.push(labelBox);
             
-            const x = centroid.x;
-            const y = centroid.y;
-            
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            
-            // Draw shadow
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
-            ctx.fillText(name, x + 1.5/zoom, y + 1.5/zoom);
-            
-            // Draw white halo/outline
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
-            ctx.lineWidth = 3.5 / zoom;
-            ctx.lineJoin = 'round';
-            ctx.miterLimit = 2;
-            ctx.strokeText(name, x, y);
-            
-            // Draw main text
-            ctx.fillStyle = '#1a1a2e';
-            ctx.fillText(name, x, y);
+            // Draw curved text along the kingdom's principal axis
+            this._drawCurvedText(ctx, name, centerX, centerY, textWidth, fontSize, curveInfo, zoom);
         }
     }
     
     /**
-     * Render county names - smaller and more subtle than kingdom names
+     * Find the best path for text within a kingdom
      */
-    _renderCountyNames(ctx, bounds) {
-        if (!this.countyNames || !this.countyCentroids || !this.countyCells) return;
+    _findKingdomTextPath(cells, centerX, centerY, width, height) {
+        // Calculate covariance to find principal axis
+        let covXX = 0, covXY = 0, covYY = 0;
         
-        const zoom = this.viewport.zoom;
-        const baseFontSize = 12 / zoom;
-        
-        // Sort counties by size (largest first)
-        const countyOrder = [];
-        for (let c = 0; c < this.countyCount; c++) {
-            const cellCount = this.countyCells[c] ? this.countyCells[c].length : 0;
-            countyOrder.push({ index: c, size: cellCount });
-        }
-        countyOrder.sort((a, b) => b.size - a.size);
-        
-        // Track placed labels for collision detection
-        const placedLabels = [];
-        
-        // Also avoid kingdom name positions
-        for (let k = 0; k < this.kingdomCount; k++) {
-            const centroid = this.kingdomCentroids[k];
-            const cellCount = this.kingdomCells[k] ? this.kingdomCells[k].length : 0;
-            if (!centroid || cellCount === 0) continue;
-            
-            const sizeScale = Math.min(2.2, Math.max(0.65, Math.sqrt(cellCount / 500)));
-            const fontSize = (18 / zoom) * sizeScale;
-            const name = this.kingdomNames[k] || '';
-            
-            ctx.font = `italic ${fontSize}px 'Times New Roman', serif`;
-            const width = ctx.measureText(name).width;
-            
-            placedLabels.push({
-                left: centroid.x - width / 2 - fontSize * 0.5,
-                right: centroid.x + width / 2 + fontSize * 0.5,
-                top: centroid.y - fontSize * 0.8,
-                bottom: centroid.y + fontSize * 0.8
-            });
+        for (const cellIdx of cells) {
+            const x = this.points[cellIdx * 2] - centerX;
+            const y = this.points[cellIdx * 2 + 1] - centerY;
+            covXX += x * x;
+            covXY += x * y;
+            covYY += y * y;
         }
         
-        for (const county of countyOrder) {
-            const c = county.index;
-            const centroid = this.countyCentroids[c];
-            const name = this.countyNames[c];
-            const cellCount = county.size;
-            
-            if (!centroid || !name || cellCount < 20) continue;
-            
-            // Skip if centroid is outside view
-            if (centroid.x < bounds.left || centroid.x > bounds.right ||
-                centroid.y < bounds.top || centroid.y > bounds.bottom) continue;
-            
-            // Scale font size based on county size
-            const sizeScale = Math.min(1.6, Math.max(0.7, Math.sqrt(cellCount / 250)));
-            const fontSize = baseFontSize * sizeScale;
-            
-            ctx.font = `500 ${fontSize}px 'Segoe UI', 'Helvetica Neue', Arial, sans-serif`;
-            
-            const metrics = ctx.measureText(name);
-            const totalWidth = metrics.width;
-            const totalHeight = fontSize * 1.2;
-            
-            // Calculate label bounding box
-            const labelBox = {
-                left: centroid.x - totalWidth / 2 - fontSize * 0.2,
-                right: centroid.x + totalWidth / 2 + fontSize * 0.2,
-                top: centroid.y - totalHeight / 2 - fontSize * 0.1,
-                bottom: centroid.y + totalHeight / 2 + fontSize * 0.1
-            };
-            
-            // Check collision
-            let collides = false;
-            for (const placed of placedLabels) {
-                if (labelBox.left < placed.right && labelBox.right > placed.left &&
-                    labelBox.top < placed.bottom && labelBox.bottom > placed.top) {
-                    collides = true;
-                    break;
-                }
-            }
-            
-            if (collides) continue;
-            
-            placedLabels.push(labelBox);
-            
-            const x = centroid.x;
-            const y = centroid.y;
-            
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            
-            // Draw subtle white outline
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
-            ctx.lineWidth = 2.5 / zoom;
-            ctx.lineJoin = 'round';
-            ctx.strokeText(name, x, y);
-            
-            // Draw text in muted color
-            ctx.fillStyle = 'rgba(50, 50, 60, 0.7)';
-            ctx.fillText(name, x, y);
+        // Find principal eigenvector (direction of maximum spread)
+        const trace = covXX + covYY;
+        const det = covXX * covYY - covXY * covXY;
+        const eigenvalue1 = trace / 2 + Math.sqrt(Math.max(0, trace * trace / 4 - det));
+        
+        let angle = 0;
+        if (Math.abs(covXY) > 0.001) {
+            angle = Math.atan2(eigenvalue1 - covXX, covXY);
+        } else if (covXX > covYY) {
+            angle = 0;
+        } else {
+            angle = Math.PI / 2;
         }
+        
+        // Normalize angle to -45 to +45 degrees for readability
+        while (angle > Math.PI / 4) angle -= Math.PI / 2;
+        while (angle < -Math.PI / 4) angle += Math.PI / 2;
+        
+        // Determine curve based on kingdom shape aspect ratio
+        const aspectRatio = width / (height || 1);
+        let curveAmount = 0;
+        
+        // Only curve if kingdom is elongated
+        if (aspectRatio > 1.5 || aspectRatio < 0.67) {
+            curveAmount = Math.min(0.3, Math.max(-0.3, (aspectRatio - 1) * 0.1));
+        }
+        
+        return {
+            angle: angle,
+            curve: curveAmount,
+            width: width,
+            height: height
+        };
     }
     
     /**
-     * Render borders between kingdoms - simple thin solid lines
+     * Draw text along a curved path
+     */
+    _drawCurvedText(ctx, text, centerX, centerY, textWidth, fontSize, curveInfo, zoom) {
+        const { angle, curve } = curveInfo;
+        
+        ctx.save();
+        ctx.translate(centerX, centerY);
+        ctx.rotate(angle);
+        
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        // For slight curves, use character-by-character rendering
+        // For no curve or very slight, just render the whole text
+        if (Math.abs(curve) < 0.05) {
+            // Simple centered text
+            // Shadow
+            ctx.fillStyle = 'rgba(80, 60, 40, 0.25)';
+            ctx.fillText(text, 1/zoom, 1/zoom);
+            
+            // Outline
+            ctx.strokeStyle = 'rgba(255, 252, 245, 0.9)';
+            ctx.lineWidth = 3 / zoom;
+            ctx.lineJoin = 'round';
+            ctx.strokeText(text, 0, 0);
+            
+            // Main text
+            ctx.fillStyle = '#4A3728';
+            ctx.fillText(text, 0, 0);
+        } else {
+            // Curved text - render character by character
+            const chars = text.split('');
+            const charWidths = chars.map(c => ctx.measureText(c).width);
+            const totalWidth = charWidths.reduce((a, b) => a + b, 0);
+            const spacing = fontSize * 0.05;
+            const totalWithSpacing = totalWidth + spacing * (chars.length - 1);
+            
+            // Calculate curve radius (larger = less curve)
+            const radius = totalWithSpacing / (Math.abs(curve) * 2);
+            const curveDir = curve > 0 ? 1 : -1;
+            
+            // Starting angle on the arc
+            const arcLength = totalWithSpacing;
+            const startAngle = -arcLength / (2 * radius);
+            
+            let currentAngle = startAngle;
+            
+            for (let i = 0; i < chars.length; i++) {
+                const char = chars[i];
+                const charWidth = charWidths[i];
+                
+                // Position on arc
+                const charAngle = currentAngle + (charWidth / 2) / radius;
+                const x = Math.sin(charAngle) * radius;
+                const y = curveDir * (radius - Math.cos(charAngle) * radius);
+                
+                ctx.save();
+                ctx.translate(x, y);
+                ctx.rotate(charAngle * curveDir);
+                
+                // Shadow
+                ctx.fillStyle = 'rgba(80, 60, 40, 0.25)';
+                ctx.fillText(char, 1/zoom, 1/zoom);
+                
+                // Outline
+                ctx.strokeStyle = 'rgba(255, 252, 245, 0.9)';
+                ctx.lineWidth = 3 / zoom;
+                ctx.lineJoin = 'round';
+                ctx.strokeText(char, 0, 0);
+                
+                // Character
+                ctx.fillStyle = '#4A3728';
+                ctx.fillText(char, 0, 0);
+                
+                ctx.restore();
+                
+                currentAngle += (charWidth + spacing) / radius;
+            }
+        }
+        
+        ctx.restore();
+    }
+    
+    /**
+     * Render borders between kingdoms - traditional map style
+     * (coastline borders are handled separately by smooth coastline rendering)
      */
     _renderKingdomBorders(ctx, bounds) {
         if (!this.kingdoms || !this.heights) return;
         
         const zoom = this.viewport.zoom;
-        const borderWidth = Math.max(0.5, 0.8 / zoom);
+        const borderWidth = Math.max(0.4, 0.8 / zoom);
         
-        ctx.strokeStyle = 'rgba(80, 80, 80, 0.4)';
+        // Subtle brown border for old map look
+        ctx.strokeStyle = 'rgba(139, 115, 85, 0.6)';
         ctx.lineWidth = borderWidth;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
@@ -2762,13 +3466,12 @@ export class VoronoiGenerator {
                     }
                 }
                 
-                if (edgeNeighbor < 0) continue;
+                const neighborIsOcean = edgeNeighbor < 0 || this.heights[edgeNeighbor] < ELEVATION.SEA_LEVEL;
+                const neighborKingdom = edgeNeighbor >= 0 ? this.kingdoms[edgeNeighbor] : -1;
                 
-                const neighborKingdom = this.kingdoms[edgeNeighbor];
-                const neighborIsOcean = this.heights[edgeNeighbor] < ELEVATION.SEA_LEVEL;
-                
-                // Only draw borders between different kingdoms (not at coastline)
-                if (neighborKingdom !== myKingdom && !neighborIsOcean) {
+                // Only draw border if different kingdom AND not coastline
+                // (coastline is handled by smooth coastline border)
+                if (!neighborIsOcean && neighborKingdom !== myKingdom) {
                     ctx.moveTo(v1[0], v1[1]);
                     ctx.lineTo(v2[0], v2[1]);
                 }
@@ -2779,67 +3482,124 @@ export class VoronoiGenerator {
     }
     
     /**
-     * Render borders between counties - very subtle dotted lines
+     * Chain border edges into continuous paths
      */
-    _renderCountyBorders(ctx, bounds) {
-        if (!this.counties || !this.kingdoms || !this.heights) return;
+    _chainBorderEdges(edges) {
+        if (edges.length === 0) return [];
         
-        const zoom = this.viewport.zoom;
-        const borderWidth = Math.max(0.3, 0.5 / zoom);
+        const tolerance = 1.5;
+        const paths = [];
+        const used = new Set();
         
-        ctx.strokeStyle = 'rgba(100, 100, 100, 0.25)';
-        ctx.lineWidth = borderWidth;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        
-        ctx.beginPath();
-        
-        for (let i = 0; i < this.cellCount; i++) {
-            if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+        for (let startIdx = 0; startIdx < edges.length; startIdx++) {
+            if (used.has(startIdx)) continue;
             
-            const myCounty = this.counties[i];
-            const myKingdom = this.kingdoms[i];
-            if (myCounty < 0 || myKingdom < 0) continue;
+            const path = [];
+            let currentEdge = edges[startIdx];
+            used.add(startIdx);
             
-            const cell = this.voronoi.cellPolygon(i);
-            if (!cell || cell.length < 3) continue;
+            path.push({ x: currentEdge.x1, y: currentEdge.y1 });
+            path.push({ x: currentEdge.x2, y: currentEdge.y2 });
             
-            const neighbors = Array.from(this.voronoi.neighbors(i));
-            
-            for (let j = 0; j < cell.length - 1; j++) {
-                const v1 = cell[j];
-                const v2 = cell[j + 1];
+            // Extend forward
+            let extended = true;
+            while (extended) {
+                extended = false;
+                const lastPoint = path[path.length - 1];
                 
-                const edgeMidX = (v1[0] + v2[0]) / 2;
-                const edgeMidY = (v1[1] + v2[1]) / 2;
-                
-                let edgeNeighbor = -1;
-                let minDist = Infinity;
-                for (const n of neighbors) {
-                    const nx = this.points[n * 2];
-                    const ny = this.points[n * 2 + 1];
-                    const distSq = (nx - edgeMidX) ** 2 + (ny - edgeMidY) ** 2;
-                    if (distSq < minDist) {
-                        minDist = distSq;
-                        edgeNeighbor = n;
+                for (let i = 0; i < edges.length; i++) {
+                    if (used.has(i)) continue;
+                    
+                    const edge = edges[i];
+                    const d1 = Math.abs(edge.x1 - lastPoint.x) + Math.abs(edge.y1 - lastPoint.y);
+                    const d2 = Math.abs(edge.x2 - lastPoint.x) + Math.abs(edge.y2 - lastPoint.y);
+                    
+                    if (d1 < tolerance) {
+                        path.push({ x: edge.x2, y: edge.y2 });
+                        used.add(i);
+                        extended = true;
+                        break;
+                    } else if (d2 < tolerance) {
+                        path.push({ x: edge.x1, y: edge.y1 });
+                        used.add(i);
+                        extended = true;
+                        break;
                     }
                 }
+            }
+            
+            // Extend backward
+            extended = true;
+            while (extended) {
+                extended = false;
+                const firstPoint = path[0];
                 
-                if (edgeNeighbor < 0) continue;
-                
-                const neighborCounty = this.counties[edgeNeighbor];
-                const neighborKingdom = this.kingdoms[edgeNeighbor];
-                const neighborIsOcean = this.heights[edgeNeighbor] < ELEVATION.SEA_LEVEL;
-                
-                // Draw county border only within same kingdom (not at kingdom borders or coast)
-                if (neighborCounty !== myCounty && neighborKingdom === myKingdom && !neighborIsOcean) {
-                    ctx.moveTo(v1[0], v1[1]);
-                    ctx.lineTo(v2[0], v2[1]);
+                for (let i = 0; i < edges.length; i++) {
+                    if (used.has(i)) continue;
+                    
+                    const edge = edges[i];
+                    const d1 = Math.abs(edge.x1 - firstPoint.x) + Math.abs(edge.y1 - firstPoint.y);
+                    const d2 = Math.abs(edge.x2 - firstPoint.x) + Math.abs(edge.y2 - firstPoint.y);
+                    
+                    if (d1 < tolerance) {
+                        path.unshift({ x: edge.x2, y: edge.y2 });
+                        used.add(i);
+                        extended = true;
+                        break;
+                    } else if (d2 < tolerance) {
+                        path.unshift({ x: edge.x1, y: edge.y1 });
+                        used.add(i);
+                        extended = true;
+                        break;
+                    }
                 }
+            }
+            
+            if (path.length >= 2) {
+                paths.push(path);
             }
         }
         
-        ctx.stroke();
+        return paths;
+    }
+    
+    /**
+     * Smooth a border path using Chaikin's algorithm
+     */
+    _smoothBorderPath(path, iterations = 1) {
+        if (path.length < 3) return path;
+        
+        let points = path;
+        
+        for (let iter = 0; iter < iterations; iter++) {
+            const newPoints = [];
+            
+            for (let i = 0; i < points.length - 1; i++) {
+                const p0 = points[i];
+                const p1 = points[i + 1];
+                
+                if (i === 0) {
+                    newPoints.push(p0);
+                }
+                
+                newPoints.push({
+                    x: 0.75 * p0.x + 0.25 * p1.x,
+                    y: 0.75 * p0.y + 0.25 * p1.y
+                });
+                newPoints.push({
+                    x: 0.25 * p0.x + 0.75 * p1.x,
+                    y: 0.25 * p0.y + 0.75 * p1.y
+                });
+                
+                if (i === points.length - 2) {
+                    newPoints.push(p1);
+                }
+            }
+            
+            points = newPoints;
+        }
+        
+        return points;
     }
     
     /**
@@ -2977,6 +3737,9 @@ export class VoronoiGenerator {
     _renderPrecipitationCells(ctx, bounds) {
         if (!this.precipitation || !this.voronoi) return;
         
+        // Build smooth coastline loops first
+        const coastLoops = this._buildSmoothCoastlineLoops();
+        
         const colorBatches = new Map();
         let visibleCount = 0;
         
@@ -2992,7 +3755,7 @@ export class VoronoiGenerator {
             const precip = this.precipitation[i] || 0;
             const color = this._getPrecipitationColor(precip);
             
-            if (!color) continue; // Skip if no valid color
+            if (!color) continue;
             
             if (!colorBatches.has(color)) {
                 colorBatches.set(color, []);
@@ -3000,6 +3763,39 @@ export class VoronoiGenerator {
             colorBatches.get(color).push(i);
         }
         
+        // 1. Draw ocean cells first
+        const oceanColor = OCEAN_COLORS[0];
+        ctx.fillStyle = oceanColor;
+        ctx.beginPath();
+        for (const [color, indices] of colorBatches) {
+            for (const i of indices) {
+                if (this.heights[i] >= ELEVATION.SEA_LEVEL) continue;
+                const cell = this.voronoi.cellPolygon(i);
+                if (!cell || cell.length < 3) continue;
+                ctx.moveTo(cell[0][0], cell[0][1]);
+                for (let j = 1; j < cell.length; j++) {
+                    ctx.lineTo(cell[j][0], cell[j][1]);
+                }
+                ctx.closePath();
+            }
+        }
+        ctx.fill();
+        
+        // 2. Draw smooth land fill as backing layer
+        const backingColor = '#88aaff'; // Mid-blue for precipitation view
+        ctx.fillStyle = backingColor;
+        for (const loop of coastLoops) {
+            if (loop.length < 3) continue;
+            ctx.beginPath();
+            ctx.moveTo(loop[0][0], loop[0][1]);
+            for (let i = 1; i < loop.length; i++) {
+                ctx.lineTo(loop[i][0], loop[i][1]);
+            }
+            ctx.closePath();
+            ctx.fill();
+        }
+        
+        // 3. Draw land cells on top
         ctx.lineJoin = 'round';
         ctx.lineWidth = 1.5 / this.viewport.zoom;
         
@@ -3009,6 +3805,7 @@ export class VoronoiGenerator {
             ctx.beginPath();
             
             for (const i of indices) {
+                if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
                 const cell = this.voronoi.cellPolygon(i);
                 if (!cell || cell.length < 3) continue;
                 
@@ -3022,6 +3819,40 @@ export class VoronoiGenerator {
             ctx.fill();
             ctx.stroke();
         }
+        
+        // 4. Mask angular edges that extend into ocean
+        if (coastLoops.length > 0) {
+            ctx.save();
+            ctx.beginPath();
+            
+            ctx.moveTo(bounds.left - 1000, bounds.top - 1000);
+            ctx.lineTo(bounds.right + 1000, bounds.top - 1000);
+            ctx.lineTo(bounds.right + 1000, bounds.bottom + 1000);
+            ctx.lineTo(bounds.left - 1000, bounds.bottom + 1000);
+            ctx.closePath();
+            
+            for (const loop of coastLoops) {
+                if (loop.length < 3) continue;
+                ctx.moveTo(loop[loop.length - 1][0], loop[loop.length - 1][1]);
+                for (let i = loop.length - 2; i >= 0; i--) {
+                    ctx.lineTo(loop[i][0], loop[i][1]);
+                }
+                ctx.closePath();
+            }
+            
+            ctx.clip('evenodd');
+            
+            ctx.fillStyle = oceanColor;
+            ctx.fillRect(bounds.left - 1000, bounds.top - 1000, 
+                        bounds.right - bounds.left + 2000, bounds.bottom - bounds.top + 2000);
+            
+            ctx.restore();
+        }
+        
+        // 5. Draw smooth coastline border
+        const borderColor = '#5D4E37';
+        const lineWidth = Math.max(0.8, 1.5 / this.viewport.zoom);
+        this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
         
         this.metrics.visibleCells = visibleCount;
     }
@@ -3601,23 +4432,26 @@ export class VoronoiGenerator {
         
         const { contours, scaleX, scaleY } = this._contourCache;
         
-        // Render contours from low to high (painter's algorithm)
+        // Build smooth coastline loops first
+        const coastLoops = this._buildSmoothCoastlineLoops();
+        
+        // 1. Draw ocean contours first
         ctx.lineJoin = 'round';
         ctx.lineWidth = 0.5 / this.viewport.zoom;
         
         for (const contour of contours) {
             const elevation = contour.value;
+            if (elevation >= ELEVATION.SEA_LEVEL) continue;
+            
             const color = isGrayscale ? this._getGrayscale(elevation) : this._getElevationColor(elevation);
             
             ctx.fillStyle = color;
             ctx.strokeStyle = color;
             ctx.beginPath();
             
-            // Draw each polygon in the MultiPolygon
             for (const polygon of contour.coordinates) {
                 for (const ring of polygon) {
                     if (ring.length < 3) continue;
-                    
                     ctx.moveTo(ring[0][0] * scaleX, ring[0][1] * scaleY);
                     for (let i = 1; i < ring.length; i++) {
                         ctx.lineTo(ring[i][0] * scaleX, ring[i][1] * scaleY);
@@ -3629,6 +4463,81 @@ export class VoronoiGenerator {
             ctx.fill();
             ctx.stroke();
         }
+        
+        // 2. Draw smooth land fill as backing layer
+        const backingColor = '#4a7c59';
+        ctx.fillStyle = backingColor;
+        for (const loop of coastLoops) {
+            if (loop.length < 3) continue;
+            ctx.beginPath();
+            ctx.moveTo(loop[0][0], loop[0][1]);
+            for (let i = 1; i < loop.length; i++) {
+                ctx.lineTo(loop[i][0], loop[i][1]);
+            }
+            ctx.closePath();
+            ctx.fill();
+        }
+        
+        // 3. Draw land contours on top
+        for (const contour of contours) {
+            const elevation = contour.value;
+            if (elevation < ELEVATION.SEA_LEVEL) continue;
+            
+            const color = isGrayscale ? this._getGrayscale(elevation) : this._getElevationColor(elevation);
+            
+            ctx.fillStyle = color;
+            ctx.strokeStyle = color;
+            ctx.beginPath();
+            
+            for (const polygon of contour.coordinates) {
+                for (const ring of polygon) {
+                    if (ring.length < 3) continue;
+                    ctx.moveTo(ring[0][0] * scaleX, ring[0][1] * scaleY);
+                    for (let i = 1; i < ring.length; i++) {
+                        ctx.lineTo(ring[i][0] * scaleX, ring[i][1] * scaleY);
+                    }
+                    ctx.closePath();
+                }
+            }
+            
+            ctx.fill();
+            ctx.stroke();
+        }
+        
+        // 4. Mask angular edges that extend into ocean
+        if (coastLoops.length > 0) {
+            ctx.save();
+            ctx.beginPath();
+            
+            ctx.moveTo(bounds.left - 1000, bounds.top - 1000);
+            ctx.lineTo(bounds.right + 1000, bounds.top - 1000);
+            ctx.lineTo(bounds.right + 1000, bounds.bottom + 1000);
+            ctx.lineTo(bounds.left - 1000, bounds.bottom + 1000);
+            ctx.closePath();
+            
+            for (const loop of coastLoops) {
+                if (loop.length < 3) continue;
+                ctx.moveTo(loop[loop.length - 1][0], loop[loop.length - 1][1]);
+                for (let i = loop.length - 2; i >= 0; i--) {
+                    ctx.lineTo(loop[i][0], loop[i][1]);
+                }
+                ctx.closePath();
+            }
+            
+            ctx.clip('evenodd');
+            
+            const oceanColor = OCEAN_COLORS[0];
+            ctx.fillStyle = oceanColor;
+            ctx.fillRect(bounds.left - 1000, bounds.top - 1000, 
+                        bounds.right - bounds.left + 2000, bounds.bottom - bounds.top + 2000);
+            
+            ctx.restore();
+        }
+        
+        // 5. Draw smooth coastline border
+        const borderColor = '#5D4E37';
+        const lineWidth = Math.max(0.8, 1.5 / this.viewport.zoom);
+        this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
         
         this.metrics.visibleCells = this.cellCount;
     }

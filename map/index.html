@@ -124,7 +124,7 @@
                     <span class="range-value" id="wind-strength-value">0.80</span>
                 </div>
                 <div class="field inline">
-                    <input type="checkbox" id="show-rivers" checked>
+                    <input type="checkbox" id="show-rivers">
                     <label for="show-rivers">Show Rivers</label>
                 </div>
                 <div class="field inline">
@@ -155,7 +155,8 @@
                 <div class="field">
                     <label for="render-mode">Render Mode</label>
                     <select id="render-mode">
-                        <option value="political" selected>Political Map</option>
+                        <option value="landmass" selected>Landmass View</option>
+                        <option value="political">Political Map</option>
                         <option value="terrain">Land/Water</option>
                         <option value="rivers">Flow Arrows</option>
                         <option value="heightmap">Grayscale Heightmap</option>
@@ -240,6 +241,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6"></script>
     <script src="https://cdn.jsdelivr.net/npm/d3-contour@4"></script>
-    <script type="module" src="app.js?v=156"></script>
+    <script type="module" src="app.js?v=184"></script>
 </body>
 </html>

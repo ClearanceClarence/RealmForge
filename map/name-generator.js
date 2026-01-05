@@ -113,10 +113,11 @@ export class NameGenerator {
     }
     
     // ========================================
-    // KINGDOM NAMES (Long, Grand)
+    // KINGDOM NAMES (Long, Grand with Government Types)
     // ========================================
     
     _generateKingdomName() {
+        // Generate base name
         const patterns = [
             'CVC', 'CVCV', 'CVCC', 'CVCVC', 'CVCCV',
             'CCVC', 'CCVCV', 'CCVCCV', 'VCVC', 'VCCVC',
@@ -124,34 +125,83 @@ export class NameGenerator {
         ];
         
         const pattern = this._pick(patterns);
-        let name = '';
+        let baseName = '';
         
         for (let i = 0; i < pattern.length; i++) {
             const char = pattern[i];
             
             if (char === 'C') {
                 if (i === 0 && this._random() < 0.3) {
-                    name += this._pick(this.blends);
+                    baseName += this._pick(this.blends);
                 } else {
-                    name += this._pick(this.allConsonants);
+                    baseName += this._pick(this.allConsonants);
                 }
             } else if (char === 'V') {
                 if (this._random() < 0.2) {
-                    name += this._pick(this.softVowels);
+                    baseName += this._pick(this.softVowels);
                 } else {
-                    name += this._pick(this.vowels);
+                    baseName += this._pick(this.vowels);
                 }
             } else if (char === 'N') {
                 const endings = ['ia', 'or', 'an', 'en', 'on', 'ar', 'ir', 'ur', 'is', 'os', 'us', 
                                'ax', 'ex', 'ix', 'um', 'heim', 'gard', 'land', 'mark', 'vale', 
                                'don', 'ria', 'nia', 'sia', 'tia', 'oth', 'eth', 'ith', 'ath',
                                'ora', 'ara', 'ura', 'wyn', 'wen', 'mir', 'dur', 'thor'];
-                name += this._pick(endings);
+                baseName += this._pick(endings);
             }
         }
         
-        name = this._cleanName(name);
-        return name.charAt(0).toUpperCase() + name.slice(1);
+        baseName = this._cleanName(baseName);
+        baseName = baseName.charAt(0).toUpperCase() + baseName.slice(1);
+        
+        // Government types with their formats
+        const governmentTypes = [
+            { prefix: 'Kingdom of ', suffix: '', weight: 20 },
+            { prefix: 'Empire of ', suffix: '', weight: 8 },
+            { prefix: 'Republic of ', suffix: '', weight: 10 },
+            { prefix: 'Duchy of ', suffix: '', weight: 12 },
+            { prefix: 'Grand Duchy of ', suffix: '', weight: 6 },
+            { prefix: 'Principality of ', suffix: '', weight: 8 },
+            { prefix: 'Confederation of ', suffix: '', weight: 4 },
+            { prefix: 'Realm of ', suffix: '', weight: 10 },
+            { prefix: 'Dominion of ', suffix: '', weight: 6 },
+            { prefix: 'Commonwealth of ', suffix: '', weight: 4 },
+            { prefix: 'Oligarchy of ', suffix: '', weight: 3 },
+            { prefix: 'Theocracy of ', suffix: '', weight: 3 },
+            { prefix: 'Free City of ', suffix: '', weight: 5 },
+            { prefix: 'United Provinces of ', suffix: '', weight: 3 },
+            { prefix: 'Archduchy of ', suffix: '', weight: 4 },
+            { prefix: 'Margraviate of ', suffix: '', weight: 3 },
+            { prefix: 'Electorate of ', suffix: '', weight: 3 },
+            { prefix: 'Sultanate of ', suffix: '', weight: 4 },
+            { prefix: 'Caliphate of ', suffix: '', weight: 2 },
+            { prefix: 'Khanate of ', suffix: '', weight: 3 },
+            { prefix: 'Tsardom of ', suffix: '', weight: 3 },
+            { prefix: 'Holy Empire of ', suffix: '', weight: 2 },
+            { prefix: '', suffix: ' Empire', weight: 5 },
+            { prefix: '', suffix: ' Republic', weight: 4 },
+            { prefix: '', suffix: '', weight: 15 }, // Just the name
+            { prefix: 'The ', suffix: ' Isles', weight: 3 },
+            { prefix: 'The ', suffix: ' Reaches', weight: 2 },
+            { prefix: 'The ', suffix: ' Marches', weight: 2 },
+            { prefix: 'Lands of ', suffix: '', weight: 4 },
+            { prefix: 'The Crown of ', suffix: '', weight: 3 },
+        ];
+        
+        // Weighted random selection
+        const totalWeight = governmentTypes.reduce((sum, g) => sum + g.weight, 0);
+        let randomVal = this._random() * totalWeight;
+        
+        let selectedType = governmentTypes[0];
+        for (const govType of governmentTypes) {
+            randomVal -= govType.weight;
+            if (randomVal <= 0) {
+                selectedType = govType;
+                break;
+            }
+        }
+        
+        return selectedType.prefix + baseName + selectedType.suffix;
     }
     
     // ========================================
