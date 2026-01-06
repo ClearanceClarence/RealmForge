@@ -62,6 +62,7 @@ const numRiversValue = document.getElementById('num-rivers-value');
 const numKingdomsSlider = document.getElementById('num-kingdoms');
 const numKingdomsValue = document.getElementById('num-kingdoms-value');
 const generateKingdomsBtn = document.getElementById('generate-kingdoms-btn');
+const dashedBordersToggle = document.getElementById('dashed-borders');
 
 // DOM Elements - Display
 const renderMode = document.getElementById('render-mode');
@@ -450,6 +451,12 @@ showRiverSourcesToggle.addEventListener('change', (e) => {
     updateRenderStats();
 });
 
+dashedBordersToggle.addEventListener('change', (e) => {
+    generator.dashedBorders = e.target.checked;
+    generator.render();
+    updateRenderStats();
+});
+
 function updateRenderStats() {
     statRenderTime.textContent = generator.metrics.renderTime.toFixed(1) + 'ms';
     if (statVisible) {
@@ -597,7 +604,6 @@ canvas.addEventListener('mousemove', (e) => {
         }
         
         if (cellIndex >= 0) {
-            const neighbors = generator.getNeighbors(cellIndex);
             const elevation = generator.getCellHeight(cellIndex);
             const isLand = generator.isLand(cellIndex);
             const isLake = generator.lakeCells && generator.lakeCells.has(cellIndex);
@@ -606,44 +612,49 @@ canvas.addEventListener('mousemove', (e) => {
             const hasKingdom = generator.kingdoms && generator.kingdoms[cellIndex] >= 0;
             const kingdomId = hasKingdom ? generator.kingdoms[cellIndex] : -1;
             const kingdomName = hasKingdom && generator.kingdomNames ? generator.kingdomNames[kingdomId] : null;
-            const kingdomSize = hasKingdom && generator.kingdomCells ? generator.kingdomCells[kingdomId].length : 0;
             
-            // Build tooltip HTML
-            let html = '';
+            // Build clean tooltip HTML
+            let html = '<div class="tt-content">';
             
-            // Show kingdom info prominently if in political mode
+            // Kingdom name as title (if available and in political mode)
             if (generator.renderMode === 'political' && kingdomName) {
-                html += `<div class="tooltip-header">${kingdomName}</div>`;
-                html += `<div class="tooltip-row"><span class="tooltip-label">Cells</span><span class="tooltip-value">${kingdomSize.toLocaleString()}</span></div>`;
-            } else {
-                html += `<div class="tooltip-header">Cell #${cellIndex}</div>`;
+                html += `<div class="tt-title">${kingdomName}</div>`;
             }
             
-            html += `<div class="tooltip-row"><span class="tooltip-label">Neighbors</span><span class="tooltip-value">${neighbors.length}</span></div>`;
-            
+            // Terrain info
             if (elevation !== null) {
                 if (isLake) {
                     const depth = generator.lakeDepths ? generator.lakeDepths.get(cellIndex) || 0 : 0;
-                    const surfaceElev = Math.round(elevation + depth);
-                    html += `<div class="tooltip-row"><span class="tooltip-label">Type</span><span class="tooltip-value">🏞️ Lake</span></div>`;
-                    html += `<div class="tooltip-row"><span class="tooltip-label">Surface</span><span class="tooltip-value">${surfaceElev}m</span></div>`;
-                    html += `<div class="tooltip-row"><span class="tooltip-label">Bed</span><span class="tooltip-value">${Math.round(elevation)}m</span></div>`;
-                    html += `<div class="tooltip-row"><span class="tooltip-label">Depth</span><span class="tooltip-value">${Math.round(depth)}m</span></div>`;
+                    html += `<div class="tt-terrain tt-lake">`;
+                    html += `<span class="tt-icon">💧</span>`;
+                    html += `<span class="tt-info">Lake · ${Math.round(depth)}m deep</span>`;
+                    html += `</div>`;
                 } else if (isLand) {
-                    html += `<div class="tooltip-row"><span class="tooltip-label">Type</span><span class="tooltip-value">🏔️ Land</span></div>`;
-                    html += `<div class="tooltip-row"><span class="tooltip-label">Elevation</span><span class="tooltip-value">${Math.round(elevation)}m</span></div>`;
+                    const elev = Math.round(elevation);
+                    let terrainType = 'Lowland';
+                    if (elev > 2000) terrainType = 'Mountain';
+                    else if (elev > 1000) terrainType = 'Highland';
+                    else if (elev > 500) terrainType = 'Hills';
+                    else if (elev > 200) terrainType = 'Plains';
+                    
+                    html += `<div class="tt-terrain tt-land">`;
+                    html += `<span class="tt-icon">⛰️</span>`;
+                    html += `<span class="tt-info">${terrainType} · ${elev}m</span>`;
+                    html += `</div>`;
                 } else {
-                    html += `<div class="tooltip-row"><span class="tooltip-label">Type</span><span class="tooltip-value">🌊 Ocean</span></div>`;
-                    html += `<div class="tooltip-row"><span class="tooltip-label">Depth</span><span class="tooltip-value">${Math.round(Math.abs(elevation))}m</span></div>`;
+                    const depth = Math.round(Math.abs(elevation));
+                    let oceanType = 'Shallow';
+                    if (depth > 200) oceanType = 'Deep';
+                    else if (depth > 100) oceanType = 'Open';
+                    
+                    html += `<div class="tt-terrain tt-ocean">`;
+                    html += `<span class="tt-icon">🌊</span>`;
+                    html += `<span class="tt-info">${oceanType} Ocean · ${depth}m</span>`;
+                    html += `</div>`;
                 }
             }
             
-            // Add precipitation info if available
-            if (generator.precipitation && generator.precipitation[cellIndex] !== undefined) {
-                const precip = generator.precipitation[cellIndex];
-                const precipMm = Math.round(precip * 3000);
-                html += `<div class="tooltip-row"><span class="tooltip-label">Precipitation</span><span class="tooltip-value">${precipMm}mm/yr</span></div>`;
-            }
+            html += '</div>';
             
             tooltip.innerHTML = html;
             tooltip.classList.add('visible');

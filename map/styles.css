@@ -696,20 +696,68 @@ input[type="range"]::-moz-range-thumb {
 
 .cell-tooltip {
     position: absolute;
-    padding: 8px 12px;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    padding: 0;
+    background: rgba(15, 15, 20, 0.95);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(124, 106, 255, 0.3);
+    border-radius: 10px;
     font-size: 12px;
     color: var(--text);
     pointer-events: none;
     opacity: 0;
-    transition: opacity 0.15s;
+    transform: translateY(5px);
+    transition: opacity 0.15s, transform 0.15s;
     z-index: 100;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+    min-width: 140px;
 }
 
 .cell-tooltip.visible {
     opacity: 1;
+    transform: translateY(0);
+}
+
+.tt-content {
+    padding: 10px 14px;
+}
+
+.tt-title {
+    font-family: var(--font-display), serif;
+    font-size: 14px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    letter-spacing: 0.5px;
+}
+
+.tt-terrain {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.tt-icon {
+    font-size: 14px;
+}
+
+.tt-info {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.tt-land .tt-info {
+    color: #90c090;
+}
+
+.tt-ocean .tt-info {
+    color: #80b0d0;
+}
+
+.tt-lake .tt-info {
+    color: #70c0e0;
 }
 
 /* ========================================
