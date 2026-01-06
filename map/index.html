@@ -3,244 +3,372 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voronoi Map Generator</title>
+    <title>RealmForge - Fantasy Map Generator</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Cinzel:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css?v=201">
 </head>
 <body>
+    <!-- Fancy Loading Screen -->
+    <div id="loading-screen" class="loading-screen">
+        <div class="loading-bg">
+            <div class="loading-orb orb-1"></div>
+            <div class="loading-orb orb-2"></div>
+            <div class="loading-orb orb-3"></div>
+        </div>
+        <div class="loading-content">
+            <div class="loading-icon">
+                <svg viewBox="0 0 100 100" class="hex-spinner">
+                    <polygon class="hex hex-1" points="50,5 90,27.5 90,72.5 50,95 10,72.5 10,27.5"/>
+                    <polygon class="hex hex-2" points="50,15 80,32.5 80,67.5 50,85 20,67.5 20,32.5"/>
+                    <polygon class="hex hex-3" points="50,25 70,37.5 70,62.5 50,75 30,62.5 30,37.5"/>
+                </svg>
+            </div>
+            <h1 class="loading-title">RealmForge</h1>
+            <p class="loading-subtitle">Fantasy Map Generator</p>
+            <div class="loading-progress">
+                <div class="progress-track">
+                    <div class="progress-fill" id="loading-progress"></div>
+                </div>
+                <span class="loading-status" id="loading-status">Initializing</span>
+            </div>
+        </div>
+    </div>
+
     <div class="app">
-        <aside class="sidebar">
-            <header class="logo">
-                <h1>Voronoi<span>Gen</span></h1>
-                <p>Fantasy Map Cells</p>
-            </header>
-
-            <section class="panel">
-                <h2>Generation</h2>
-                <div class="field">
-                    <label for="cell-count">Cell Count</label>
-                    <div class="input-group">
-                        <input type="number" id="cell-count" value="50000" min="100" max="100000" step="1000">
-                        <span class="unit">cells</span>
-                    </div>
-                </div>
-                <div class="field">
-                    <label for="distribution">Distribution</label>
-                    <select id="distribution">
-                        <option value="random">Random</option>
-                        <option value="jittered" selected>Jittered Grid</option>
-                        <option value="poisson">Poisson Disk</option>
-                        <option value="relaxed">Pre-relaxed</option>
-                    </select>
-                </div>
-                <div class="field">
-                    <label for="seed">Seed</label>
-                    <div class="input-group">
-                        <input type="number" id="seed" value="12345" min="1">
-                        <button class="btn-icon" id="random-seed" title="Random seed">⟳</button>
-                    </div>
-                </div>
-                <button class="btn primary" id="generate-btn">Generate</button>
-            </section>
-
-            <section class="panel">
-                <h2>Heightmap</h2>
-                <div class="field">
-                    <label for="noise-algorithm">Algorithm</label>
-                    <select id="noise-algorithm">
-                        <option value="continental" selected>Continental (Realistic)</option>
-                        <option value="eroded">Eroded (Valleys)</option>
-                        <option value="multiwarp">Multi-Warp (Very Organic)</option>
-                        <option value="swiss">Swiss (Rolling Hills)</option>
-                        <option value="valleys">Valleys (River-like)</option>
-                        <option value="terraced">Terraced (Plateaus)</option>
-                        <option value="ridged">Ridged (Mountains)</option>
-                        <option value="warped">Warped (Organic)</option>
-                        <option value="fbm">FBM (Classic)</option>
-                        <option value="simplex">Simplex (Simple)</option>
-                    </select>
-                </div>
-                <div class="field">
-                    <label for="noise-frequency">Frequency</label>
-                    <input type="range" id="noise-frequency" min="0.5" max="8" step="0.1" value="3">
-                    <span class="range-value" id="noise-frequency-value">3.0</span>
-                </div>
-                <div class="field">
-                    <label for="noise-octaves">Octaves (Detail)</label>
-                    <input type="range" id="noise-octaves" min="1" max="8" step="1" value="6">
-                    <span class="range-value" id="noise-octaves-value">6</span>
-                </div>
-                <div class="field">
-                    <label for="sea-level">Sea Level</label>
-                    <input type="range" id="sea-level" min="0" max="0.8" step="0.01" value="0.4">
-                    <span class="range-value" id="sea-level-value">0.40</span>
-                </div>
-                <div class="field">
-                    <label for="falloff-type">Edge Falloff</label>
-                    <select id="falloff-type">
-                        <option value="none">None</option>
-                        <option value="radial" selected>Radial (Island)</option>
-                        <option value="square">Square</option>
-                    </select>
-                </div>
-                <div class="field">
-                    <label for="falloff-strength">Falloff Strength</label>
-                    <input type="range" id="falloff-strength" min="0" max="1" step="0.05" value="0.7">
-                    <span class="range-value" id="falloff-strength-value">0.70</span>
-                </div>
-                <div class="field">
-                    <label for="smoothing">Smoothing Passes</label>
-                    <input type="range" id="smoothing" min="0" max="10" step="1" value="0">
-                    <span class="range-value" id="smoothing-value">0</span>
-                </div>
-                <div class="field">
-                    <label for="smoothing-strength">Smoothing Strength</label>
-                    <input type="range" id="smoothing-strength" min="0" max="1" step="0.05" value="0.6">
-                    <span class="range-value" id="smoothing-strength-value">0.60</span>
-                </div>
-                <button class="btn primary" id="generate-heightmap-btn">Generate Heightmap</button>
-            </section>
-
-            <section class="panel">
-                <h2>Climate</h2>
-                <div class="field">
-                    <label for="wind-direction">Wind Direction</label>
-                    <select id="wind-direction">
-                        <option value="0">North (↓)</option>
-                        <option value="45">Northeast (↙)</option>
-                        <option value="90">East (←)</option>
-                        <option value="135">Southeast (↖)</option>
-                        <option value="180">South (↑)</option>
-                        <option value="225">Southwest (↗)</option>
-                        <option value="270" selected>West (→)</option>
-                        <option value="315">Northwest (↘)</option>
-                    </select>
-                </div>
-                <div class="field">
-                    <label for="wind-strength">Wind Strength</label>
-                    <input type="range" id="wind-strength" min="0.1" max="1" step="0.1" value="0.8">
-                    <span class="range-value" id="wind-strength-value">0.80</span>
-                </div>
-                <div class="field inline">
-                    <input type="checkbox" id="show-rivers">
-                    <label for="show-rivers">Show Rivers</label>
-                </div>
-                <div class="field inline">
-                    <input type="checkbox" id="show-river-sources">
-                    <label for="show-river-sources">Show River Sources</label>
-                </div>
-                <div class="field">
-                    <label for="num-rivers">Number of Rivers</label>
-                    <input type="range" id="num-rivers" min="5" max="100" step="5" value="30">
-                    <span class="range-value" id="num-rivers-value">30</span>
-                </div>
-                <button class="btn primary" id="generate-precip-btn">Generate Precipitation</button>
-                <button class="btn" id="generate-rivers-btn">Generate Rivers</button>
-            </section>
-
-            <section class="panel">
-                <h2>Political</h2>
-                <div class="field">
-                    <label for="num-kingdoms">Number of Kingdoms</label>
-                    <input type="range" id="num-kingdoms" min="3" max="30" step="1" value="12">
-                    <span class="range-value" id="num-kingdoms-value">12</span>
-                </div>
-                <button class="btn primary" id="generate-kingdoms-btn">Generate Kingdoms</button>
-            </section>
-
-            <section class="panel">
-                <h2>Display</h2>
-                <div class="field">
-                    <label for="render-mode">Render Mode</label>
+        <!-- Header Bar -->
+        <header class="topbar">
+            <div class="brand">
+                <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <polygon points="12,2 22,8.5 22,15.5 12,22 2,15.5 2,8.5"/>
+                    <line x1="12" y1="22" x2="12" y2="15.5"/>
+                    <polyline points="22,8.5 12,15.5 2,8.5"/>
+                </svg>
+                <span class="brand-name">RealmForge</span>
+            </div>
+            <div class="topbar-controls">
+                <div class="view-switcher">
                     <select id="render-mode">
-                        <option value="landmass" selected>Landmass View</option>
-                        <option value="political">Political Map</option>
-                        <option value="terrain">Land/Water</option>
+                        <option value="political" selected>Political Map</option>
+                        <option value="landmass">Landmass View</option>
+                        <option value="terrain">Terrain</option>
                         <option value="rivers">Flow Arrows</option>
-                        <option value="heightmap">Grayscale Heightmap</option>
+                        <option value="heightmap">Heightmap</option>
                         <option value="precipitation">Precipitation</option>
                         <option value="cells">Cells Only</option>
                     </select>
                 </div>
-                <div class="field">
-                    <label for="subdivision">Contour Smoothing</label>
-                    <input type="range" id="subdivision" min="0" max="4" step="1" value="2">
-                    <span class="range-value" id="subdivision-value">2</span>
+                <div class="zoom-widget">
+                    <button class="icon-btn" id="zoom-out" title="Zoom Out">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    </button>
+                    <span class="zoom-display" id="zoom-level">100%</span>
+                    <button class="icon-btn" id="zoom-in" title="Zoom In">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    </button>
+                    <button class="icon-btn" id="zoom-reset" title="Reset View">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                    </button>
                 </div>
-                <div class="toggle-group">
-                    <label class="toggle">
-                        <input type="checkbox" id="show-edges" checked>
-                        <span>Cell Edges</span>
-                    </label>
-                    <label class="toggle">
-                        <input type="checkbox" id="show-centers">
-                        <span>Cell Centers</span>
-                    </label>
-                    <label class="toggle">
-                        <input type="checkbox" id="show-delaunay">
-                        <span>Delaunay Mesh</span>
-                    </label>
-                </div>
-            </section>
-
-            <section class="panel">
-                <h2>Viewport</h2>
-                <div class="field">
-                    <label>Zoom Level</label>
-                    <div class="zoom-controls">
-                        <button class="btn-icon" id="zoom-out" title="Zoom Out">−</button>
-                        <span class="zoom-level" id="zoom-level">100%</span>
-                        <button class="btn-icon" id="zoom-in" title="Zoom In">+</button>
-                        <button class="btn-icon" id="zoom-reset" title="Reset View">⟲</button>
-                    </div>
-                </div>
-                <div class="field">
-                    <label>Suggested Cells</label>
-                    <span class="suggested-cells" id="suggested-cells">50,000</span>
-                </div>
-                <button class="btn primary" id="redraw-btn" title="Regenerate cells at higher density for current view">
-                    Redraw at Resolution
+                <button class="action-btn primary" id="generate-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v3m0 12v3M3 12h3m12 0h3m-2.6-6.4l-2.1 2.1m-8.6 8.6l-2.1 2.1m0-12.8l2.1 2.1m8.6 8.6l2.1 2.1"/></svg>
+                    Generate World
                 </button>
-                <div class="field">
-                    <span class="hint">Scroll to zoom • Drag to pan • R to redraw</span>
+            </div>
+        </header>
+
+        <div class="main-layout">
+            <!-- Sidebar -->
+            <aside class="sidebar">
+                <nav class="sidebar-nav">
+                    <button class="nav-tab active" data-panel="world">World</button>
+                    <button class="nav-tab" data-panel="terrain">Terrain</button>
+                    <button class="nav-tab" data-panel="climate">Climate</button>
+                    <button class="nav-tab" data-panel="nations">Nations</button>
+                    <button class="nav-tab" data-panel="display">Display</button>
+                </nav>
+
+                <div class="sidebar-content">
+                    <!-- World Panel -->
+                    <section class="panel active" id="panel-world">
+                        <div class="field-group">
+                            <label class="field-label">Seed</label>
+                            <div class="input-with-btn">
+                                <input type="number" id="seed" value="12345" min="1">
+                                <button class="icon-btn" id="random-seed" title="Random Seed">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label">Cells</label>
+                            <input type="number" id="cell-count" value="50000" min="100" max="100000" step="1000">
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label">Distribution</label>
+                            <select id="distribution">
+                                <option value="random">Random</option>
+                                <option value="jittered" selected>Jittered Grid</option>
+                                <option value="poisson">Poisson Disk</option>
+                                <option value="relaxed">Pre-relaxed</option>
+                            </select>
+                        </div>
+                        <div class="stats-grid">
+                            <div class="stat-item">
+                                <span class="stat-value" id="stat-cells">0</span>
+                                <span class="stat-label">Cells</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-value" id="stat-land">0%</span>
+                                <span class="stat-label">Land</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-value" id="stat-gen-time">0ms</span>
+                                <span class="stat-label">Gen</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-value" id="stat-render-time">0ms</span>
+                                <span class="stat-label">Render</span>
+                            </div>
+                        </div>
+                        <span id="stat-visible" style="display:none">0</span>
+                    </section>
+
+                    <!-- Terrain Panel -->
+                    <section class="panel" id="panel-terrain">
+                        <div class="field-group">
+                            <label class="field-label">Algorithm</label>
+                            <select id="noise-algorithm">
+                                <option value="continental" selected>Continental</option>
+                                <option value="eroded">Eroded Valleys</option>
+                                <option value="multiwarp">Multi-Warp</option>
+                                <option value="swiss">Rolling Hills</option>
+                                <option value="valleys">River Valleys</option>
+                                <option value="terraced">Plateaus</option>
+                                <option value="ridged">Mountain Ridges</option>
+                                <option value="warped">Organic Warp</option>
+                                <option value="fbm">Classic FBM</option>
+                                <option value="simplex">Simple Noise</option>
+                            </select>
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label">
+                                <span>Scale</span>
+                                <span class="field-value" id="noise-frequency-value">3.0</span>
+                            </label>
+                            <input type="range" id="noise-frequency" min="0.5" max="8" step="0.1" value="3">
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label">
+                                <span>Detail</span>
+                                <span class="field-value" id="noise-octaves-value">6</span>
+                            </label>
+                            <input type="range" id="noise-octaves" min="1" max="8" step="1" value="6">
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label">
+                                <span>Sea Level</span>
+                                <span class="field-value" id="sea-level-value">0.40</span>
+                            </label>
+                            <input type="range" id="sea-level" min="0" max="0.8" step="0.01" value="0.4">
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label">Edge Falloff</label>
+                            <select id="falloff-type">
+                                <option value="none">None</option>
+                                <option value="radial" selected>Island (Radial)</option>
+                                <option value="square">Square</option>
+                            </select>
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label">
+                                <span>Falloff Strength</span>
+                                <span class="field-value" id="falloff-strength-value">0.70</span>
+                            </label>
+                            <input type="range" id="falloff-strength" min="0" max="1" step="0.05" value="0.7">
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label">
+                                <span>Smoothing</span>
+                                <span class="field-value" id="smoothing-value">0</span>
+                            </label>
+                            <input type="range" id="smoothing" min="0" max="10" step="1" value="0">
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label">
+                                <span>Smooth Strength</span>
+                                <span class="field-value" id="smoothing-strength-value">0.60</span>
+                            </label>
+                            <input type="range" id="smoothing-strength" min="0" max="1" step="0.05" value="0.6">
+                        </div>
+                        <button class="action-btn" id="generate-heightmap-btn">Regenerate Terrain</button>
+                    </section>
+
+                    <!-- Climate Panel -->
+                    <section class="panel" id="panel-climate">
+                        <div class="field-group">
+                            <label class="field-label">Wind From</label>
+                            <select id="wind-direction">
+                                <option value="0">North ↓</option>
+                                <option value="45">Northeast ↙</option>
+                                <option value="90">East ←</option>
+                                <option value="135">Southeast ↖</option>
+                                <option value="180">South ↑</option>
+                                <option value="225">Southwest ↗</option>
+                                <option value="270" selected>West →</option>
+                                <option value="315">Northwest ↘</option>
+                            </select>
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label">
+                                <span>Wind Strength</span>
+                                <span class="field-value" id="wind-strength-value">0.80</span>
+                            </label>
+                            <input type="range" id="wind-strength" min="0.1" max="1" step="0.1" value="0.8">
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label">
+                                <span>Rivers</span>
+                                <span class="field-value" id="num-rivers-value">30</span>
+                            </label>
+                            <input type="range" id="num-rivers" min="5" max="100" step="5" value="30">
+                        </div>
+                        <div class="toggle-row">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="show-rivers">
+                                <span class="toggle-switch"></span>
+                                <span>Show Rivers</span>
+                            </label>
+                        </div>
+                        <div class="toggle-row">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="show-river-sources">
+                                <span class="toggle-switch"></span>
+                                <span>Show Sources</span>
+                            </label>
+                        </div>
+                        <div class="btn-row">
+                            <button class="action-btn" id="generate-precip-btn">Precipitation</button>
+                            <button class="action-btn" id="generate-rivers-btn">Rivers</button>
+                        </div>
+                    </section>
+
+                    <!-- Nations Panel -->
+                    <section class="panel" id="panel-nations">
+                        <div class="field-group">
+                            <label class="field-label">
+                                <span>Kingdoms</span>
+                                <span class="field-value" id="num-kingdoms-value">12</span>
+                            </label>
+                            <input type="range" id="num-kingdoms" min="3" max="30" step="1" value="12">
+                        </div>
+                        <button class="action-btn" id="generate-kingdoms-btn">Generate Kingdoms</button>
+                    </section>
+
+                    <!-- Display Panel -->
+                    <section class="panel" id="panel-display">
+                        <div class="field-group">
+                            <label class="field-label">
+                                <span>Contour Smoothing</span>
+                                <span class="field-value" id="subdivision-value">2</span>
+                            </label>
+                            <input type="range" id="subdivision" min="0" max="4" step="1" value="2">
+                        </div>
+                        <div class="toggle-row">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="show-edges" checked>
+                                <span class="toggle-switch"></span>
+                                <span>Cell Edges</span>
+                            </label>
+                        </div>
+                        <div class="toggle-row">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="show-centers">
+                                <span class="toggle-switch"></span>
+                                <span>Cell Centers</span>
+                            </label>
+                        </div>
+                        <div class="toggle-row">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="show-delaunay">
+                                <span class="toggle-switch"></span>
+                                <span>Delaunay Mesh</span>
+                            </label>
+                        </div>
+                        <div class="divider"></div>
+                        <div class="field-group">
+                            <label class="field-label">Suggested Cells</label>
+                            <span class="suggested-value" id="suggested-cells">50,000</span>
+                        </div>
+                        <button class="action-btn" id="redraw-btn">Redraw at Resolution</button>
+                        <div class="divider"></div>
+                        <div class="btn-row">
+                            <button class="action-btn secondary" id="export-json">Export JSON</button>
+                            <button class="action-btn secondary" id="export-png">Export PNG</button>
+                        </div>
+                    </section>
                 </div>
-            </section>
+            </aside>
 
-            <section class="panel">
-                <h2>Export</h2>
-                <div class="btn-row">
-                    <button class="btn" id="export-json">JSON Data</button>
-                    <button class="btn" id="export-png">PNG Image</button>
-                </div>
-            </section>
-
-            <section class="panel stats">
-                <h2>Statistics</h2>
-                <dl>
-                    <dt>Cells</dt>
-                    <dd id="stat-cells">0</dd>
-                    <dt>Visible</dt>
-                    <dd id="stat-visible">0</dd>
-                    <dt>Land</dt>
-                    <dd id="stat-land">0%</dd>
-                    <dt>Generation</dt>
-                    <dd id="stat-gen-time">0ms</dd>
-                    <dt>Render</dt>
-                    <dd id="stat-render-time">0ms</dd>
-                </dl>
-            </section>
-        </aside>
-
-        <main class="canvas-area">
-            <canvas id="voronoi-canvas"></canvas>
-            <div id="cell-tooltip" class="cell-tooltip"></div>
-        </main>
+            <!-- Canvas -->
+            <main class="canvas-area">
+                <canvas id="voronoi-canvas"></canvas>
+                <div id="cell-tooltip" class="cell-tooltip"></div>
+            </main>
+        </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6"></script>
     <script src="https://cdn.jsdelivr.net/npm/d3-contour@4"></script>
-    <script type="module" src="app.js?v=187"></script>
+    
+    <!-- Tab Navigation (UI only) -->
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // Tab switching
+        const tabs = document.querySelectorAll('.nav-tab');
+        const panels = document.querySelectorAll('.panel');
+        
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                const target = tab.dataset.panel;
+                
+                tabs.forEach(t => t.classList.remove('active'));
+                panels.forEach(p => p.classList.remove('active'));
+                
+                tab.classList.add('active');
+                document.getElementById('panel-' + target)?.classList.add('active');
+            });
+        });
+        
+        // Progress bar updates based on loading status
+        const progressFill = document.getElementById('loading-progress');
+        const statusEl = document.getElementById('loading-status');
+        const progressMap = {
+            'Initializing': 5,
+            'Generating cells': 15,
+            'Creating terrain': 35,
+            'Simulating climate': 55,
+            'Carving rivers': 70,
+            'Forming kingdoms': 85,
+            'Rendering': 95
+        };
+        
+        // Observe status text changes
+        const observer = new MutationObserver(() => {
+            const status = statusEl.textContent;
+            const progress = progressMap[status] || 0;
+            if (progressFill) {
+                progressFill.style.width = progress + '%';
+            }
+        });
+        
+        if (statusEl) {
+            observer.observe(statusEl, { childList: true, characterData: true, subtree: true });
+        }
+    });
+    </script>
+    
+    <script type="module" src="app.js?v=201"></script>
 </body>
 </html>

@@ -3,7 +3,24 @@
  * UI controller and event handling
  */
 
-import { VoronoiGenerator } from './voronoi-generator.js?v=187';
+import { VoronoiGenerator } from './voronoi-generator.js?v=200';
+
+// Loading Screen
+const loadingScreen = document.getElementById('loading-screen');
+const loadingStatus = document.getElementById('loading-status');
+
+function showLoading(message = 'Loading...') {
+    loadingStatus.textContent = message;
+    loadingScreen.classList.remove('hidden');
+}
+
+function hideLoading() {
+    loadingScreen.classList.add('hidden');
+}
+
+function updateLoadingStatus(message) {
+    loadingStatus.textContent = message;
+}
 
 // DOM Elements - Generation
 const canvas = document.getElementById('voronoi-canvas');
@@ -761,11 +778,73 @@ generator.showRivers = showRiversToggle.checked;
 generator.renderMode = renderMode.value;
 generator.subdivisionLevel = 0;
 
-// Initial generation
-generate();
+// Initial generation with loading screen
+updateLoadingStatus('Generating cells');
 
-// Initialize zoom display
-updateZoomDisplay();
+setTimeout(() => {
+    const count = parseInt(cellCountInput.value) || 50000;
+    const distribution = distributionSelect.value;
+    const seed = parseInt(seedInput.value) || Date.now();
+    
+    const metrics = generator.generate(count, distribution, seed);
+    statCells.textContent = count.toLocaleString();
+    statGenTime.textContent = metrics.genTime.toFixed(1) + 'ms';
+    
+    updateLoadingStatus('Creating terrain');
+    
+    setTimeout(() => {
+        const heightOptions = {
+            seed: seed + 1000,
+            algorithm: noiseAlgorithm.value,
+            frequency: parseFloat(noiseFrequency.value),
+            octaves: parseInt(noiseOctaves.value),
+            seaLevel: parseFloat(seaLevel.value),
+            falloff: falloffType.value,
+            falloffStrength: parseFloat(falloffStrength.value),
+            smoothing: parseInt(smoothing.value),
+            smoothingStrength: parseFloat(smoothingStrength.value)
+        };
+        
+        generator.generateHeightmap(heightOptions);
+        updateLoadingStatus('Simulating climate');
+        
+        setTimeout(() => {
+            generator.generatePrecipitation({
+                windDirection: parseInt(windDirection.value),
+                windStrength: parseFloat(windStrengthSlider.value)
+            });
+            
+            updateLoadingStatus('Carving rivers');
+            
+            setTimeout(() => {
+                generator.calculateDrainage({
+                    numberOfRivers: parseInt(numRiversSlider.value)
+                });
+                
+                updateLoadingStatus('Forming kingdoms');
+                
+                setTimeout(() => {
+                    // Generate kingdoms for political view (default)
+                    generator.generateKingdoms(parseInt(numKingdomsSlider.value));
+                    
+                    updateLoadingStatus('Rendering');
+                    
+                    setTimeout(() => {
+                        generator.render();
+                        
+                        // Update stats
+                        const landCount = generator.getLandCount();
+                        const landPercent = ((landCount / generator.cellCount) * 100).toFixed(1);
+                        statLand.textContent = `${landPercent}%`;
+                        
+                        hideLoading();
+                        updateZoomDisplay();
+                        console.log('Voronoi Map Generator initialized');
+                    }, 50);
+                }, 50);
+            }, 50);
+        }, 50);
+    }, 50);
+}, 100);
 
-console.log('Voronoi Map Generator initialized');
 console.log('Shortcuts: G=Generate, H=Heightmap, P=Precipitation, V=Flow, F=Rivers, R=Redraw, E=Edges, C=Centers, D=Delaunay, +/-=Zoom, 0=Reset');

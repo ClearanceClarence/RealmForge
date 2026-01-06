@@ -6,7 +6,7 @@
 
 import { PRNG } from './prng.js';
 import { Noise } from './noise.js';
-import { NameGenerator } from './name-generator.js?v=187';
+import { NameGenerator } from './name-generator.js';
 
 // Elevation color gradient (green = low/sea level, red = high mountains)
 // Index 0 = sea level (0m), Index 255 = max height (6000m)
@@ -2530,6 +2530,10 @@ export class VoronoiGenerator {
         // Render landmass view (merged polygons per landmass)
         if (this.renderMode === 'landmass') {
             this._renderLandmassMap(ctx, bounds);
+            // Draw rivers on landmass map
+            if (this.showRivers && this.rivers && this.rivers.length > 0) {
+                this._renderRivers(ctx, bounds);
+            }
         }
         
         // Render flow mode (terrain + flow direction arrows + rivers)
@@ -4589,9 +4593,14 @@ export class VoronoiGenerator {
         if (!this.rivers || this.rivers.length === 0) return;
         
         const zoom = this.viewport.zoom;
+        const borderColor = '#5D4E37';
+        const borderWidth = Math.max(0.5, 1.0 / zoom);
         
-        // Collect all river paths
-        ctx.beginPath();
+        // Build smooth coastline for clipping
+        const coastLoops = this._buildSmoothCoastlineLoops();
+        
+        // Collect all river polygon data first
+        const riverPolygons = [];
         
         for (const river of this.rivers) {
             let path = river.path;
@@ -4655,7 +4664,55 @@ export class VoronoiGenerator {
             
             if (leftEdge.length < 2) continue;
             
-            // Draw polygon
+            riverPolygons.push({ leftEdge, rightEdge });
+        }
+        
+        if (riverPolygons.length === 0) return;
+        
+        // STEP 1: Create land clip path
+        ctx.save();
+        if (coastLoops.length > 0) {
+            ctx.beginPath();
+            for (const loop of coastLoops) {
+                if (loop.length < 3) continue;
+                ctx.moveTo(loop[0][0], loop[0][1]);
+                for (let i = 1; i < loop.length; i++) {
+                    ctx.lineTo(loop[i][0], loop[i][1]);
+                }
+                ctx.closePath();
+            }
+            ctx.clip();
+        }
+        
+        // STEP 2: Draw all river borders (clipped to land)
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = borderWidth;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        
+        for (const { leftEdge, rightEdge } of riverPolygons) {
+            // Draw left edge border
+            ctx.beginPath();
+            ctx.moveTo(leftEdge[0].x, leftEdge[0].y);
+            for (let i = 1; i < leftEdge.length; i++) {
+                ctx.lineTo(leftEdge[i].x, leftEdge[i].y);
+            }
+            ctx.stroke();
+            
+            // Draw right edge border
+            ctx.beginPath();
+            ctx.moveTo(rightEdge[0].x, rightEdge[0].y);
+            for (let i = 1; i < rightEdge.length; i++) {
+                ctx.lineTo(rightEdge[i].x, rightEdge[i].y);
+            }
+            ctx.stroke();
+        }
+        
+        ctx.restore();
+        
+        // STEP 3: Fill all rivers ON TOP (covers borders at merge points)
+        ctx.beginPath();
+        for (const { leftEdge, rightEdge } of riverPolygons) {
             ctx.moveTo(leftEdge[0].x, leftEdge[0].y);
             for (let i = 1; i < leftEdge.length; i++) {
                 ctx.lineTo(leftEdge[i].x, leftEdge[i].y);
@@ -4666,8 +4723,7 @@ export class VoronoiGenerator {
             ctx.closePath();
         }
         
-        // Fill all rivers with ocean color (matches mode)
-        ctx.fillStyle = this.renderMode === 'political' ? POLITICAL_OCEAN : OCEAN_COLORS[0];
+        ctx.fillStyle = (this.renderMode === 'political' || this.renderMode === 'landmass') ? POLITICAL_OCEAN : OCEAN_COLORS[0];
         ctx.fill();
     }
     
