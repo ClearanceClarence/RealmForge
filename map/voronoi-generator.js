@@ -523,6 +523,7 @@ export class VoronoiGenerator {
         this.riverFlow = null;
         this.drainage = null;
         this._contourCache = null;
+        this._coastlineCache = null;
         
         const margin = 1;
         const w = this.width - margin * 2;
@@ -559,6 +560,10 @@ export class VoronoiGenerator {
      */
     generateHeightmap(options = {}) {
         const start = performance.now();
+        
+        // Clear rendering caches when terrain changes
+        this._contourCache = null;
+        this._coastlineCache = null;
         
         const {
             seed = 12345,
@@ -975,6 +980,10 @@ export class VoronoiGenerator {
             return;
         }
         
+        // Clear rendering caches when kingdoms change
+        this._contourCache = null;
+        this._coastlineCache = null;
+        
         // Store road density for use in city/road generation
         this.roadDensity = roadDensity;
         
@@ -1285,6 +1294,9 @@ export class VoronoiGenerator {
         this.capitols = [];
         this.capitolNames = [];
         
+        // Minimum distance between any two capitols
+        const MIN_CAPITOL_DISTANCE = 80;
+        
         for (let k = 0; k < this.kingdomCount; k++) {
             const cells = this.kingdomCells[k];
             if (!cells || cells.length === 0) {
@@ -1317,6 +1329,20 @@ export class VoronoiGenerator {
                 
                 // Skip water cells
                 if (height < ELEVATION.SEA_LEVEL) continue;
+                
+                // Check distance to already placed capitols - skip if too close
+                let tooCloseToCapitol = false;
+                for (const existingCapitol of this.capitols) {
+                    if (existingCapitol < 0) continue;
+                    const capX = this.points[existingCapitol * 2];
+                    const capY = this.points[existingCapitol * 2 + 1];
+                    const distToCapitol = Math.sqrt((x - capX) ** 2 + (y - capY) ** 2);
+                    if (distToCapitol < MIN_CAPITOL_DISTANCE) {
+                        tooCloseToCapitol = true;
+                        break;
+                    }
+                }
+                if (tooCloseToCapitol) continue;
                 
                 let score = 0;
                 
@@ -1398,13 +1424,26 @@ export class VoronoiGenerator {
                     score -= 10; // Slight penalty for coastal
                 }
                 
+                // Bonus for distance from other capitols (prefer spread out)
+                let minDistToCapitol = Infinity;
+                for (const existingCapitol of this.capitols) {
+                    if (existingCapitol < 0) continue;
+                    const capX = this.points[existingCapitol * 2];
+                    const capY = this.points[existingCapitol * 2 + 1];
+                    const distToCapitol = Math.sqrt((x - capX) ** 2 + (y - capY) ** 2);
+                    minDistToCapitol = Math.min(minDistToCapitol, distToCapitol);
+                }
+                if (minDistToCapitol < Infinity) {
+                    score += Math.min(30, minDistToCapitol / 5); // Bonus for being far from other capitols
+                }
+                
                 if (score > bestScore) {
                     bestScore = score;
                     bestCell = cellIdx;
                 }
             }
             
-            // Fallback: if no good cell found, use centroid-nearest land cell
+            // Fallback: if no good cell found (maybe all too close to other capitols), relax constraint
             if (bestCell < 0) {
                 let minDist = Infinity;
                 for (const cellIdx of cells) {

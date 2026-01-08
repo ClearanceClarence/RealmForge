@@ -68,14 +68,16 @@ render() {
         if (this.roads && this.roads.length > 0) {
             this._renderRoads(ctx, bounds);
         }
-        // Render cities (below capitols)
-        if (this.cities && this.cityNames) {
-            this._renderCities(ctx, bounds);
-        }
-        // Render capitol cities (on top)
+        // Render capitols first (they have priority), then cities
+        // Use shared placed labels for collision detection
+        this._placedCityLabels = [];
         if (this.capitols && this.capitolNames) {
             this._renderCapitols(ctx, bounds);
         }
+        if (this.cities && this.cityNames) {
+            this._renderCities(ctx, bounds);
+        }
+        this._placedCityLabels = null;
     }
     
     // Render landmass view
@@ -182,7 +184,7 @@ _renderTerrainCells(ctx, bounds) {
     }
     
     // Build smooth coastline loops first
-    const coastLoops = this._buildSmoothCoastlineLoops();
+    if (!this._coastlineCache) { this._coastlineCache = this._buildSmoothCoastlineLoops(); } const coastLoops = this._coastlineCache;
     
     // Standard rendering (no subdivision)
     const colorBatches = new Map();
@@ -303,7 +305,7 @@ _renderTerrainCells(ctx, bounds) {
     
     // 6. Draw smooth coastline border
     const borderColor = '#5A4A3A';
-    const lineWidth = Math.max(0.5, 1.0 / this.viewport.zoom);
+    const lineWidth = Math.max(0.3, 1 / this.viewport.zoom);
     this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
     
     this.metrics.visibleCells = visibleCount;
@@ -382,7 +384,8 @@ _renderPoliticalMap(ctx, bounds) {
         if (x < bounds.left - margin || x > bounds.right + margin || 
             y < bounds.top - margin || y > bounds.bottom + margin) continue;
         
-        const kingdomId = hasKingdoms ? this.kingdoms[i] : 0;
+        // Use kingdom ID, or 0 for unassigned land cells
+        const kingdomId = hasKingdoms ? Math.max(0, this.kingdoms[i]) : 0;
         
         if (!kingdomBatches.has(kingdomId)) {
             kingdomBatches.set(kingdomId, []);
@@ -399,8 +402,8 @@ _renderPoliticalMap(ctx, bounds) {
         
         ctx.fillStyle = color;
         ctx.strokeStyle = color;
-        ctx.lineWidth = 1;
-        ctx.lineJoin = 'miter';
+        ctx.lineWidth = 0.5; // Thin stroke to prevent gaps between cells
+        ctx.lineJoin = 'round';
         
         // Batch all cells into one path for efficient rendering
         ctx.beginPath();
@@ -435,39 +438,74 @@ _renderPoliticalMap(ctx, bounds) {
         }
     }
     
-    // 6. Draw kingdom borders using RAW cell edges (no smoothing - matches the fill)
+    // 6. Draw kingdom borders between neighboring cells of different kingdoms
     if (hasKingdoms) {
-        const borderEdges = this._collectKingdomBorderEdges();
-        
-        ctx.strokeStyle = 'rgba(90, 74, 58, 0.8)';
-        ctx.lineWidth = Math.max(0.5, 1.0 / this.viewport.zoom);
+        const zoom = this.viewport.zoom;
+        ctx.strokeStyle = 'rgba(90, 74, 58, 0.5)';
+        ctx.lineWidth = Math.max(0.5, 1.2 / zoom);
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
-        
-        if (this.dashedBorders) {
-            const dashLength = Math.max(4, 8 / this.viewport.zoom);
-            const gapLength = Math.max(3, 6 / this.viewport.zoom);
-            ctx.setLineDash([dashLength, gapLength]);
-        } else {
-            ctx.setLineDash([]);
-        }
-        
-        // Draw each border edge
-        ctx.beginPath();
-        for (const edge of borderEdges) {
-            ctx.moveTo(edge.x1, edge.y1);
-            ctx.lineTo(edge.x2, edge.y2);
-        }
-        ctx.stroke();
         ctx.setLineDash([]);
+        
+        ctx.beginPath();
+        
+        // For each pair of neighboring cells in different kingdoms
+        for (let i = 0; i < this.cellCount; i++) {
+            if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+            
+            const myKingdom = this.kingdoms[i];
+            if (myKingdom < 0) continue;
+            
+            const cellI = this.voronoi.cellPolygon(i);
+            if (!cellI || cellI.length < 3) continue;
+            
+            const neighbors = Array.from(this.voronoi.neighbors(i));
+            
+            for (const j of neighbors) {
+                if (j < 0 || j >= this.cellCount) continue;
+                if (this.heights[j] < ELEVATION.SEA_LEVEL) continue;
+                
+                const neighborKingdom = this.kingdoms[j];
+                if (neighborKingdom < 0 || neighborKingdom === myKingdom) continue;
+                
+                // Only draw from lower-indexed cell to avoid duplicates
+                if (i > j) continue;
+                
+                // Find the edge in cell i that faces cell j
+                const jx = this.points[j * 2];
+                const jy = this.points[j * 2 + 1];
+                
+                let bestEdge = null;
+                let bestDist = Infinity;
+                
+                for (let e = 0; e < cellI.length - 1; e++) {
+                    const v1 = cellI[e];
+                    const v2 = cellI[e + 1];
+                    const midX = (v1[0] + v2[0]) / 2;
+                    const midY = (v1[1] + v2[1]) / 2;
+                    const dist = (midX - jx) ** 2 + (midY - jy) ** 2;
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        bestEdge = [v1, v2];
+                    }
+                }
+                
+                if (bestEdge) {
+                    ctx.moveTo(bestEdge[0][0], bestEdge[0][1]);
+                    ctx.lineTo(bestEdge[1][0], bestEdge[1][1]);
+                }
+            }
+        }
+        
+        ctx.stroke();
     }
     
     // Release clip
     ctx.restore();
     
-    // 7. Draw smooth coastline border
+    // 7. Draw smooth coastline border (thicker than kingdom borders)
     const borderColor = '#5A4A3A';
-    const lineWidth = Math.max(0.5, 1.0 / this.viewport.zoom);
+    const lineWidth = Math.max(0.3, 1 / this.viewport.zoom);
     this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
 },
 
@@ -647,41 +685,40 @@ _collectKingdomBorderEdges() {
         const myKingdom = this.kingdoms[i];
         if (myKingdom < 0) continue;
         
-        const cell = this.voronoi.cellPolygon(i);
-        if (!cell || cell.length < 3) continue;
+        const cellI = this.voronoi.cellPolygon(i);
+        if (!cellI || cellI.length < 3) continue;
         
         const neighbors = Array.from(this.voronoi.neighbors(i));
         
-        for (let j = 0; j < cell.length - 1; j++) {
-            const v1 = cell[j];
-            const v2 = cell[j + 1];
+        for (const j of neighbors) {
+            if (j < 0 || j >= this.cellCount) continue;
+            if (j < i) continue; // Only process each pair once
+            if (this.heights[j] < ELEVATION.SEA_LEVEL) continue;
             
-            const edgeMidX = (v1[0] + v2[0]) / 2;
-            const edgeMidY = (v1[1] + v2[1]) / 2;
+            const neighborKingdom = this.kingdoms[j];
+            if (neighborKingdom < 0 || neighborKingdom === myKingdom) continue;
             
-            let edgeNeighbor = -1;
-            let minDist = Infinity;
-            for (const n of neighbors) {
-                const nx = this.points[n * 2];
-                const ny = this.points[n * 2 + 1];
-                const distSq = (nx - edgeMidX) ** 2 + (ny - edgeMidY) ** 2;
-                if (distSq < minDist) {
-                    minDist = distSq;
-                    edgeNeighbor = n;
+            // Find the edge in cell i that faces cell j
+            const jx = this.points[j * 2];
+            const jy = this.points[j * 2 + 1];
+            
+            let bestEdge = null;
+            let bestDist = Infinity;
+            
+            for (let e = 0; e < cellI.length - 1; e++) {
+                const v1 = cellI[e];
+                const v2 = cellI[e + 1];
+                const midX = (v1[0] + v2[0]) / 2;
+                const midY = (v1[1] + v2[1]) / 2;
+                const dist = (midX - jx) ** 2 + (midY - jy) ** 2;
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bestEdge = { x1: v1[0], y1: v1[1], x2: v2[0], y2: v2[1] };
                 }
             }
             
-            const neighborIsOcean = edgeNeighbor < 0 || this.heights[edgeNeighbor] < ELEVATION.SEA_LEVEL;
-            const neighborKingdom = edgeNeighbor >= 0 ? this.kingdoms[edgeNeighbor] : -1;
-            
-            if (!neighborIsOcean && neighborKingdom !== myKingdom && neighborKingdom >= 0) {
-                const k1 = Math.min(myKingdom, neighborKingdom);
-                const k2 = Math.max(myKingdom, neighborKingdom);
-                borderEdges.push({
-                    x1: v1[0], y1: v1[1],
-                    x2: v2[0], y2: v2[1],
-                    kingdoms: `${k1}-${k2}`
-                });
+            if (bestEdge) {
+                borderEdges.push(bestEdge);
             }
         }
     }
@@ -706,7 +743,7 @@ _renderLandmassMap(ctx, bounds) {
     ctx.fillRect(bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top);
     
     // Build smooth coastline loops
-    const smoothedLoops = this._buildSmoothCoastlineLoops();
+    if (!this._coastlineCache) { this._coastlineCache = this._buildSmoothCoastlineLoops(); } const smoothedLoops = this._coastlineCache;
     
     if (smoothedLoops.length === 0) return;
     
@@ -764,6 +801,8 @@ _renderLandmassMap(ctx, bounds) {
         ctx.stroke();
     }
 },
+
+
 /**
  * Build smooth coastline loops - reusable for all render modes
  */
@@ -820,11 +859,11 @@ _buildSmoothCoastlineLoops() {
         if (!adjacency.has(k1)) adjacency.set(k1, []);
         if (!adjacency.has(k2)) adjacency.set(k2, []);
         
-        adjacency.get(k1).push({ x: edge[2], y: edge[3], key: k2 });
-        adjacency.get(k2).push({ x: edge[0], y: edge[1], key: k1 });
+        adjacency.get(k1).push({ x: edge[2], y: edge[3], key: k2, fromX: edge[0], fromY: edge[1] });
+        adjacency.get(k2).push({ x: edge[0], y: edge[1], key: k1, fromX: edge[2], fromY: edge[3] });
     }
     
-    // Build closed loops
+    // Build closed loops using angle-based edge selection
     const usedEdges = new Set();
     const loops = [];
     
@@ -841,7 +880,8 @@ _buildSmoothCoastlineLoops() {
             const [sx, sy] = startKey.split(',').map(n => parseInt(n) / 10);
             const loop = [[sx, sy], [firstNeighbor.x, firstNeighbor.y]];
             
-            let prevKey = startKey;
+            let prevX = sx;
+            let prevY = sy;
             let currentKey = firstNeighbor.key;
             let currentX = firstNeighbor.x;
             let currentY = firstNeighbor.y;
@@ -850,32 +890,64 @@ _buildSmoothCoastlineLoops() {
                 const neighbors = adjacency.get(currentKey);
                 if (!neighbors) break;
                 
-                let foundNext = false;
+                // Calculate incoming direction
+                const inAngle = Math.atan2(currentY - prevY, currentX - prevX);
+                
+                // Find the best next edge (smallest left turn = most clockwise = follows coastline)
+                let bestNext = null;
+                let bestAngleDiff = Infinity;
+                
                 for (const next of neighbors) {
-                    if (next.key === prevKey) continue;
-                    
                     const nextEdgeId = currentKey < next.key ? 
                         `${currentKey}|${next.key}` : `${next.key}|${currentKey}`;
                     
                     if (usedEdges.has(nextEdgeId)) continue;
                     
-                    usedEdges.add(nextEdgeId);
-                    loop.push([next.x, next.y]);
+                    // Calculate outgoing direction
+                    const outAngle = Math.atan2(next.y - currentY, next.x - currentX);
                     
-                    prevKey = currentKey;
-                    currentKey = next.key;
-                    currentX = next.x;
-                    currentY = next.y;
-                    foundNext = true;
-                    break;
+                    // Calculate turn angle (positive = left turn, negative = right turn)
+                    let angleDiff = outAngle - inAngle;
+                    // Normalize to [-PI, PI]
+                    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+                    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+                    
+                    // We want the smallest left turn (or largest right turn)
+                    // This keeps us going around the coastline consistently
+                    // Use negative angle diff to prefer right turns (clockwise)
+                    const score = -angleDiff;
+                    
+                    if (bestNext === null || score > bestAngleDiff) {
+                        bestAngleDiff = score;
+                        bestNext = next;
+                    }
                 }
                 
-                if (!foundNext) break;
+                if (!bestNext) break;
+                
+                const nextEdgeId = currentKey < bestNext.key ? 
+                    `${currentKey}|${bestNext.key}` : `${bestNext.key}|${currentKey}`;
+                usedEdges.add(nextEdgeId);
+                loop.push([bestNext.x, bestNext.y]);
+                
+                prevX = currentX;
+                prevY = currentY;
+                currentKey = bestNext.key;
+                currentX = bestNext.x;
+                currentY = bestNext.y;
+                
                 if (currentKey === startKey) break;
             }
             
+            // Only keep loops that are properly closed and have reasonable size
             if (loop.length >= 4) {
-                loops.push(loop);
+                // Check if loop closes properly
+                const lastPt = loop[loop.length - 1];
+                const firstPt = loop[0];
+                const closesDist = Math.hypot(lastPt[0] - firstPt[0], lastPt[1] - firstPt[1]);
+                if (closesDist < 5) { // Only keep closed loops
+                    loops.push(loop);
+                }
             }
         }
     }
@@ -1359,48 +1431,31 @@ _renderKingdomNames(ctx, bounds) {
         
         if (!name || cellCount === 0) continue;
         
-        // Calculate kingdom bounding box and centroid
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        let sumX = 0, sumY = 0;
+        // Find the best label position using advanced algorithm
+        const labelPos = this._findBestKingdomLabelPosition(cells, k);
         
-        for (const cellIdx of cells) {
-            const x = this.points[cellIdx * 2];
-            const y = this.points[cellIdx * 2 + 1];
-            minX = Math.min(minX, x);
-            maxX = Math.max(maxX, x);
-            minY = Math.min(minY, y);
-            maxY = Math.max(maxY, y);
-            sumX += x;
-            sumY += y;
-        }
+        if (!labelPos) continue;
         
-        const kingdomWidth = maxX - minX;
-        const kingdomHeight = maxY - minY;
-        const centerX = sumX / cellCount;
-        const centerY = sumY / cellCount;
+        const { centerX, centerY, spanWidth, regionWidth, regionHeight, minX, maxX, minY, maxY } = labelPos;
         
         // Skip if completely outside view
-        if (maxX < bounds.left - 50 || minX > bounds.right + 50 ||
-            maxY < bounds.top - 50 || minY > bounds.bottom + 50) continue;
-        
-        // Find the widest horizontal span at the centroid Y level
-        const { spanWidth, spanCenterX } = this._findKingdomSpanAtY(cells, centerY, minX, maxX);
+        if (centerX < bounds.left - 100 || centerX > bounds.right + 100 ||
+            centerY < bounds.top - 100 || centerY > bounds.bottom + 100) continue;
         
         // Calculate aspect ratio to determine if we should curve text
-        const aspectRatio = kingdomWidth / (kingdomHeight || 1);
+        const aspectRatio = regionWidth / (regionHeight || 1);
         const isElongated = aspectRatio > 2.0 || aspectRatio < 0.5;
         
         // Find principal axis angle
         const angle = this._getKingdomAngle(cells, centerX, centerY);
         
-        // Use the span width as our available width (more accurate than bounding box)
+        // Use the span width as our available width
         const availWidth = spanWidth * 0.85;
-        const availHeight = kingdomHeight * 0.4;
+        const availHeight = regionHeight * 0.4;
         
         // Calculate font size based on kingdom size (relative to largest)
-        // Larger kingdoms get larger fonts, smaller kingdoms get smaller fonts
-        const sizeRatio = Math.sqrt(cellCount / maxKingdomSize); // Square root for gentler scaling
-        const baseFontSize = 10 + (sizeRatio * 28); // Range: 10-38 based on size (smaller, less dominant)
+        const sizeRatio = Math.sqrt(cellCount / maxKingdomSize);
+        const baseFontSize = 10 + (sizeRatio * 28);
         
         const minFontSize = 6 / zoom;
         const maxFontSize = baseFontSize / zoom;
@@ -1430,13 +1485,13 @@ _renderKingdomNames(ctx, bounds) {
         ctx.font = `500 ${fontSize}px 'Cinzel', 'IM Fell English', Georgia, serif`;
         textWidth = ctx.measureText(displayText.toUpperCase()).width;
         
-        // Use span center for better horizontal positioning
-        let textCenterX = spanCenterX;
+        // Use computed center
+        let textCenterX = centerX;
         let textCenterY = centerY;
         
         // Calculate rough text bounds
         const textHalfWidth = textWidth / 2 + fontSize * 0.5;
-        const textHalfHeight = fontSize * 1.2; // Account for two-line layout
+        const textHalfHeight = fontSize * 1.2;
         const cityPadding = 15 / zoom;
         
         // Collect all city/capitol positions in this kingdom to avoid
@@ -1448,7 +1503,7 @@ _renderKingdomNames(ctx, bounds) {
             citiesToAvoid.push({
                 x: this.points[capitolCell * 2],
                 y: this.points[capitolCell * 2 + 1],
-                padding: 20 / zoom  // Larger padding for capitol
+                padding: 20 / zoom
             });
         }
         
@@ -1568,6 +1623,7 @@ _renderCapitols(ctx, bounds) {
     if (!this.capitols || !this.capitolNames) return;
     
     const zoom = this.viewport.zoom;
+    const placedLabels = this._placedCityLabels || [];
     
     for (let k = 0; k < this.kingdomCount; k++) {
         const capitolCell = this.capitols[k];
@@ -1613,14 +1669,81 @@ _renderCapitols(ctx, bounds) {
         ctx.lineWidth = Math.max(0.5, 1.5 / zoom);
         ctx.stroke();
         
-        // Draw capitol name
+        // Draw capitol name with collision detection
         const fontSize = Math.max(6, 11 / zoom);
         ctx.font = `italic ${fontSize}px 'IM Fell English', Georgia, serif`;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
         
-        const textX = x + markerSize + 3 / zoom;
-        const textY = y;
+        const textWidth = ctx.measureText(capitolName).width;
+        const textHeight = fontSize;
+        const padding = 3 / zoom;
+        
+        // Try different label positions
+        const positions = [
+            { // Right (default)
+                textX: x + markerSize + padding,
+                textY: y,
+                align: 'left',
+                box: {
+                    left: x + markerSize,
+                    right: x + markerSize + textWidth + padding * 2,
+                    top: y - textHeight * 0.6,
+                    bottom: y + textHeight * 0.6
+                }
+            },
+            { // Left
+                textX: x - markerSize - padding,
+                textY: y,
+                align: 'right',
+                box: {
+                    left: x - markerSize - textWidth - padding * 2,
+                    right: x - markerSize,
+                    top: y - textHeight * 0.6,
+                    bottom: y + textHeight * 0.6
+                }
+            },
+            { // Above-right
+                textX: x + markerSize * 0.5,
+                textY: y - markerSize - padding,
+                align: 'left',
+                box: {
+                    left: x + markerSize * 0.5 - padding,
+                    right: x + markerSize * 0.5 + textWidth + padding,
+                    top: y - markerSize - textHeight - padding,
+                    bottom: y - markerSize
+                }
+            },
+            { // Below-right
+                textX: x + markerSize * 0.5,
+                textY: y + markerSize + padding + textHeight * 0.5,
+                align: 'left',
+                box: {
+                    left: x + markerSize * 0.5 - padding,
+                    right: x + markerSize * 0.5 + textWidth + padding,
+                    top: y + markerSize,
+                    bottom: y + markerSize + textHeight + padding
+                }
+            }
+        ];
+        
+        // Find first non-colliding position
+        let bestPos = positions[0]; // Default to right
+        for (const pos of positions) {
+            let collides = false;
+            for (const placed of placedLabels) {
+                if (pos.box.left < placed.right && pos.box.right > placed.left &&
+                    pos.box.top < placed.bottom && pos.box.bottom > placed.top) {
+                    collides = true;
+                    break;
+                }
+            }
+            if (!collides) {
+                bestPos = pos;
+                break;
+            }
+        }
+        
+        ctx.textAlign = bestPos.align;
+        ctx.textBaseline = 'middle';
         
         // Soft halo for legibility
         const shadowLayers = [
@@ -1632,12 +1755,15 @@ _renderCapitols(ctx, bounds) {
             ctx.shadowColor = `rgba(255, 252, 245, ${layer.alpha})`;
             ctx.shadowBlur = layer.blur;
             ctx.fillStyle = 'rgba(255, 252, 245, 0.85)';
-            ctx.fillText(capitolName, textX, textY);
+            ctx.fillText(capitolName, bestPos.textX, bestPos.textY);
         }
         ctx.shadowColor = 'transparent';
         ctx.shadowBlur = 0;
         ctx.fillStyle = '#2C2416';
-        ctx.fillText(capitolName, textX, textY);
+        ctx.fillText(capitolName, bestPos.textX, bestPos.textY);
+        
+        // Track this label
+        placedLabels.push(bestPos.box);
         
         ctx.restore();
     }
@@ -1650,6 +1776,16 @@ _renderCities(ctx, bounds) {
     if (!this.cities || !this.cityNames) return;
     
     const zoom = this.viewport.zoom;
+    
+    // Only show city labels when zoomed in enough
+    const showLabels = zoom > 1.2;
+    // Only show markers when somewhat zoomed in
+    const showMarkers = zoom > 0.6;
+    
+    if (!showMarkers) return;
+    
+    // First pass: collect all city positions and draw markers
+    const cityPositions = [];
     
     for (let i = 0; i < this.cities.length; i++) {
         const city = this.cities[i];
@@ -1664,57 +1800,174 @@ _renderCities(ctx, bounds) {
         if (x < bounds.left - 50 || x > bounds.right + 50 ||
             y < bounds.top - 50 || y > bounds.bottom + 50) continue;
         
-        const markerSize = Math.max(2.5, 5 / zoom);
+        const markerSize = Math.max(1.5, 4 / zoom);
         
         ctx.save();
         
-        // Draw different markers based on city type
+        // Draw different markers based on city type (smaller, more subtle)
+        ctx.globalAlpha = Math.min(1, zoom * 0.7);
+        
         if (city.type === 'port') {
-            // Port: circle with anchor-like cross
-            const r = markerSize * 0.6;
+            const r = markerSize * 0.5;
             ctx.beginPath();
             ctx.arc(x, y, r, 0, Math.PI * 2);
             ctx.fillStyle = '#2C2416';
             ctx.fill();
-            ctx.strokeStyle = 'rgba(255, 252, 245, 0.9)';
-            ctx.lineWidth = Math.max(0.5, 1.2 / zoom);
-            ctx.stroke();
-            // Small anchor cross
-            ctx.beginPath();
-            ctx.moveTo(x, y - r * 0.5);
-            ctx.lineTo(x, y + r * 0.6);
-            ctx.moveTo(x - r * 0.4, y + r * 0.2);
-            ctx.lineTo(x + r * 0.4, y + r * 0.2);
-            ctx.strokeStyle = 'rgba(255, 252, 245, 0.9)';
-            ctx.lineWidth = Math.max(0.3, 0.8 / zoom);
-            ctx.stroke();
         } else if (city.type === 'fortress') {
-            // Fortress: square with crenellations feel
-            const half = markerSize * 0.55;
+            const half = markerSize * 0.45;
             ctx.fillStyle = '#2C2416';
             ctx.fillRect(x - half, y - half, half * 2, half * 2);
-            ctx.strokeStyle = 'rgba(255, 252, 245, 0.9)';
-            ctx.lineWidth = Math.max(0.5, 1.2 / zoom);
-            ctx.strokeRect(x - half, y - half, half * 2, half * 2);
         } else {
-            // Town: simple circle
+            // Town: simple small circle
             ctx.beginPath();
-            ctx.arc(x, y, markerSize * 0.5, 0, Math.PI * 2);
+            ctx.arc(x, y, markerSize * 0.4, 0, Math.PI * 2);
             ctx.fillStyle = '#2C2416';
             ctx.fill();
-            ctx.strokeStyle = 'rgba(255, 252, 245, 0.8)';
-            ctx.lineWidth = Math.max(0.4, 1 / zoom);
-            ctx.stroke();
         }
         
-        // Draw city name (smaller than capitol)
-        const fontSize = Math.max(5, 9 / zoom);
-        ctx.font = `italic ${fontSize}px 'IM Fell English', Georgia, serif`;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
+        ctx.globalAlpha = 1;
+        ctx.restore();
         
-        const textX = x + markerSize + 2 / zoom;
-        const textY = y;
+        if (showLabels) {
+            cityPositions.push({ x, y, name: cityName, markerSize, index: i });
+        }
+    }
+    
+    if (!showLabels || cityPositions.length === 0) return;
+    
+    // Use shared placed labels array (capitols already added)
+    const placedLabels = this._placedCityLabels || [];
+    
+    // Second pass: draw city labels with collision detection
+    const fontSize = Math.max(5, 9 / zoom);
+    ctx.font = `italic ${fontSize}px 'IM Fell English', Georgia, serif`;
+    
+    for (const city of cityPositions) {
+        const { x, y, name, markerSize } = city;
+        
+        const textWidth = ctx.measureText(name).width;
+        const textHeight = fontSize;
+        const padding = 2 / zoom;
+        
+        // Try different label positions: right, left, above-right, below-right, above, below, above-left, below-left
+        const positions = [
+            { // Right (default)
+                textX: x + markerSize + padding,
+                textY: y,
+                align: 'left',
+                box: {
+                    left: x + markerSize,
+                    right: x + markerSize + textWidth + padding * 2,
+                    top: y - textHeight * 0.6,
+                    bottom: y + textHeight * 0.6
+                }
+            },
+            { // Left
+                textX: x - markerSize - padding,
+                textY: y,
+                align: 'right',
+                box: {
+                    left: x - markerSize - textWidth - padding * 2,
+                    right: x - markerSize,
+                    top: y - textHeight * 0.6,
+                    bottom: y + textHeight * 0.6
+                }
+            },
+            { // Above-right (diagonal)
+                textX: x + markerSize * 0.5,
+                textY: y - markerSize - textHeight * 0.3,
+                align: 'left',
+                box: {
+                    left: x + markerSize * 0.5 - padding,
+                    right: x + markerSize * 0.5 + textWidth + padding,
+                    top: y - markerSize - textHeight,
+                    bottom: y - markerSize + textHeight * 0.2
+                }
+            },
+            { // Below-right (diagonal)
+                textX: x + markerSize * 0.5,
+                textY: y + markerSize + textHeight * 0.5,
+                align: 'left',
+                box: {
+                    left: x + markerSize * 0.5 - padding,
+                    right: x + markerSize * 0.5 + textWidth + padding,
+                    top: y + markerSize - textHeight * 0.2,
+                    bottom: y + markerSize + textHeight
+                }
+            },
+            { // Above center
+                textX: x,
+                textY: y - markerSize - padding - textHeight * 0.3,
+                align: 'center',
+                box: {
+                    left: x - textWidth / 2 - padding,
+                    right: x + textWidth / 2 + padding,
+                    top: y - markerSize - textHeight - padding,
+                    bottom: y - markerSize
+                }
+            },
+            { // Below center
+                textX: x,
+                textY: y + markerSize + padding + textHeight * 0.5,
+                align: 'center',
+                box: {
+                    left: x - textWidth / 2 - padding,
+                    right: x + textWidth / 2 + padding,
+                    top: y + markerSize,
+                    bottom: y + markerSize + textHeight + padding
+                }
+            },
+            { // Above-left (diagonal)
+                textX: x - markerSize * 0.5,
+                textY: y - markerSize - textHeight * 0.3,
+                align: 'right',
+                box: {
+                    left: x - markerSize * 0.5 - textWidth - padding,
+                    right: x - markerSize * 0.5 + padding,
+                    top: y - markerSize - textHeight,
+                    bottom: y - markerSize + textHeight * 0.2
+                }
+            },
+            { // Below-left (diagonal)
+                textX: x - markerSize * 0.5,
+                textY: y + markerSize + textHeight * 0.5,
+                align: 'right',
+                box: {
+                    left: x - markerSize * 0.5 - textWidth - padding,
+                    right: x - markerSize * 0.5 + padding,
+                    top: y + markerSize - textHeight * 0.2,
+                    bottom: y + markerSize + textHeight
+                }
+            }
+        ];
+        
+        // Find first non-colliding position
+        let bestPos = null;
+        for (const pos of positions) {
+            let collides = false;
+            for (const placed of placedLabels) {
+                if (pos.box.left < placed.right && pos.box.right > placed.left &&
+                    pos.box.top < placed.bottom && pos.box.bottom > placed.top) {
+                    collides = true;
+                    break;
+                }
+            }
+            if (!collides) {
+                bestPos = pos;
+                break;
+            }
+        }
+        
+        // If all positions collide, skip this label entirely to keep map clean
+        if (!bestPos) {
+            continue;
+        }
+        
+        // Draw the label
+        ctx.save();
+        ctx.font = `italic ${fontSize}px 'IM Fell English', Georgia, serif`;
+        ctx.textAlign = bestPos.align;
+        ctx.textBaseline = 'middle';
         
         // Soft halo for legibility
         const shadowLayers = [
@@ -1725,14 +1978,17 @@ _renderCities(ctx, bounds) {
             ctx.shadowColor = `rgba(255, 252, 245, ${layer.alpha})`;
             ctx.shadowBlur = layer.blur;
             ctx.fillStyle = 'rgba(255, 252, 245, 0.8)';
-            ctx.fillText(cityName, textX, textY);
+            ctx.fillText(name, bestPos.textX, bestPos.textY);
         }
         ctx.shadowColor = 'transparent';
         ctx.shadowBlur = 0;
         ctx.fillStyle = '#3D3425';
-        ctx.fillText(cityName, textX, textY);
+        ctx.fillText(name, bestPos.textX, bestPos.textY);
         
         ctx.restore();
+        
+        // Add this label to placed labels
+        placedLabels.push(bestPos.box);
     }
 },
 
@@ -1743,6 +1999,9 @@ _renderRoads(ctx, bounds) {
     if (!this.roads || this.roads.length === 0) return;
     
     const zoom = this.viewport.zoom;
+    
+    // Only show roads when somewhat zoomed in
+    if (zoom < 0.8) return;
     
     // Collect all unique segments first
     const drawnSegments = new Set();
@@ -1791,11 +2050,11 @@ _renderRoads(ctx, bounds) {
     
     ctx.save();
     
-    const lineWidth = Math.max(1, 2 / zoom);
-    const dashSize = Math.max(3, 6 / zoom);
-    const gapSize = Math.max(2, 4 / zoom);
+    const lineWidth = Math.max(0.25, 1 / zoom);
+    const dashSize = Math.max(1, 3 / zoom);
+    const gapSize = Math.max(1, 2 / zoom);
     
-    ctx.strokeStyle = '#6B5A4A';
+    ctx.strokeStyle = 'rgba(44, 36, 22, 0.35)';
     ctx.lineWidth = lineWidth;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
@@ -1957,118 +2216,53 @@ _interpolateRoadPath(path) {
 },
 
 /**
- * Render proper contour lines using marching squares on a sampled grid
+ * Render proper contour lines using cached paths
  */
 _renderContourLines(ctx, bounds) {
-    if (!this.heights) return;
+    if (!this.heights || !this.delaunay) return;
     
     const zoom = this.viewport.zoom;
     
-    // Grid resolution - smaller = more detailed contours
-    const gridSize = Math.max(6, 10 / zoom);
+    // Only show contours when zoomed in enough
+    if (zoom < 1.0) return;
     
-    // Calculate grid dimensions
-    const gridWidth = Math.ceil((bounds.right - bounds.left) / gridSize) + 2;
-    const gridHeight = Math.ceil((bounds.bottom - bounds.top) / gridSize) + 2;
-    
-    // Sample heights onto grid
-    const grid = new Float32Array(gridWidth * gridHeight);
-    
-    for (let gy = 0; gy < gridHeight; gy++) {
-        for (let gx = 0; gx < gridWidth; gx++) {
-            const worldX = bounds.left + gx * gridSize;
-            const worldY = bounds.top + gy * gridSize;
-            
-            // Find nearest cell and interpolate height
-            const height = this._sampleHeightAt(worldX, worldY);
-            grid[gy * gridWidth + gx] = height;
-        }
+    // Generate contours once and cache them (check for null OR empty)
+    if (!this._contourCache || this._contourCache.length === 0) {
+        this._generateContourCache();
     }
     
-    // Contour levels - closer intervals
-    const contourLevels = [100, 175, 250, 350, 450, 550, 700, 850, 1000, 1200, 1400, 1700, 2000, 2400, 2800];
+    // Safety check - ensure cache is a non-empty array
+    if (!Array.isArray(this._contourCache) || this._contourCache.length === 0) return;
     
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     
-    for (const level of contourLevels) {
-        const segments = [];
+    // Draw cached contour paths
+    for (const contour of this._contourCache) {
+        // Style - very subtle brown lines
+        const isMajor = contour.level % 500 === 0;
+        ctx.strokeStyle = isMajor ? 'rgba(100, 80, 60, 0.12)' : 'rgba(100, 80, 60, 0.06)';
+        ctx.lineWidth = isMajor ? Math.max(0.4, 0.8 / zoom) : Math.max(0.3, 0.6 / zoom);
         
-        // Marching squares for this level
-        for (let gy = 0; gy < gridHeight - 1; gy++) {
-            for (let gx = 0; gx < gridWidth - 1; gx++) {
-                // Get corner values
-                const tl = grid[gy * gridWidth + gx];
-                const tr = grid[gy * gridWidth + gx + 1];
-                const bl = grid[(gy + 1) * gridWidth + gx];
-                const br = grid[(gy + 1) * gridWidth + gx + 1];
-                
-                // Skip if any corner is underwater
-                if (tl < 0 || tr < 0 || bl < 0 || br < 0) continue;
-                
-                // Calculate case (which corners are above level)
-                let caseIndex = 0;
-                if (tl >= level) caseIndex |= 1;
-                if (tr >= level) caseIndex |= 2;
-                if (br >= level) caseIndex |= 4;
-                if (bl >= level) caseIndex |= 8;
-                
-                // Skip if all same (no contour crosses this cell)
-                if (caseIndex === 0 || caseIndex === 15) continue;
-                
-                // World coordinates of corners
-                const x0 = bounds.left + gx * gridSize;
-                const y0 = bounds.top + gy * gridSize;
-                const x1 = x0 + gridSize;
-                const y1 = y0 + gridSize;
-                
-                // Interpolate edge crossings
-                const lerp = (a, b, va, vb) => a + (level - va) / (vb - va) * (b - a);
-                
-                const top = { x: lerp(x0, x1, tl, tr), y: y0 };
-                const right = { x: x1, y: lerp(y0, y1, tr, br) };
-                const bottom = { x: lerp(x0, x1, bl, br), y: y1 };
-                const left = { x: x0, y: lerp(y0, y1, tl, bl) };
-                
-                // Add line segments based on case
-                switch (caseIndex) {
-                    case 1: case 14: segments.push([left, top]); break;
-                    case 2: case 13: segments.push([top, right]); break;
-                    case 3: case 12: segments.push([left, right]); break;
-                    case 4: case 11: segments.push([right, bottom]); break;
-                    case 5: // Saddle point
-                        segments.push([left, top]);
-                        segments.push([right, bottom]);
-                        break;
-                    case 6: case 9: segments.push([top, bottom]); break;
-                    case 7: case 8: segments.push([left, bottom]); break;
-                    case 10: // Saddle point
-                        segments.push([top, right]);
-                        segments.push([left, bottom]);
-                        break;
+        ctx.beginPath();
+        
+        for (const path of contour.paths) {
+            if (path.length < 2) continue;
+            
+            // Quick bounds check for path
+            let inView = false;
+            for (const p of path) {
+                if (p.x >= bounds.left - 20 && p.x <= bounds.right + 20 &&
+                    p.y >= bounds.top - 20 && p.y <= bounds.bottom + 20) {
+                    inView = true;
+                    break;
                 }
             }
-        }
-        
-        if (segments.length === 0) continue;
-        
-        // Connect segments into paths
-        const paths = this._connectContourSegments(segments);
-        
-        // Style - subtle brown lines
-        const isMajor = level % 500 === 0;
-        ctx.strokeStyle = isMajor ? 'rgba(100, 80, 60, 0.16)' : 'rgba(100, 80, 60, 0.09)';
-        ctx.lineWidth = isMajor ? Math.max(0.5, 1.0 / zoom) : Math.max(0.3, 0.7 / zoom);
-        
-        // Draw paths
-        ctx.beginPath();
-        for (const path of paths) {
-            if (path.length < 2) continue;
+            if (!inView) continue;
             
             ctx.moveTo(path[0].x, path[0].y);
             
-            // Smooth with quadratic curves
             if (path.length > 2) {
                 for (let i = 1; i < path.length - 1; i++) {
                     const xc = (path[i].x + path[i + 1].x) / 2;
@@ -2078,10 +2272,115 @@ _renderContourLines(ctx, bounds) {
             }
             ctx.lineTo(path[path.length - 1].x, path[path.length - 1].y);
         }
+        
         ctx.stroke();
     }
     
     ctx.restore();
+},
+
+/**
+ * Generate and cache contour paths for the entire map
+ */
+_generateContourCache() {
+    // Don't generate if dependencies are missing
+    if (!this.heights || !this.delaunay) {
+        return;
+    }
+    
+    console.log('Generating contour cache...');
+    const startTime = performance.now();
+    
+    // Initialize cache
+    this._contourCache = [];
+    
+    try {
+        // Fixed grid size for caching (covers whole map)
+        const gridSize = 8;
+        const gridWidth = Math.ceil(this.width / gridSize) + 2;
+        const gridHeight = Math.ceil(this.height / gridSize) + 2;
+        
+        // Sample heights onto grid
+        const grid = new Float32Array(gridWidth * gridHeight);
+        
+        for (let gy = 0; gy < gridHeight; gy++) {
+            for (let gx = 0; gx < gridWidth; gx++) {
+                const worldX = gx * gridSize;
+                const worldY = gy * gridSize;
+                const height = this._sampleHeightAt(worldX, worldY);
+                grid[gy * gridWidth + gx] = height;
+            }
+        }
+        
+        // Contour levels
+        const contourLevels = [100, 175, 250, 350, 450, 550, 700, 850, 1000, 1200, 1400, 1700, 2000, 2400, 2800];
+        
+        for (const level of contourLevels) {
+            const segments = [];
+        
+        // Marching squares for this level
+        for (let gy = 0; gy < gridHeight - 1; gy++) {
+            for (let gx = 0; gx < gridWidth - 1; gx++) {
+                const tl = grid[gy * gridWidth + gx];
+                const tr = grid[gy * gridWidth + gx + 1];
+                const bl = grid[(gy + 1) * gridWidth + gx];
+                const br = grid[(gy + 1) * gridWidth + gx + 1];
+                
+                if (tl < 0 || tr < 0 || bl < 0 || br < 0) continue;
+                
+                let caseIndex = 0;
+                if (tl >= level) caseIndex |= 1;
+                if (tr >= level) caseIndex |= 2;
+                if (br >= level) caseIndex |= 4;
+                if (bl >= level) caseIndex |= 8;
+                
+                if (caseIndex === 0 || caseIndex === 15) continue;
+                
+                const x0 = gx * gridSize;
+                const y0 = gy * gridSize;
+                const x1 = x0 + gridSize;
+                const y1 = y0 + gridSize;
+                
+                const lerp = (a, b, va, vb) => a + (level - va) / (vb - va) * (b - a);
+                
+                const top = { x: lerp(x0, x1, tl, tr), y: y0 };
+                const right = { x: x1, y: lerp(y0, y1, tr, br) };
+                const bottom = { x: lerp(x0, x1, bl, br), y: y1 };
+                const left = { x: x0, y: lerp(y0, y1, tl, bl) };
+                
+                switch (caseIndex) {
+                    case 1: case 14: segments.push([left, top]); break;
+                    case 2: case 13: segments.push([top, right]); break;
+                    case 3: case 12: segments.push([left, right]); break;
+                    case 4: case 11: segments.push([right, bottom]); break;
+                    case 5:
+                        segments.push([left, top]);
+                        segments.push([right, bottom]);
+                        break;
+                    case 6: case 9: segments.push([top, bottom]); break;
+                    case 7: case 8: segments.push([left, bottom]); break;
+                    case 10:
+                        segments.push([top, right]);
+                        segments.push([left, bottom]);
+                        break;
+                }
+            }
+        }
+        
+        if (segments.length === 0) continue;
+        
+        const paths = this._connectContourSegments(segments);
+        
+        if (paths.length > 0) {
+            this._contourCache.push({ level, paths });
+        }
+    }
+    
+    console.log(`Contour cache generated: ${this._contourCache.length} levels, ${(performance.now() - startTime).toFixed(1)}ms`);
+    } catch (e) {
+        console.warn('Failed to generate contour cache:', e);
+        this._contourCache = [];
+    }
 },
 
 /**
@@ -2090,6 +2389,11 @@ _renderContourLines(ctx, bounds) {
 _sampleHeightAt(x, y) {
     // Quick bounds check
     if (x < 0 || x > this.width || y < 0 || y > this.height) {
+        return -1000;
+    }
+    
+    // Guard against missing delaunay
+    if (!this.delaunay) {
         return -1000;
     }
     
@@ -2205,8 +2509,228 @@ _connectContourSegments(segments) {
 /**
  * Find the horizontal span of a kingdom at a given Y level
  */
+/**
+ * Find the best position for a kingdom label using advanced algorithm
+ * Handles disconnected regions (islands) by finding the largest connected component
+ * Then finds the visual center (pole of inaccessibility) within that region
+ */
+_findBestKingdomLabelPosition(cells, kingdomId) {
+    if (!cells || cells.length === 0) return null;
+    
+    // Step 1: Find connected components of this kingdom
+    const components = this._findConnectedComponents(cells);
+    
+    if (components.length === 0) return null;
+    
+    // Step 2: Find the largest component by cell count
+    let largestComponent = components[0];
+    for (const comp of components) {
+        if (comp.length > largestComponent.length) {
+            largestComponent = comp;
+        }
+    }
+    
+    // Step 3: Calculate bounding box and centroid of largest component
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    let sumX = 0, sumY = 0;
+    
+    for (const cellIdx of largestComponent) {
+        const x = this.points[cellIdx * 2];
+        const y = this.points[cellIdx * 2 + 1];
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+        sumX += x;
+        sumY += y;
+    }
+    
+    const regionWidth = maxX - minX;
+    const regionHeight = maxY - minY;
+    const centroidX = sumX / largestComponent.length;
+    const centroidY = sumY / largestComponent.length;
+    
+    // Collect city/capitol positions to avoid
+    const citiesToAvoid = [];
+    const zoom = this.viewport.zoom;
+    
+    if (this.capitols && this.capitols[kingdomId] >= 0) {
+        const capCell = this.capitols[kingdomId];
+        citiesToAvoid.push({
+            x: this.points[capCell * 2],
+            y: this.points[capCell * 2 + 1],
+            radius: Math.max(80, 120 / zoom)
+        });
+    }
+    if (this.cities) {
+        for (const city of this.cities) {
+            if (city.kingdom === kingdomId) {
+                citiesToAvoid.push({
+                    x: this.points[city.cell * 2],
+                    y: this.points[city.cell * 2 + 1],
+                    radius: Math.max(50, 80 / zoom)
+                });
+            }
+        }
+    }
+    
+    // Step 4: Find the "pole of inaccessibility" - point furthest from edges AND cities
+    const bestPoint = this._findPoleOfInaccessibility(largestComponent, minX, maxX, minY, maxY, citiesToAvoid);
+    
+    // Step 5: Find the horizontal span at the best Y position
+    const { spanWidth, spanCenterX } = this._findKingdomSpanAtY(
+        largestComponent, 
+        bestPoint.y, 
+        minX, 
+        maxX
+    );
+    
+    return {
+        centerX: bestPoint.x,
+        centerY: bestPoint.y,
+        spanWidth: Math.max(spanWidth, regionWidth * 0.3), // Minimum span
+        regionWidth,
+        regionHeight,
+        componentSize: largestComponent.length,
+        minX, maxX, minY, maxY
+    };
+},
+
+/**
+ * Find connected components of kingdom cells using flood fill
+ */
+_findConnectedComponents(cells) {
+    const cellSet = new Set(cells);
+    const visited = new Set();
+    const components = [];
+    
+    for (const startCell of cells) {
+        if (visited.has(startCell)) continue;
+        
+        // BFS to find connected component
+        const component = [];
+        const queue = [startCell];
+        visited.add(startCell);
+        
+        while (queue.length > 0) {
+            const cell = queue.shift();
+            component.push(cell);
+            
+            // Check neighbors
+            const neighbors = Array.from(this.voronoi.neighbors(cell));
+            for (const neighbor of neighbors) {
+                if (cellSet.has(neighbor) && !visited.has(neighbor)) {
+                    visited.add(neighbor);
+                    queue.push(neighbor);
+                }
+            }
+        }
+        
+        if (component.length > 0) {
+            components.push(component);
+        }
+    }
+    
+    return components;
+},
+
+/**
+ * Find the pole of inaccessibility - the point furthest from the boundary
+ * Uses iterative grid refinement for efficiency
+ * Also avoids cities/capitols if provided
+ */
+_findPoleOfInaccessibility(cells, minX, maxX, minY, maxY, citiesToAvoid = []) {
+    const cellSet = new Set(cells);
+    
+    // Build a set of boundary cells (cells with non-kingdom neighbors)
+    const boundaryCells = [];
+    for (const cellIdx of cells) {
+        const neighbors = Array.from(this.voronoi.neighbors(cellIdx));
+        let isBoundary = false;
+        for (const n of neighbors) {
+            if (!cellSet.has(n)) {
+                isBoundary = true;
+                break;
+            }
+        }
+        if (isBoundary) {
+            boundaryCells.push({
+                x: this.points[cellIdx * 2],
+                y: this.points[cellIdx * 2 + 1]
+            });
+        }
+    }
+    
+    // If no boundary (shouldn't happen), return centroid
+    if (boundaryCells.length === 0) {
+        let sumX = 0, sumY = 0;
+        for (const cellIdx of cells) {
+            sumX += this.points[cellIdx * 2];
+            sumY += this.points[cellIdx * 2 + 1];
+        }
+        return { x: sumX / cells.length, y: sumY / cells.length };
+    }
+    
+    // Grid search: find point with maximum distance to nearest boundary AND cities
+    const gridResolution = 8; // Initial grid
+    let bestX = (minX + maxX) / 2;
+    let bestY = (minY + maxY) / 2;
+    let bestDist = 0;
+    
+    // Multiple passes with refinement
+    let searchMinX = minX, searchMaxX = maxX;
+    let searchMinY = minY, searchMaxY = maxY;
+    
+    for (let pass = 0; pass < 3; pass++) {
+        const stepX = (searchMaxX - searchMinX) / gridResolution;
+        const stepY = (searchMaxY - searchMinY) / gridResolution;
+        
+        for (let gy = 0; gy <= gridResolution; gy++) {
+            for (let gx = 0; gx <= gridResolution; gx++) {
+                const testX = searchMinX + gx * stepX;
+                const testY = searchMinY + gy * stepY;
+                
+                // Check if point is inside the kingdom (find nearest cell)
+                const nearestCell = this.delaunay.find(testX, testY);
+                if (!cellSet.has(nearestCell)) continue;
+                
+                // Find minimum distance to any boundary cell
+                let minDist = Infinity;
+                for (const bc of boundaryCells) {
+                    const dist = Math.sqrt((testX - bc.x) ** 2 + (testY - bc.y) ** 2);
+                    minDist = Math.min(minDist, dist);
+                }
+                
+                // Also check distance to cities - penalize being too close
+                for (const city of citiesToAvoid) {
+                    const dist = Math.sqrt((testX - city.x) ** 2 + (testY - city.y) ** 2);
+                    // If within city radius, heavily penalize
+                    if (dist < city.radius) {
+                        minDist = Math.min(minDist, dist * 0.3); // Strong penalty
+                    }
+                }
+                
+                if (minDist > bestDist) {
+                    bestDist = minDist;
+                    bestX = testX;
+                    bestY = testY;
+                }
+            }
+        }
+        
+        // Refine search area around best point
+        const margin = Math.max(stepX, stepY) * 1.5;
+        searchMinX = Math.max(minX, bestX - margin);
+        searchMaxX = Math.min(maxX, bestX + margin);
+        searchMinY = Math.max(minY, bestY - margin);
+        searchMaxY = Math.min(maxY, bestY + margin);
+    }
+    
+    return { x: bestX, y: bestY, distance: bestDist };
+},
+
 _findKingdomSpanAtY(cells, targetY, minX, maxX) {
-    const tolerance = (maxX - minX) * 0.15; // 15% tolerance band
+    const tolerance = (maxX - minX) * 0.08; // 8% tolerance band (tighter for better accuracy)
     let spanMinX = Infinity;
     let spanMaxX = -Infinity;
     let count = 0;
@@ -2222,13 +2746,14 @@ _findKingdomSpanAtY(cells, targetY, minX, maxX) {
     }
     
     // Fallback to full width if no cells found at target Y
-    if (count === 0 || spanMinX >= spanMaxX) {
-        return { spanWidth: maxX - minX, spanCenterX: (minX + maxX) / 2 };
+    if (count < 2 || spanMinX >= spanMaxX) {
+        return { spanWidth: maxX - minX, spanCenterX: (minX + maxX) / 2, cellCount: count };
     }
     
     return { 
         spanWidth: spanMaxX - spanMinX, 
-        spanCenterX: (spanMinX + spanMaxX) / 2 
+        spanCenterX: (spanMinX + spanMaxX) / 2,
+        cellCount: count
     };
 },
 /**
@@ -2670,10 +3195,10 @@ _renderKingdomBorders(ctx, bounds) {
     if (!this.kingdoms || !this.heights) return;
     
     const zoom = this.viewport.zoom;
-    const borderWidth = Math.max(0.6, 1.2 / zoom);
+    const borderWidth = Math.max(0.25, 1 / zoom);
     
     // Build smooth coastline for clipping
-    const coastLoops = this._buildSmoothCoastlineLoops();
+    if (!this._coastlineCache) { this._coastlineCache = this._buildSmoothCoastlineLoops(); } const coastLoops = this._coastlineCache;
     
     // Collect border edges between different kingdoms (not coastlines)
     const borderEdges = [];
@@ -3168,7 +3693,7 @@ _renderPrecipitationCells(ctx, bounds) {
     if (!this.precipitation || !this.voronoi) return;
     
     // Build smooth coastline loops first
-    const coastLoops = this._buildSmoothCoastlineLoops();
+    if (!this._coastlineCache) { this._coastlineCache = this._buildSmoothCoastlineLoops(); } const coastLoops = this._coastlineCache;
     
     const colorBatches = new Map();
     let visibleCount = 0;
@@ -3281,7 +3806,7 @@ _renderPrecipitationCells(ctx, bounds) {
     
     // 5. Draw smooth coastline border
     const borderColor = '#5A4A3A';
-    const lineWidth = Math.max(0.5, 1.0 / this.viewport.zoom);
+    const lineWidth = Math.max(0.35, 1 / this.viewport.zoom);
     this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
     
     this.metrics.visibleCells = visibleCount;
@@ -3473,11 +3998,11 @@ _renderRivers(ctx, bounds) {
     if (!this.rivers || this.rivers.length === 0) return;
     
     const zoom = this.viewport.zoom;
-    const borderColor = '#5A4A3A';
-    const borderWidth = Math.max(0.5, 1.0 / zoom);
+    const borderColor = '#5A4A3A';  // Normal brown color
+    const borderWidth = Math.max(0.5, 1.0 / zoom);  // Normal width
     
     // Build smooth coastline for clipping
-    const coastLoops = this._buildSmoothCoastlineLoops();
+    if (!this._coastlineCache) { this._coastlineCache = this._buildSmoothCoastlineLoops(); } const coastLoops = this._coastlineCache;
     
     // Collect all river polygon data first
     const riverPolygons = [];
@@ -3549,22 +4074,31 @@ _renderRivers(ctx, bounds) {
     
     if (riverPolygons.length === 0) return;
     
-    // STEP 1: Create land clip path
-    ctx.save();
-    if (coastLoops.length > 0) {
-        ctx.beginPath();
-        for (const loop of coastLoops) {
-            if (loop.length < 3) continue;
-            ctx.moveTo(loop[0][0], loop[0][1]);
-            for (let i = 1; i < loop.length; i++) {
-                ctx.lineTo(loop[i][0], loop[i][1]);
-            }
-            ctx.closePath();
+    // STEP 1: Fill all rivers FIRST
+    ctx.globalAlpha = 1.0;
+    ctx.beginPath();
+    for (const { leftEdge, rightEdge } of riverPolygons) {
+        ctx.moveTo(leftEdge[0].x, leftEdge[0].y);
+        for (let i = 1; i < leftEdge.length; i++) {
+            ctx.lineTo(leftEdge[i].x, leftEdge[i].y);
         }
-        ctx.clip();
+        for (let i = rightEdge.length - 1; i >= 0; i--) {
+            ctx.lineTo(rightEdge[i].x, rightEdge[i].y);
+        }
+        ctx.closePath();
     }
     
-    // STEP 2: Draw all river borders (clipped to land)
+    // Use appropriate color based on render mode
+    let riverColor;
+    if (this.renderMode === 'political' || this.renderMode === 'landmass') {
+        riverColor = POLITICAL_OCEAN;
+    } else {
+        riverColor = OCEAN_COLORS[0];
+    }
+    ctx.fillStyle = riverColor;
+    ctx.fill();
+    
+    // STEP 2: Draw river borders ON TOP of fill
     ctx.strokeStyle = borderColor;
     ctx.lineWidth = borderWidth;
     ctx.lineCap = 'round';
@@ -3587,25 +4121,8 @@ _renderRivers(ctx, bounds) {
         }
         ctx.stroke();
     }
-    
-    ctx.restore();
-    
-    // STEP 3: Fill all rivers ON TOP (covers borders at merge points)
-    ctx.beginPath();
-    for (const { leftEdge, rightEdge } of riverPolygons) {
-        ctx.moveTo(leftEdge[0].x, leftEdge[0].y);
-        for (let i = 1; i < leftEdge.length; i++) {
-            ctx.lineTo(leftEdge[i].x, leftEdge[i].y);
-        }
-        for (let i = rightEdge.length - 1; i >= 0; i--) {
-            ctx.lineTo(rightEdge[i].x, rightEdge[i].y);
-        }
-        ctx.closePath();
-    }
-    
-    ctx.fillStyle = (this.renderMode === 'political' || this.renderMode === 'landmass') ? POLITICAL_OCEAN : OCEAN_COLORS[0];
-    ctx.fill();
 },
+
 /**
  * Render 3D shadow effect on coastlines - outside only, no smoothing
  */
@@ -3613,7 +4130,7 @@ _renderCoastline3D(ctx, bounds) {
     if (!this.heights || !this.voronoi) return;
     
     const zoom = this.viewport.zoom;
-    const shadowWidth = 3 / zoom;
+    const shadowWidth = 1 / zoom;
     
     // Collect all coastline edges from land cells
     const coastEdges = [];
@@ -3902,7 +4419,7 @@ _renderContourTerrain(ctx, bounds, isGrayscale) {
     const { contours, scaleX, scaleY } = this._contourCache;
     
     // Build smooth coastline loops first
-    const coastLoops = this._buildSmoothCoastlineLoops();
+    if (!this._coastlineCache) { this._coastlineCache = this._buildSmoothCoastlineLoops(); } const coastLoops = this._coastlineCache;
     
     // 1. Draw ocean contours first
     ctx.lineJoin = 'round';
@@ -4005,7 +4522,7 @@ _renderContourTerrain(ctx, bounds, isGrayscale) {
     
     // 5. Draw smooth coastline border
     const borderColor = '#5A4A3A';
-    const lineWidth = Math.max(0.5, 1.0 / this.viewport.zoom);
+    const lineWidth = Math.max(0.3, 1 / this.viewport.zoom);
     this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
     
     this.metrics.visibleCells = this.cellCount;

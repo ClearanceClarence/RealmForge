@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=Inter:wght@300;400;500;600;700&family=Cinzel:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=201">
+    <link rel="stylesheet" href="styles.css?v=205">
 </head>
 <body>
     <!-- Fancy Loading Screen -->
@@ -235,22 +235,22 @@
                             <input type="range" id="num-rivers" min="5" max="100" step="5" value="30">
                         </div>
                         <div class="toggle-row">
-                            <label class="toggle-label">
-                                <input type="checkbox" id="show-rivers" checked>
+                            <label class="toggle-label" title="Rivers are currently bugged - will be fixed in a future update">
+                                <input type="checkbox" id="show-rivers" disabled>
                                 <span class="toggle-switch"></span>
-                                <span>Show Rivers</span>
+                                <span>Show Rivers (bugged)</span>
                             </label>
                         </div>
                         <div class="toggle-row">
-                            <label class="toggle-label">
-                                <input type="checkbox" id="show-river-sources">
+                            <label class="toggle-label" title="Rivers are currently bugged - will be fixed in a future update">
+                                <input type="checkbox" id="show-river-sources" disabled>
                                 <span class="toggle-switch"></span>
-                                <span>Show Sources</span>
+                                <span>Show Sources (bugged)</span>
                             </label>
                         </div>
                         <div class="btn-row">
                             <button class="action-btn" id="generate-precip-btn">Precipitation</button>
-                            <button class="action-btn" id="generate-rivers-btn">Rivers</button>
+                            <button class="action-btn" id="generate-rivers-btn" disabled title="Rivers are currently bugged">Rivers</button>
                         </div>
                     </section>
 
@@ -383,6 +383,6 @@
     });
     </script>
     
-    <script type="module" src="app.js?v=201"></script>
+    <script type="module" src="app.js?v=205"></script>
 </body>
 </html>
