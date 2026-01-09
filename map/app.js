@@ -47,6 +47,15 @@ const smoothingStrength = document.getElementById('smoothing-strength');
 const smoothingStrengthValue = document.getElementById('smoothing-strength-value');
 const generateHeightmapBtn = document.getElementById('generate-heightmap-btn');
 
+// DOM Elements - Erosion
+const erosionIterations = document.getElementById('erosion-iterations');
+const erosionIterationsValue = document.getElementById('erosion-iterations-value');
+const erosionStrength = document.getElementById('erosion-strength');
+const erosionStrengthValue = document.getElementById('erosion-strength-value');
+const depositionRate = document.getElementById('deposition-rate');
+const depositionRateValue = document.getElementById('deposition-rate-value');
+const applyErosionBtn = document.getElementById('apply-erosion-btn');
+
 // DOM Elements - Climate
 const windDirection = document.getElementById('wind-direction');
 const windStrengthSlider = document.getElementById('wind-strength');
@@ -70,6 +79,7 @@ const dashedBordersToggle = document.getElementById('dashed-borders');
 const renderMode = document.getElementById('render-mode');
 const subdivisionSlider = document.getElementById('subdivision');
 const subdivisionValue = document.getElementById('subdivision-value');
+const showWindroseToggle = document.getElementById('show-windrose');
 const showEdgesToggle = document.getElementById('show-edges');
 const showCentersToggle = document.getElementById('show-centers');
 const showDelaunayToggle = document.getElementById('show-delaunay');
@@ -191,6 +201,13 @@ function generateHeightmap() {
     setTimeout(() => {
         generator.generateHeightmap(options);
         
+        // Apply hydraulic erosion
+        generator.applyHydraulicErosion({
+            iterations: parseInt(erosionIterations.value),
+            erosionStrength: parseFloat(erosionStrength.value),
+            depositionRate: parseFloat(depositionRate.value)
+        });
+        
         // Always generate precipitation and drainage for flow visualization
         generator.generatePrecipitation({
             windDirection: parseInt(windDirection.value),
@@ -252,6 +269,49 @@ seaLevel.addEventListener('change', () => {
         generateHeightmap();
     }
 });
+
+// ========================================
+// HYDRAULIC EROSION
+// ========================================
+
+erosionIterations.addEventListener('input', (e) => {
+    erosionIterationsValue.textContent = e.target.value;
+});
+
+erosionStrength.addEventListener('input', (e) => {
+    erosionStrengthValue.textContent = parseFloat(e.target.value).toFixed(2);
+});
+
+depositionRate.addEventListener('input', (e) => {
+    depositionRateValue.textContent = parseFloat(e.target.value).toFixed(2);
+});
+
+function applyErosion() {
+    if (!generator.heights) {
+        alert('Generate terrain first');
+        return;
+    }
+    
+    applyErosionBtn.classList.add('loading');
+    applyErosionBtn.textContent = 'Eroding...';
+    
+    setTimeout(() => {
+        try {
+            generator.applyHydraulicErosion({
+                iterations: parseInt(erosionIterations.value),
+                erosionStrength: parseFloat(erosionStrength.value),
+                depositionRate: parseFloat(depositionRate.value)
+            });
+            generator.render();
+            updateRenderStats();
+        } finally {
+            applyErosionBtn.classList.remove('loading');
+            applyErosionBtn.textContent = 'Apply Erosion';
+        }
+    }, 10);
+}
+
+applyErosionBtn.addEventListener('click', applyErosion);
 
 // ========================================
 // CLIMATE / PRECIPITATION
@@ -424,6 +484,12 @@ subdivisionSlider.addEventListener('input', (e) => {
 
 subdivisionSlider.addEventListener('change', (e) => {
     generator.subdivisionLevel = parseInt(e.target.value);
+    generator.render();
+    updateRenderStats();
+});
+
+showWindroseToggle.addEventListener('change', (e) => {
+    generator.showWindrose = e.target.checked;
     generator.render();
     updateRenderStats();
 });
@@ -824,6 +890,15 @@ setTimeout(() => {
         };
         
         generator.generateHeightmap(heightOptions);
+        updateLoadingStatus('Eroding terrain');
+        
+        // Apply hydraulic erosion automatically
+        generator.applyHydraulicErosion({
+            iterations: parseInt(erosionIterations.value),
+            erosionStrength: parseFloat(erosionStrength.value),
+            depositionRate: parseFloat(depositionRate.value)
+        });
+        
         updateLoadingStatus('Simulating climate');
         
         setTimeout(() => {

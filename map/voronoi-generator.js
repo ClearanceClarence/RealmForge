@@ -73,10 +73,11 @@ export class VoronoiGenerator {
         this.showEdges = true;
         this.showCenters = false;
         this.showDelaunay = false;
-        this.showRivers = false;  // Show rivers on terrain
+        this.showWindrose = false;  // Show compass/wind rose on map
+        this.showRivers = true;  // Show rivers on terrain
         this.showRiverSources = false;  // Show river start points
         this.dashedBorders = false;  // Use dashed lines for internal kingdom borders
-        this.renderMode = 'landmass'; // 'cells', 'heightmap', 'terrain', 'precipitation', 'political', 'landmass'
+        this.renderMode = 'political'; // 'cells', 'heightmap', 'terrain', 'precipitation', 'political', 'landmass'
         this.seaLevel = 0.4;
         this.subdivisionLevel = 2;  // 0 = no subdivision, 1-4 = subdivision levels
         
@@ -749,6 +750,331 @@ export class VoronoiGenerator {
         // Reclassify terrain after smoothing
         for (let i = 0; i < this.cellCount; i++) {
             this.terrain[i] = this.heights[i] >= ELEVATION.SEA_LEVEL ? 1 : 0;
+        }
+    }
+    
+    /**
+     * Apply realistic hydraulic erosion simulation
+     * Traces water from high points downhill to sea, carving valleys
+     * @param {Object} options - Erosion parameters
+     */
+    applyHydraulicErosion(options = {}) {
+        if (!this.heights || !this.voronoi) return;
+        
+        const {
+            iterations = 50000,
+            erosionStrength = 0.3,
+            depositionRate = 0.3,
+        } = options;
+        
+        console.log(`Starting hydraulic erosion`);
+        const startTime = performance.now();
+        
+        // STEP 1: Fill ALL depressions so water can flow to ocean
+        // Use priority-flood algorithm
+        this._fillAllDepressions();
+        
+        // STEP 2: Calculate drainage for EVERY land cell
+        const drainTo = new Int32Array(this.cellCount).fill(-1);
+        
+        for (let i = 0; i < this.cellCount; i++) {
+            if (this.filledHeights[i] < ELEVATION.SEA_LEVEL) continue;
+            
+            let lowestN = -1;
+            let lowestH = this.filledHeights[i];
+            
+            for (const n of this.voronoi.neighbors(i)) {
+                if (this.filledHeights[n] < lowestH) {
+                    lowestH = this.filledHeights[n];
+                    lowestN = n;
+                }
+            }
+            
+            drainTo[i] = lowestN;
+        }
+        
+        // STEP 3: Calculate flow accumulation (how much water passes through each cell)
+        // Sort by filled height (highest first)
+        const landCells = [];
+        for (let i = 0; i < this.cellCount; i++) {
+            if (this.filledHeights[i] >= ELEVATION.SEA_LEVEL) {
+                landCells.push(i);
+            }
+        }
+        landCells.sort((a, b) => this.filledHeights[b] - this.filledHeights[a]);
+        
+        // Each cell starts with 1 unit of water, passes it downstream
+        const flowAccum = new Float32Array(this.cellCount).fill(1);
+        
+        for (const cell of landCells) {
+            const downstream = drainTo[cell];
+            if (downstream >= 0) {
+                flowAccum[downstream] += flowAccum[cell];
+            }
+        }
+        
+        // Find max flow
+        let maxFlow = 1;
+        for (let i = 0; i < this.cellCount; i++) {
+            if (flowAccum[i] > maxFlow) maxFlow = flowAccum[i];
+        }
+        
+        console.log(`Max flow: ${maxFlow}, land cells: ${landCells.length}`);
+        
+        // STEP 4: Erode based on flow - use stream power law
+        // Only erode where significant water accumulates (rivers)
+        const baseErosion = erosionStrength * 800;
+        const flowThreshold = maxFlow * 0.02; // Only erode top 2% flow cells
+        
+        for (let i = 0; i < this.cellCount; i++) {
+            if (flowAccum[i] < flowThreshold) continue; // Only erode river channels
+            if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+            
+            // Stream power erosion - sqrt of flow ratio
+            const flowRatio = (flowAccum[i] - flowThreshold) / (maxFlow - flowThreshold);
+            const erosion = baseErosion * Math.pow(flowRatio, 0.5);
+            
+            // Don't erode below sea level
+            const minH = ELEVATION.SEA_LEVEL + 1;
+            this.heights[i] = Math.max(minH, this.heights[i] - erosion);
+        }
+        
+        // STEP 5: Minimal valley widening - just immediate neighbors of river cells
+        for (let i = 0; i < this.cellCount; i++) {
+            if (flowAccum[i] < flowThreshold * 3) continue; // Only significant rivers
+            if (this.heights[i] < ELEVATION.SEA_LEVEL + 10) continue;
+            
+            const flowRatio = (flowAccum[i] - flowThreshold) / (maxFlow - flowThreshold);
+            const sideErosion = baseErosion * Math.pow(flowRatio, 0.5) * 0.2;
+            const minH = ELEVATION.SEA_LEVEL + 1;
+            
+            // Only immediate neighbors, modest erosion
+            for (const n of this.voronoi.neighbors(i)) {
+                if (this.heights[n] < ELEVATION.SEA_LEVEL + 5) continue;
+                if (flowAccum[n] >= flowThreshold) continue; // Don't double-erode river cells
+                this.heights[n] = Math.max(minH, this.heights[n] - sideErosion);
+            }
+        }
+        
+        // STEP 6: Limit slopes only near river channels
+        this._limitSlopes(flowAccum, flowThreshold);
+        
+        // STEP 7: Light smoothing for valley edges
+        this._smoothErodedTerrain(flowAccum, flowThreshold);
+        
+        // Reclassify terrain
+        for (let i = 0; i < this.cellCount; i++) {
+            this.terrain[i] = this.heights[i] >= ELEVATION.SEA_LEVEL ? 1 : 0;
+        }
+        
+        // Clear caches
+        this._coastlineCache = null;
+        this._contourCache = null;
+        
+        const elapsed = performance.now() - startTime;
+        console.log(`Hydraulic erosion complete in ${elapsed.toFixed(0)}ms`);
+    }
+    
+    /**
+     * Limit slopes to prevent extreme height differences near rivers
+     */
+    _limitSlopes(flowAccum, flowThreshold) {
+        const maxSlopePerCell = 300; // Maximum height difference
+        const iterations = 2;
+        
+        for (let iter = 0; iter < iterations; iter++) {
+            let changes = 0;
+            
+            for (let i = 0; i < this.cellCount; i++) {
+                // Only limit slopes near river channels
+                if (flowAccum[i] < flowThreshold) continue;
+                if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+                
+                const myHeight = this.heights[i];
+                
+                for (const n of this.voronoi.neighbors(i)) {
+                    if (this.heights[n] < ELEVATION.SEA_LEVEL) continue;
+                    
+                    const diff = this.heights[n] - myHeight;
+                    
+                    // If neighbor is too much higher, pull it down
+                    if (diff > maxSlopePerCell) {
+                        this.heights[n] = myHeight + maxSlopePerCell;
+                        changes++;
+                    }
+                }
+            }
+            
+            if (changes === 0) break;
+        }
+    }
+    
+    /**
+     * Light smoothing for valley edges only
+     */
+    _smoothErodedTerrain(flowAccum, flowThreshold) {
+        const iterations = 1;
+        const strength = 0.2;
+        
+        for (let iter = 0; iter < iterations; iter++) {
+            const newHeights = new Float32Array(this.heights);
+            
+            for (let i = 0; i < this.cellCount; i++) {
+                // Only smooth near rivers
+                if (flowAccum[i] < flowThreshold * 0.5) continue;
+                if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+                
+                const neighbors = Array.from(this.voronoi.neighbors(i));
+                if (neighbors.length === 0) continue;
+                
+                let sum = 0;
+                let count = 0;
+                
+                for (const n of neighbors) {
+                    if (this.heights[n] < ELEVATION.SEA_LEVEL) continue;
+                    sum += this.heights[n];
+                    count++;
+                }
+                
+                if (count > 0) {
+                    const neighborAvg = sum / count;
+                    newHeights[i] = this.heights[i] * (1 - strength) + neighborAvg * strength;
+                }
+            }
+            
+            this.heights.set(newHeights);
+        }
+    }
+    
+    /**
+     * Fill all depressions using priority-flood algorithm
+     * Creates filledHeights where all water flows to ocean
+     */
+    _fillAllDepressions() {
+        this.filledHeights = new Float32Array(this.heights);
+        
+        // Priority queue: [height, cellIndex]
+        const pq = [];
+        const processed = new Uint8Array(this.cellCount);
+        
+        // Start from ocean cells and edge cells
+        const margin = 5;
+        for (let i = 0; i < this.cellCount; i++) {
+            const x = this.points[i * 2];
+            const y = this.points[i * 2 + 1];
+            
+            // Ocean or edge
+            if (this.heights[i] < ELEVATION.SEA_LEVEL || 
+                x < margin || x > this.width - margin ||
+                y < margin || y > this.height - margin) {
+                pq.push([this.filledHeights[i], i]);
+                processed[i] = 1;
+            }
+        }
+        
+        // Sort by height (lowest first)
+        pq.sort((a, b) => a[0] - b[0]);
+        
+        // Process cells in height order
+        while (pq.length > 0) {
+            const [height, current] = pq.shift();
+            
+            for (const neighbor of this.voronoi.neighbors(current)) {
+                if (processed[neighbor]) continue;
+                processed[neighbor] = 1;
+                
+                // If neighbor is lower than current, raise it (fill depression)
+                if (this.filledHeights[neighbor] <= this.filledHeights[current]) {
+                    this.filledHeights[neighbor] = this.filledHeights[current] + 0.01;
+                }
+                
+                pq.push([this.filledHeights[neighbor], neighbor]);
+                // Keep sorted (simple insertion for now)
+                pq.sort((a, b) => a[0] - b[0]);
+            }
+        }
+    }
+    
+    /**
+     * Light smoothing pass after erosion to reduce harsh edges
+     */
+    _smoothErosionResults(iterations = 1, strength = 0.3) {
+        for (let iter = 0; iter < iterations; iter++) {
+            const newHeights = new Float32Array(this.cellCount);
+            
+            for (let i = 0; i < this.cellCount; i++) {
+                // Only smooth land cells
+                if (this.heights[i] < ELEVATION.SEA_LEVEL) {
+                    newHeights[i] = this.heights[i];
+                    continue;
+                }
+                
+                const neighbors = Array.from(this.voronoi.neighbors(i));
+                if (neighbors.length === 0) {
+                    newHeights[i] = this.heights[i];
+                    continue;
+                }
+                
+                let sum = this.heights[i];
+                let count = 1;
+                
+                for (const n of neighbors) {
+                    if (this.heights[n] >= ELEVATION.SEA_LEVEL) {
+                        sum += this.heights[n];
+                        count++;
+                    }
+                }
+                
+                const avg = sum / count;
+                newHeights[i] = this.heights[i] * (1 - strength) + avg * strength;
+            }
+            
+            this.heights.set(newHeights);
+        }
+    }
+    
+    /**
+     * Fill small depressions/pits that were created by erosion
+     * Uses a simple approach: raise any cell that is lower than all its neighbors
+     */
+    _fillDepressions() {
+        const maxIterations = 50;
+        
+        for (let iter = 0; iter < maxIterations; iter++) {
+            let changed = false;
+            
+            for (let i = 0; i < this.cellCount; i++) {
+                const h = this.heights[i];
+                
+                // Skip ocean cells
+                if (h < ELEVATION.SEA_LEVEL - 100) continue;
+                
+                const neighbors = Array.from(this.voronoi.neighbors(i));
+                if (neighbors.length === 0) continue;
+                
+                // Find lowest neighbor
+                let lowestNeighbor = Infinity;
+                let allHigher = true;
+                
+                for (const n of neighbors) {
+                    const nh = this.heights[n];
+                    if (nh < lowestNeighbor) {
+                        lowestNeighbor = nh;
+                    }
+                    if (nh <= h) {
+                        allHigher = false;
+                    }
+                }
+                
+                // If this cell is a pit (lower than all neighbors), raise it
+                if (allHigher && lowestNeighbor > h) {
+                    // Raise to just below lowest neighbor to create drainage
+                    this.heights[i] = lowestNeighbor - 0.1;
+                    changed = true;
+                }
+            }
+            
+            if (!changed) break;
         }
     }
     
@@ -2030,15 +2356,16 @@ export class VoronoiGenerator {
         const edgeCost = new Map();
         
         // Check if we have rivers
-        const hasRivers = this.riverPaths && this.riverPaths.length > 0;
+        const hasRivers = this.rivers && this.rivers.length > 0;
         
         // Build set of river edges for fast lookup
         const riverEdges = new Set();
         if (hasRivers) {
-            for (const river of this.riverPaths) {
-                for (let i = 0; i < river.length - 1; i++) {
-                    const c1 = river[i];
-                    const c2 = river[i + 1];
+            for (const river of this.rivers) {
+                const path = river.path;
+                for (let i = 0; i < path.length - 1; i++) {
+                    const c1 = path[i].cell;
+                    const c2 = path[i + 1].cell;
                     const key = c1 < c2 ? `${c1}-${c2}` : `${c2}-${c1}`;
                     riverEdges.add(key);
                 }
@@ -2063,13 +2390,13 @@ export class VoronoiGenerator {
                 
                 // Mountain/elevation difference - medium cost
                 const elevDiff = Math.abs(this.heights[i] - this.heights[neighbor]);
-                if (elevDiff > 0.1) {
-                    cost = Math.max(cost, 3.0 + elevDiff * 10);
+                if (elevDiff > 100) { // Use absolute elevation (meters)
+                    cost = Math.max(cost, 3.0 + elevDiff * 0.01);
                 }
                 
                 // High elevation (mountains) - slightly higher cost
                 const avgElev = (this.heights[i] + this.heights[neighbor]) / 2;
-                if (avgElev > 0.7) {
+                if (avgElev > ELEVATION.SEA_LEVEL + 800) {
                     cost = Math.max(cost, 2.0);
                 }
                 
@@ -2504,6 +2831,8 @@ export class VoronoiGenerator {
         const path = [];
         let current = startCell;
         const visited = new Set();
+        let oceanCellsAdded = 0;
+        const maxOceanCells = 3; // Extend into ocean
         
         while (path.length < 3000) {
             const x = this.points[current * 2];
@@ -2513,20 +2842,23 @@ export class VoronoiGenerator {
             const isOcean = this.heights[current] < ELEVATION.SEA_LEVEL;
             path.push({ cell: current, x, y, elevation, isOcean });
             
-            // If we just added an ocean cell, stop
+            // Track ocean cells and stop after a few
             if (isOcean) {
-                break;
+                oceanCellsAdded++;
+                if (oceanCellsAdded >= maxOceanCells) {
+                    break;
+                }
             }
             
             visited.add(current);
             
-            // Find lowest neighbor using FILLED heights
+            // Find lowest neighbor using FILLED heights (or regular for ocean)
             let bestNeighbor = -1;
             let bestElevation = Infinity;
             
             for (const n of this.voronoi.neighbors(current)) {
                 if (visited.has(n)) continue;
-                const nElev = this.filledHeights[n];
+                const nElev = this.filledHeights ? this.filledHeights[n] : this.heights[n];
                 if (nElev < bestElevation) {
                     bestElevation = nElev;
                     bestNeighbor = n;

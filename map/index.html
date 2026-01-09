@@ -10,28 +10,99 @@
     <link rel="stylesheet" href="styles.css?v=205">
 </head>
 <body>
-    <!-- Fancy Loading Screen -->
+    <!-- Cartography Loading Screen -->
     <div id="loading-screen" class="loading-screen">
         <div class="loading-bg">
-            <div class="loading-orb orb-1"></div>
-            <div class="loading-orb orb-2"></div>
-            <div class="loading-orb orb-3"></div>
+            <div class="parchment-base"></div>
+            <div class="parchment-texture"></div>
+            <div class="parchment-vignette"></div>
+            
+            <!-- Simple decorative border -->
+            <div class="map-border">
+                <div class="border-corner tl"></div>
+                <div class="border-corner tr"></div>
+                <div class="border-corner bl"></div>
+                <div class="border-corner br"></div>
+            </div>
         </div>
+        
         <div class="loading-content">
-            <div class="loading-icon">
-                <svg viewBox="0 0 100 100" class="hex-spinner">
-                    <polygon class="hex hex-1" points="50,5 90,27.5 90,72.5 50,95 10,72.5 10,27.5"/>
-                    <polygon class="hex hex-2" points="50,15 80,32.5 80,67.5 50,85 20,67.5 20,32.5"/>
-                    <polygon class="hex hex-3" points="50,25 70,37.5 70,62.5 50,75 30,62.5 30,37.5"/>
+            <!-- Compass Rose -->
+            <div class="compass-container">
+                <svg viewBox="0 0 200 200" class="compass-rose">
+                    <!-- Outer rings -->
+                    <circle cx="100" cy="100" r="95" fill="none" stroke="#5a4a3a" stroke-width="2"/>
+                    <circle cx="100" cy="100" r="88" fill="none" stroke="#7a6a5a" stroke-width="1" stroke-dasharray="3,3"/>
+                    <circle cx="100" cy="100" r="80" fill="none" stroke="#5a4a3a" stroke-width="1.5"/>
+                    
+                    <!-- Degree ticks -->
+                    <g stroke="#5a4a3a" stroke-width="1.5">
+                        <line x1="100" y1="5" x2="100" y2="15"/>
+                        <line x1="100" y1="185" x2="100" y2="195"/>
+                        <line x1="5" y1="100" x2="15" y2="100"/>
+                        <line x1="185" y1="100" x2="195" y2="100"/>
+                    </g>
+                    <g stroke="#7a6a5a" stroke-width="1">
+                        <line x1="100" y1="5" x2="100" y2="12" transform="rotate(45,100,100)"/>
+                        <line x1="100" y1="5" x2="100" y2="12" transform="rotate(135,100,100)"/>
+                        <line x1="100" y1="5" x2="100" y2="12" transform="rotate(225,100,100)"/>
+                        <line x1="100" y1="5" x2="100" y2="12" transform="rotate(315,100,100)"/>
+                    </g>
+                    
+                    <!-- Cardinal letters -->
+                    <text x="100" y="32" class="cardinal-letter">N</text>
+                    <text x="100" y="178" class="cardinal-letter">S</text>
+                    <text x="22" y="104" class="cardinal-letter">W</text>
+                    <text x="178" y="104" class="cardinal-letter">E</text>
+                    
+                    <!-- Main star points -->
+                    <!-- North - Red -->
+                    <polygon points="100,22 106,70 100,60 94,70" fill="#8b0000" stroke="#5a0000" stroke-width="1"/>
+                    <!-- South -->
+                    <polygon points="100,178 106,130 100,140 94,130" fill="#4a3a2a" stroke="#2a1a0a" stroke-width="1"/>
+                    <!-- East -->
+                    <polygon points="178,100 130,106 140,100 130,94" fill="#4a3a2a" stroke="#2a1a0a" stroke-width="1"/>
+                    <!-- West -->
+                    <polygon points="22,100 70,106 60,100 70,94" fill="#4a3a2a" stroke="#2a1a0a" stroke-width="1"/>
+                    
+                    <!-- Diagonal points -->
+                    <polygon points="100,35 104,65 100,58 96,65" fill="#6a5a4a" stroke="#4a3a2a" stroke-width="0.5" transform="rotate(45,100,100)"/>
+                    <polygon points="100,35 104,65 100,58 96,65" fill="#6a5a4a" stroke="#4a3a2a" stroke-width="0.5" transform="rotate(135,100,100)"/>
+                    <polygon points="100,35 104,65 100,58 96,65" fill="#6a5a4a" stroke="#4a3a2a" stroke-width="0.5" transform="rotate(225,100,100)"/>
+                    <polygon points="100,35 104,65 100,58 96,65" fill="#6a5a4a" stroke="#4a3a2a" stroke-width="0.5" transform="rotate(315,100,100)"/>
+                    
+                    <!-- Center -->
+                    <circle cx="100" cy="100" r="15" fill="#d4c4a8" stroke="#5a4a3a" stroke-width="2"/>
+                    <circle cx="100" cy="100" r="8" fill="#c4b393" stroke="#6a5a4a" stroke-width="1"/>
+                    <circle cx="100" cy="100" r="4" fill="#4a3a2a"/>
                 </svg>
             </div>
-            <h1 class="loading-title">RealmForge</h1>
-            <p class="loading-subtitle">Fantasy Map Generator</p>
+            
+            <!-- Title area -->
+            <div class="title-area">
+                <div class="title-ornament top">✦ ─────── ✦</div>
+                <h1 class="loading-title">RealmForge</h1>
+                <p class="loading-subtitle">Cartographer's Workshop</p>
+                <div class="title-ornament bottom">✦ ─────── ✦</div>
+            </div>
+            
+            <!-- Progress -->
             <div class="loading-progress">
-                <div class="progress-track">
-                    <div class="progress-fill" id="loading-progress"></div>
+                <div class="progress-container">
+                    <span class="scale-mark">0</span>
+                    <div class="progress-track">
+                        <div class="progress-fill" id="loading-progress"></div>
+                    </div>
+                    <span class="scale-mark">100 leagues</span>
                 </div>
-                <span class="loading-status" id="loading-status">Initializing</span>
+                <span class="loading-status" id="loading-status">Preparing parchment...</span>
+            </div>
+            
+            <!-- Flavor -->
+            <div class="loading-flavor">
+                <span class="flavor-deco">~</span>
+                <span class="flavor-text">Here be dragons</span>
+                <span class="flavor-deco">~</span>
             </div>
         </div>
     </div>
@@ -203,6 +274,32 @@
                             <input type="range" id="smoothing-strength" min="0" max="1" step="0.05" value="0.6">
                         </div>
                         <button class="action-btn" id="generate-heightmap-btn">Regenerate Terrain</button>
+                        
+                        <div class="section-divider"></div>
+                        <h4 class="section-title">Hydraulic Erosion</h4>
+                        
+                        <div class="field-group">
+                            <label class="field-label">
+                                <span>Erosion Iterations</span>
+                                <span class="field-value" id="erosion-iterations-value">200000</span>
+                            </label>
+                            <input type="range" id="erosion-iterations" min="10000" max="200000" step="10000" value="200000">
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label">
+                                <span>Erosion Strength</span>
+                                <span class="field-value" id="erosion-strength-value">1.00</span>
+                            </label>
+                            <input type="range" id="erosion-strength" min="0.1" max="1.0" step="0.05" value="1.0">
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label">
+                                <span>Valley Width</span>
+                                <span class="field-value" id="deposition-rate-value">0.60</span>
+                            </label>
+                            <input type="range" id="deposition-rate" min="0.1" max="0.8" step="0.05" value="0.6">
+                        </div>
+                        <button class="action-btn" id="apply-erosion-btn">Apply Erosion</button>
                     </section>
 
                     <!-- Climate Panel -->
@@ -235,22 +332,22 @@
                             <input type="range" id="num-rivers" min="5" max="100" step="5" value="30">
                         </div>
                         <div class="toggle-row">
-                            <label class="toggle-label" title="Rivers are currently bugged - will be fixed in a future update">
-                                <input type="checkbox" id="show-rivers" disabled>
+                            <label class="toggle-label">
+                                <input type="checkbox" id="show-rivers" checked>
                                 <span class="toggle-switch"></span>
-                                <span>Show Rivers (bugged)</span>
+                                <span>Show Rivers</span>
                             </label>
                         </div>
                         <div class="toggle-row">
-                            <label class="toggle-label" title="Rivers are currently bugged - will be fixed in a future update">
-                                <input type="checkbox" id="show-river-sources" disabled>
+                            <label class="toggle-label">
+                                <input type="checkbox" id="show-river-sources">
                                 <span class="toggle-switch"></span>
-                                <span>Show Sources (bugged)</span>
+                                <span>Show Sources</span>
                             </label>
                         </div>
                         <div class="btn-row">
                             <button class="action-btn" id="generate-precip-btn">Precipitation</button>
-                            <button class="action-btn" id="generate-rivers-btn" disabled title="Rivers are currently bugged">Rivers</button>
+                            <button class="action-btn" id="generate-rivers-btn">Rivers</button>
                         </div>
                     </section>
 
@@ -288,6 +385,13 @@
                                 <span class="field-value" id="subdivision-value">2</span>
                             </label>
                             <input type="range" id="subdivision" min="0" max="4" step="1" value="2">
+                        </div>
+                        <div class="toggle-row">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="show-windrose">
+                                <span class="toggle-switch"></span>
+                                <span>Wind Rose</span>
+                            </label>
                         </div>
                         <div class="toggle-row">
                             <label class="toggle-label">

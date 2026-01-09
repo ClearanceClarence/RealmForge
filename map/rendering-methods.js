@@ -150,6 +150,11 @@ render() {
         this._renderHoveredCell(ctx);
     }
     
+    // Render wind rose overlay
+    if (this.showWindrose) {
+        this._renderWindrose(ctx);
+    }
+    
     ctx.restore();
     
     // Draw zoom indicator
@@ -3998,51 +4003,40 @@ _renderRivers(ctx, bounds) {
     if (!this.rivers || this.rivers.length === 0) return;
     
     const zoom = this.viewport.zoom;
-    const borderColor = '#5A4A3A';  // Normal brown color
-    const borderWidth = Math.max(0.5, 1.0 / zoom);  // Normal width
-    
-    // Build smooth coastline for clipping
-    if (!this._coastlineCache) { this._coastlineCache = this._buildSmoothCoastlineLoops(); } const coastLoops = this._coastlineCache;
-    
-    // Collect all river polygon data first
-    const riverPolygons = [];
     
     for (const river of this.rivers) {
-        let path = river.path;
-        if (path.length < 2) continue;
-        
-        // Clip path at coastline
-        path = this._clipPathAtCoastline(path);
+        const path = river.path;
         if (path.length < 2) continue;
         
         // Check if river is in view
         let inView = false;
         for (const p of path) {
-            if (p.x >= bounds.left - 100 && p.x <= bounds.right + 100 &&
-                p.y >= bounds.top - 100 && p.y <= bounds.bottom + 100) {
+            if (p.x >= bounds.left - 50 && p.x <= bounds.right + 50 &&
+                p.y >= bounds.top - 50 && p.y <= bounds.bottom + 50) {
                 inView = true;
                 break;
             }
         }
         if (!inView) continue;
         
-        // Use D3 curve interpolation
-        const smoothPath = this._interpolateRiverPathD3(path);
+        // Interpolate path using cardinal spline (include ocean cells)
+        const smoothPath = this._interpolateRiverCurve(path);
         if (smoothPath.length < 2) continue;
         
-        // Width scaling
-        const zoomFactor = Math.max(0.5, Math.min(2, zoom));
-        const baseWidthStart = 0.8 / zoom * zoomFactor;
-        const baseWidthEnd = 3.5 / zoom * zoomFactor;
+        // Width: starts super narrow, gets wider
+        const minWidth = 0.3 / zoom;  // Tiny at source
+        const maxWidth = 4.0 / zoom;  // Wide at mouth
         
-        // Build polygon edges
+        // Draw as tapered polygon
         const leftEdge = [];
         const rightEdge = [];
         
         for (let i = 0; i < smoothPath.length; i++) {
             const p = smoothPath[i];
             const progress = i / (smoothPath.length - 1);
-            const width = baseWidthStart + (baseWidthEnd - baseWidthStart) * progress;
+            
+            // Exponential width growth - very narrow at start
+            const width = minWidth + (maxWidth - minWidth) * Math.pow(progress, 1.5);
             
             // Calculate perpendicular direction
             let dx, dy;
@@ -4069,15 +4063,8 @@ _renderRivers(ctx, bounds) {
         
         if (leftEdge.length < 2) continue;
         
-        riverPolygons.push({ leftEdge, rightEdge });
-    }
-    
-    if (riverPolygons.length === 0) return;
-    
-    // STEP 1: Fill all rivers FIRST
-    ctx.globalAlpha = 1.0;
-    ctx.beginPath();
-    for (const { leftEdge, rightEdge } of riverPolygons) {
+        // Draw filled river polygon
+        ctx.beginPath();
         ctx.moveTo(leftEdge[0].x, leftEdge[0].y);
         for (let i = 1; i < leftEdge.length; i++) {
             ctx.lineTo(leftEdge[i].x, leftEdge[i].y);
@@ -4086,41 +4073,56 @@ _renderRivers(ctx, bounds) {
             ctx.lineTo(rightEdge[i].x, rightEdge[i].y);
         }
         ctx.closePath();
-    }
-    
-    // Use appropriate color based on render mode
-    let riverColor;
-    if (this.renderMode === 'political' || this.renderMode === 'landmass') {
-        riverColor = POLITICAL_OCEAN;
-    } else {
-        riverColor = OCEAN_COLORS[0];
-    }
-    ctx.fillStyle = riverColor;
-    ctx.fill();
-    
-    // STEP 2: Draw river borders ON TOP of fill
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = borderWidth;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    
-    for (const { leftEdge, rightEdge } of riverPolygons) {
-        // Draw left edge border
-        ctx.beginPath();
-        ctx.moveTo(leftEdge[0].x, leftEdge[0].y);
-        for (let i = 1; i < leftEdge.length; i++) {
-            ctx.lineTo(leftEdge[i].x, leftEdge[i].y);
-        }
-        ctx.stroke();
         
-        // Draw right edge border
-        ctx.beginPath();
-        ctx.moveTo(rightEdge[0].x, rightEdge[0].y);
-        for (let i = 1; i < rightEdge.length; i++) {
-            ctx.lineTo(rightEdge[i].x, rightEdge[i].y);
+        // River color - same as ocean (use political color in political mode)
+        if (this.renderMode === 'political' || this.renderMode === 'landmass') {
+            ctx.fillStyle = POLITICAL_OCEAN;
+        } else {
+            ctx.fillStyle = OCEAN_COLORS[0];
         }
-        ctx.stroke();
+        ctx.fill();
     }
+},
+
+/**
+ * Interpolate river path using cardinal spline (D3-style)
+ */
+_interpolateRiverCurve(path) {
+    if (path.length < 2) return path;
+    if (path.length === 2) return path;
+    
+    const result = [];
+    const tension = 0.5;
+    const segments = 8;
+    
+    for (let i = 0; i < path.length - 1; i++) {
+        const p0 = path[Math.max(0, i - 1)];
+        const p1 = path[i];
+        const p2 = path[i + 1];
+        const p3 = path[Math.min(path.length - 1, i + 2)];
+        
+        if (i === 0) {
+            result.push({ x: p1.x, y: p1.y });
+        }
+        
+        for (let t = 1; t <= segments; t++) {
+            const s = t / segments;
+            const s2 = s * s;
+            const s3 = s2 * s;
+            
+            const t0 = -tension * s + 2 * tension * s2 - tension * s3;
+            const t1 = 1 + (tension - 3) * s2 + (2 - tension) * s3;
+            const t2 = tension * s + (3 - 2 * tension) * s2 + (tension - 2) * s3;
+            const t3 = -tension * s2 + tension * s3;
+            
+            const x = t0 * p0.x + t1 * p1.x + t2 * p2.x + t3 * p3.x;
+            const y = t0 * p0.y + t1 * p1.y + t2 * p2.y + t3 * p3.y;
+            
+            result.push({ x, y });
+        }
+    }
+    
+    return result;
 },
 
 /**
@@ -4189,186 +4191,6 @@ _renderCoastline3D(ctx, bounds) {
     ctx.stroke();
 },
 /**
- * Allow river to extend one cell into ocean for blending
- */
-_clipPathAtCoastline(path) {
-    // Don't clip - let rivers extend into ocean for natural blending
-    // The river already stops after one ocean cell in _traceRiverToOcean
-    return path;
-},
-/**
- * Find the intersection point of river with coastline edge
- */
-_findCoastlineIntersection(landCell, oceanCell, landPoint, oceanPoint) {
-    const polyLand = this.voronoi.cellPolygon(landCell);
-    const polyOcean = this.voronoi.cellPolygon(oceanCell);
-    
-    if (!polyLand || !polyOcean) {
-        // Fallback to midpoint
-        return {
-            x: (landPoint.x + oceanPoint.x) / 2,
-            y: (landPoint.y + oceanPoint.y) / 2
-        };
-    }
-    
-    // Find shared edge vertices
-    const tolerance = 1;
-    const sharedVertices = [];
-    
-    for (let i = 0; i < polyLand.length - 1; i++) {
-        const vL = polyLand[i];
-        for (let j = 0; j < polyOcean.length - 1; j++) {
-            const vO = polyOcean[j];
-            const dist = Math.sqrt((vL[0] - vO[0]) ** 2 + (vL[1] - vO[1]) ** 2);
-            if (dist < tolerance) {
-                sharedVertices.push({ x: vL[0], y: vL[1] });
-                break;
-            }
-        }
-    }
-    
-    if (sharedVertices.length >= 2) {
-        // Find intersection of river line with the shared edge
-        const edgeStart = sharedVertices[0];
-        const edgeEnd = sharedVertices[1];
-        
-        // Line-line intersection
-        const intersection = this._lineIntersection(
-            landPoint.x, landPoint.y, oceanPoint.x, oceanPoint.y,
-            edgeStart.x, edgeStart.y, edgeEnd.x, edgeEnd.y
-        );
-        
-        if (intersection) {
-            return intersection;
-        }
-        
-        // Fallback: midpoint of shared edge
-        return {
-            x: (edgeStart.x + edgeEnd.x) / 2,
-            y: (edgeStart.y + edgeEnd.y) / 2
-        };
-    }
-    
-    // Fallback to midpoint between cells
-    return {
-        x: (landPoint.x + oceanPoint.x) / 2,
-        y: (landPoint.y + oceanPoint.y) / 2
-    };
-},
-/**
- * Calculate intersection point of two line segments
- */
-_lineIntersection(x1, y1, x2, y2, x3, y3, x4, y4) {
-    const denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
-    if (Math.abs(denom) < 0.0001) return null;
-    
-    const t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
-    
-    return {
-        x: x1 + t * (x2 - x1),
-        y: y1 + t * (y2 - y1)
-    };
-},
-/**
- * Interpolate river path using D3-style cardinal spline (tension 0.5)
- */
-_interpolateRiverPathD3(path) {
-    if (path.length < 3) return path;
-    
-    const result = [];
-    const tension = 0.5;  // Cardinal spline tension (0 = Catmull-Rom, 1 = straight lines)
-    const segments = 16;  // Points between each original point
-    
-    for (let i = 0; i < path.length - 1; i++) {
-        const p0 = path[Math.max(0, i - 1)];
-        const p1 = path[i];
-        const p2 = path[i + 1];
-        const p3 = path[Math.min(path.length - 1, i + 2)];
-        
-        // Add first point
-        if (i === 0) {
-            result.push({ x: p1.x, y: p1.y });
-        }
-        
-        // For the last segment, use fewer interpolation steps and end exactly at p2
-        const isLastSegment = (i === path.length - 2);
-        const segCount = isLastSegment ? 8 : segments;
-        
-        // Cardinal spline interpolation
-        for (let t = 1; t <= segCount; t++) {
-            const s = t / segCount;
-            const s2 = s * s;
-            const s3 = s2 * s;
-            
-            // Cardinal spline basis functions with tension
-            const t0 = -tension * s + 2 * tension * s2 - tension * s3;
-            const t1 = 1 + (tension - 3) * s2 + (2 - tension) * s3;
-            const t2 = tension * s + (3 - 2 * tension) * s2 + (tension - 2) * s3;
-            const t3 = -tension * s2 + tension * s3;
-            
-            let x = t0 * p0.x + t1 * p1.x + t2 * p2.x + t3 * p3.x;
-            let y = t0 * p0.y + t1 * p1.y + t2 * p2.y + t3 * p3.y;
-            
-            // Force last point to be exactly the end point
-            if (isLastSegment && t === segCount) {
-                x = p2.x;
-                y = p2.y;
-            }
-            
-            result.push({ x, y });
-        }
-    }
-    
-    return result;
-},
-/**
- * Interpolate river path using Catmull-Rom spline for smoothness
- */
-_interpolateRiverPath(path) {
-    if (path.length < 3) return path;
-    
-    const result = [];
-    const segments = 4; // Points between each original point
-    
-    for (let i = 0; i < path.length - 1; i++) {
-        const p0 = path[Math.max(0, i - 1)];
-        const p1 = path[i];
-        const p2 = path[i + 1];
-        const p3 = path[Math.min(path.length - 1, i + 2)];
-        
-        // Add first point
-        if (i === 0) {
-            result.push({ x: p1.x, y: p1.y });
-        }
-        
-        // Interpolate between p1 and p2
-        for (let t = 1; t <= segments; t++) {
-            const s = t / segments;
-            const s2 = s * s;
-            const s3 = s2 * s;
-            
-            // Catmull-Rom spline formula
-            const x = 0.5 * (
-                (2 * p1.x) +
-                (-p0.x + p2.x) * s +
-                (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * s2 +
-                (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * s3
-            );
-            
-            const y = 0.5 * (
-                (2 * p1.y) +
-                (-p0.y + p2.y) * s +
-                (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * s2 +
-                (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * s3
-            );
-            
-            result.push({ x, y });
-        }
-    }
-    
-    return result;
-},
-/**
  * Render river source points as bright markers
  */
 _renderRiverSources(ctx, bounds) {
@@ -4390,6 +4212,167 @@ _renderRiverSources(ctx, bounds) {
         ctx.lineWidth = 2 / this.viewport.zoom;
         ctx.stroke();
     }
+},
+
+/**
+ * Render decorative wind rose / compass in corner of map
+ */
+_renderWindrose(ctx) {
+    ctx.save();
+    
+    // Reset transform to draw in screen coordinates
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    
+    // Position in bottom-right corner
+    const size = 140;
+    const margin = 30;
+    const cx = this.width - margin - size/2;
+    const cy = this.height - margin - size/2;
+    
+    // Background circle (parchment colored)
+    ctx.beginPath();
+    ctx.arc(cx, cy, size/2 + 5, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(212, 196, 168, 0.9)';
+    ctx.fill();
+    ctx.strokeStyle = '#5a4a3a';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // Outer decorative rings
+    ctx.beginPath();
+    ctx.arc(cx, cy, size/2 - 2, 0, Math.PI * 2);
+    ctx.strokeStyle = '#5a4a3a';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    
+    ctx.beginPath();
+    ctx.arc(cx, cy, size/2 - 8, 0, Math.PI * 2);
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = '#7a6a5a';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    
+    ctx.beginPath();
+    ctx.arc(cx, cy, size/2 - 14, 0, Math.PI * 2);
+    ctx.strokeStyle = '#5a4a3a';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    // Degree tick marks
+    ctx.strokeStyle = '#5a4a3a';
+    for (let i = 0; i < 360; i += 10) {
+        const rad = i * Math.PI / 180;
+        const inner = i % 30 === 0 ? size/2 - 14 : size/2 - 10;
+        const outer = size/2 - 4;
+        ctx.lineWidth = i % 30 === 0 ? 1.5 : 0.8;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.sin(rad) * inner, cy - Math.cos(rad) * inner);
+        ctx.lineTo(cx + Math.sin(rad) * outer, cy - Math.cos(rad) * outer);
+        ctx.stroke();
+    }
+    
+    // Cardinal direction letters
+    ctx.font = 'bold 16px "Times New Roman", Georgia, serif';
+    ctx.fillStyle = '#3a2a1a';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('N', cx, cy - size/2 + 28);
+    ctx.fillText('S', cx, cy + size/2 - 28);
+    ctx.fillText('E', cx + size/2 - 28, cy);
+    ctx.fillText('W', cx - size/2 + 28, cy);
+    
+    // Intercardinal labels (smaller)
+    ctx.font = '10px "Times New Roman", Georgia, serif';
+    ctx.fillStyle = '#5a4a3a';
+    const offset = size/2 - 30;
+    const diagOffset = offset * 0.707;
+    ctx.fillText('NE', cx + diagOffset, cy - diagOffset);
+    ctx.fillText('SE', cx + diagOffset, cy + diagOffset);
+    ctx.fillText('SW', cx - diagOffset, cy + diagOffset);
+    ctx.fillText('NW', cx - diagOffset, cy - diagOffset);
+    
+    // Draw compass star points
+    const starRadius = size/2 - 35;
+    
+    // 8 small diagonal points (22.5 degree offsets)
+    ctx.fillStyle = '#8a7a6a';
+    ctx.strokeStyle = '#5a4a3a';
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i < 8; i++) {
+        const angle = (22.5 + i * 45) * Math.PI / 180;
+        this._drawCompassPoint(ctx, cx, cy, angle, starRadius * 0.5, 3);
+    }
+    
+    // 4 intercardinal points (45, 135, 225, 315)
+    ctx.fillStyle = '#6a5a4a';
+    ctx.strokeStyle = '#4a3a2a';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 4; i++) {
+        const angle = (45 + i * 90) * Math.PI / 180;
+        this._drawCompassPoint(ctx, cx, cy, angle, starRadius * 0.7, 5);
+    }
+    
+    // 4 cardinal points (N, E, S, W)
+    // North - Red
+    ctx.fillStyle = '#8b0000';
+    ctx.strokeStyle = '#5a0000';
+    ctx.lineWidth = 1;
+    this._drawCompassPoint(ctx, cx, cy, 0, starRadius, 8);
+    
+    // South, East, West - Dark brown
+    ctx.fillStyle = '#4a3a2a';
+    ctx.strokeStyle = '#2a1a0a';
+    this._drawCompassPoint(ctx, cx, cy, Math.PI, starRadius, 8);
+    this._drawCompassPoint(ctx, cx, cy, Math.PI/2, starRadius, 8);
+    this._drawCompassPoint(ctx, cx, cy, -Math.PI/2, starRadius, 8);
+    
+    // Center decoration
+    ctx.beginPath();
+    ctx.arc(cx, cy, 12, 0, Math.PI * 2);
+    ctx.fillStyle = '#d4c4a8';
+    ctx.fill();
+    ctx.strokeStyle = '#5a4a3a';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    
+    ctx.beginPath();
+    ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+    ctx.fillStyle = '#c4b393';
+    ctx.fill();
+    ctx.strokeStyle = '#6a5a4a';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+    ctx.fillStyle = '#4a3a2a';
+    ctx.fill();
+    
+    ctx.restore();
+},
+
+/**
+ * Draw a single compass point (triangle)
+ */
+_drawCompassPoint(ctx, cx, cy, angle, length, width) {
+    const tipX = cx + Math.sin(angle) * length;
+    const tipY = cy - Math.cos(angle) * length;
+    const baseX = cx + Math.sin(angle) * 12;
+    const baseY = cy - Math.cos(angle) * 12;
+    
+    // Perpendicular offset for base width
+    const perpX = Math.cos(angle) * width;
+    const perpY = Math.sin(angle) * width;
+    
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(baseX + perpX, baseY + perpY);
+    ctx.lineTo(cx, cy);
+    ctx.lineTo(baseX - perpX, baseY - perpY);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
 },
 /**
  * Set hovered cell and re-render
