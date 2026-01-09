@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=Inter:wght@300;400;500;600;700&family=Cinzel:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=205">
+    <link rel="stylesheet" href="styles.css?v=300">
 </head>
 <body>
     <!-- Cartography Loading Screen -->
@@ -122,12 +122,9 @@
                 <div class="view-switcher">
                     <select id="render-mode">
                         <option value="political" selected>Political Map</option>
-                        <option value="landmass">Landmass View</option>
                         <option value="terrain">Terrain</option>
-                        <option value="rivers">Flow Arrows</option>
                         <option value="heightmap">Heightmap</option>
                         <option value="precipitation">Precipitation</option>
-                        <option value="cells">Cells Only</option>
                     </select>
                 </div>
                 <div class="zoom-widget">
@@ -152,280 +149,232 @@
         <div class="main-layout">
             <!-- Sidebar -->
             <aside class="sidebar">
-                <nav class="sidebar-nav">
-                    <button class="nav-tab active" data-panel="world">World</button>
-                    <button class="nav-tab" data-panel="terrain">Terrain</button>
-                    <button class="nav-tab" data-panel="climate">Climate</button>
-                    <button class="nav-tab" data-panel="nations">Nations</button>
-                    <button class="nav-tab" data-panel="display">Display</button>
-                </nav>
+                <!-- Generate Button at top -->
+                <div class="sidebar-header">
+                    <button class="generate-main-btn" id="generate-btn-sidebar">
+                        <svg viewBox="0 0 24 24"><path d="M12 3v3m0 12v3M3 12h3m12 0h3m-2.6-6.4l-2.1 2.1m-8.6 8.6l-2.1 2.1m0-12.8l2.1 2.1m8.6 8.6l2.1 2.1"/></svg>
+                        New World
+                    </button>
+                </div>
 
-                <div class="sidebar-content">
-                    <!-- World Panel -->
-                    <section class="panel active" id="panel-world">
-                        <div class="field-group">
-                            <label class="field-label">Seed</label>
-                            <div class="input-with-btn">
-                                <input type="number" id="seed" value="12345" min="1">
-                                <button class="icon-btn" id="random-seed" title="Random Seed">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                <div class="sidebar-scroll">
+                    <!-- Seed & Basic -->
+                    <div class="ctrl-group">
+                        <div class="ctrl-row">
+                            <span class="ctrl-label">Seed</span>
+                            <div class="ctrl-input-wrap">
+                                <input type="number" id="seed" value="12345" class="ctrl-input">
+                                <button class="ctrl-icon-btn" id="random-seed" title="Randomize">
+                                    <svg viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
                                 </button>
                             </div>
                         </div>
-                        <div class="field-group">
-                            <label class="field-label">Cells</label>
-                            <input type="number" id="cell-count" value="50000" min="100" max="100000" step="1000">
+                        <div class="ctrl-row">
+                            <span class="ctrl-label">Cells</span>
+                            <input type="number" id="cell-count" value="50000" min="100" max="100000" step="1000" class="ctrl-input">
                         </div>
-                        <div class="field-group">
-                            <label class="field-label">Distribution</label>
-                            <select id="distribution">
+                        <div class="ctrl-row">
+                            <span class="ctrl-label">Layout</span>
+                            <select id="distribution" class="ctrl-select">
                                 <option value="random">Random</option>
-                                <option value="jittered" selected>Jittered Grid</option>
-                                <option value="poisson">Poisson Disk</option>
-                                <option value="relaxed">Pre-relaxed</option>
+                                <option value="jittered" selected>Jittered</option>
+                                <option value="poisson">Poisson</option>
+                                <option value="relaxed">Relaxed</option>
                             </select>
                         </div>
-                        <div class="stats-grid">
-                            <div class="stat-item">
-                                <span class="stat-value" id="stat-cells">0</span>
-                                <span class="stat-label">Cells</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-value" id="stat-land">0%</span>
-                                <span class="stat-label">Land</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-value" id="stat-gen-time">0ms</span>
-                                <span class="stat-label">Gen</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-value" id="stat-render-time">0ms</span>
-                                <span class="stat-label">Render</span>
-                            </div>
-                        </div>
-                        <span id="stat-visible" style="display:none">0</span>
-                    </section>
+                    </div>
 
-                    <!-- Terrain Panel -->
-                    <section class="panel" id="panel-terrain">
-                        <div class="field-group">
-                            <label class="field-label">Algorithm</label>
-                            <select id="noise-algorithm">
+                    <!-- Terrain -->
+                    <div class="ctrl-section">
+                        <div class="ctrl-section-head">
+                            <span>Terrain</span>
+                            <button class="ctrl-action-btn" id="generate-heightmap-btn">Regenerate</button>
+                        </div>
+                        <div class="ctrl-row">
+                            <span class="ctrl-label">Type</span>
+                            <select id="noise-algorithm" class="ctrl-select">
                                 <option value="continental" selected>Continental</option>
-                                <option value="eroded">Eroded Valleys</option>
-                                <option value="multiwarp">Multi-Warp</option>
-                                <option value="swiss">Rolling Hills</option>
-                                <option value="valleys">River Valleys</option>
+                                <option value="eroded">Eroded</option>
+                                <option value="multiwarp">Warped</option>
+                                <option value="swiss">Hills</option>
+                                <option value="valleys">Valleys</option>
                                 <option value="terraced">Plateaus</option>
-                                <option value="ridged">Mountain Ridges</option>
-                                <option value="warped">Organic Warp</option>
-                                <option value="fbm">Classic FBM</option>
-                                <option value="simplex">Simple Noise</option>
+                                <option value="ridged">Ridges</option>
+                                <option value="fbm">FBM</option>
                             </select>
                         </div>
-                        <div class="field-group">
-                            <label class="field-label">
-                                <span>Scale</span>
-                                <span class="field-value" id="noise-frequency-value">3.0</span>
-                            </label>
+                        <div class="ctrl-slider">
+                            <span>Scale</span>
                             <input type="range" id="noise-frequency" min="0.5" max="8" step="0.1" value="3">
+                            <span class="ctrl-val" id="noise-frequency-value">3.0</span>
                         </div>
-                        <div class="field-group">
-                            <label class="field-label">
-                                <span>Detail</span>
-                                <span class="field-value" id="noise-octaves-value">6</span>
-                            </label>
+                        <div class="ctrl-slider">
+                            <span>Detail</span>
                             <input type="range" id="noise-octaves" min="1" max="8" step="1" value="6">
+                            <span class="ctrl-val" id="noise-octaves-value">6</span>
                         </div>
-                        <div class="field-group">
-                            <label class="field-label">
-                                <span>Sea Level</span>
-                                <span class="field-value" id="sea-level-value">0.40</span>
-                            </label>
+                        <div class="ctrl-slider">
+                            <span>Sea Level</span>
                             <input type="range" id="sea-level" min="0" max="0.8" step="0.01" value="0.4">
+                            <span class="ctrl-val" id="sea-level-value">0.40</span>
                         </div>
-                        <div class="field-group">
-                            <label class="field-label">Edge Falloff</label>
-                            <select id="falloff-type">
+                        <div class="ctrl-row">
+                            <span class="ctrl-label">Edge</span>
+                            <select id="falloff-type" class="ctrl-select">
                                 <option value="none">None</option>
-                                <option value="radial" selected>Island (Radial)</option>
+                                <option value="radial" selected>Island</option>
                                 <option value="square">Square</option>
                             </select>
                         </div>
-                        <div class="field-group">
-                            <label class="field-label">
-                                <span>Falloff Strength</span>
-                                <span class="field-value" id="falloff-strength-value">0.70</span>
-                            </label>
+                        <div class="ctrl-slider">
+                            <span>Falloff</span>
                             <input type="range" id="falloff-strength" min="0" max="1" step="0.05" value="0.7">
+                            <span class="ctrl-val" id="falloff-strength-value">0.70</span>
                         </div>
-                        <div class="field-group">
-                            <label class="field-label">
-                                <span>Smoothing</span>
-                                <span class="field-value" id="smoothing-value">0</span>
-                            </label>
+                        <div class="ctrl-slider">
+                            <span>Smooth</span>
                             <input type="range" id="smoothing" min="0" max="10" step="1" value="0">
+                            <span class="ctrl-val" id="smoothing-value">0</span>
                         </div>
-                        <div class="field-group">
-                            <label class="field-label">
-                                <span>Smooth Strength</span>
-                                <span class="field-value" id="smoothing-strength-value">0.60</span>
-                            </label>
+                        <div class="ctrl-slider" style="display:none">
+                            <span>Str</span>
                             <input type="range" id="smoothing-strength" min="0" max="1" step="0.05" value="0.6">
+                            <span class="ctrl-val" id="smoothing-strength-value">0.60</span>
                         </div>
-                        <button class="action-btn" id="generate-heightmap-btn">Regenerate Terrain</button>
-                        
-                        <div class="section-divider"></div>
-                        <h4 class="section-title">Hydraulic Erosion</h4>
-                        
-                        <div class="field-group">
-                            <label class="field-label">
-                                <span>Erosion Iterations</span>
-                                <span class="field-value" id="erosion-iterations-value">200000</span>
-                            </label>
-                            <input type="range" id="erosion-iterations" min="10000" max="200000" step="10000" value="200000">
-                        </div>
-                        <div class="field-group">
-                            <label class="field-label">
-                                <span>Erosion Strength</span>
-                                <span class="field-value" id="erosion-strength-value">1.00</span>
-                            </label>
-                            <input type="range" id="erosion-strength" min="0.1" max="1.0" step="0.05" value="1.0">
-                        </div>
-                        <div class="field-group">
-                            <label class="field-label">
-                                <span>Valley Width</span>
-                                <span class="field-value" id="deposition-rate-value">0.60</span>
-                            </label>
-                            <input type="range" id="deposition-rate" min="0.1" max="0.8" step="0.05" value="0.6">
-                        </div>
-                        <button class="action-btn" id="apply-erosion-btn">Apply Erosion</button>
-                    </section>
+                    </div>
 
-                    <!-- Climate Panel -->
-                    <section class="panel" id="panel-climate">
-                        <div class="field-group">
-                            <label class="field-label">Wind From</label>
-                            <select id="wind-direction">
-                                <option value="0">North ↓</option>
-                                <option value="45">Northeast ↙</option>
-                                <option value="90">East ←</option>
-                                <option value="135">Southeast ↖</option>
-                                <option value="180">South ↑</option>
-                                <option value="225">Southwest ↗</option>
-                                <option value="270" selected>West →</option>
-                                <option value="315">Northwest ↘</option>
+                    <!-- Erosion -->
+                    <div class="ctrl-section">
+                        <div class="ctrl-section-head">
+                            <span>Erosion</span>
+                            <button class="ctrl-action-btn" id="apply-erosion-btn">Apply</button>
+                        </div>
+                        <div class="ctrl-slider">
+                            <span>Iterations</span>
+                            <input type="range" id="erosion-iterations" min="10000" max="200000" step="10000" value="200000">
+                            <span class="ctrl-val" id="erosion-iterations-value">200k</span>
+                        </div>
+                        <div class="ctrl-slider">
+                            <span>Strength</span>
+                            <input type="range" id="erosion-strength" min="0.1" max="1.0" step="0.05" value="1.0">
+                            <span class="ctrl-val" id="erosion-strength-value">1.00</span>
+                        </div>
+                        <div class="ctrl-slider">
+                            <span>Valleys</span>
+                            <input type="range" id="deposition-rate" min="0.1" max="0.8" step="0.05" value="0.6">
+                            <span class="ctrl-val" id="deposition-rate-value">0.60</span>
+                        </div>
+                    </div>
+
+                    <!-- Climate -->
+                    <div class="ctrl-section">
+                        <div class="ctrl-section-head">
+                            <span>Climate</span>
+                            <div class="ctrl-action-group">
+                                <button class="ctrl-action-btn" id="generate-precip-btn">Rain</button>
+                                <button class="ctrl-action-btn" id="generate-rivers-btn">Rivers</button>
+                            </div>
+                        </div>
+                        <div class="ctrl-row">
+                            <span class="ctrl-label">Wind</span>
+                            <select id="wind-direction" class="ctrl-select">
+                                <option value="0">N ↓</option>
+                                <option value="45">NE ↙</option>
+                                <option value="90">E ←</option>
+                                <option value="135">SE ↖</option>
+                                <option value="180">S ↑</option>
+                                <option value="225">SW ↗</option>
+                                <option value="270" selected>W →</option>
+                                <option value="315">NW ↘</option>
                             </select>
                         </div>
-                        <div class="field-group">
-                            <label class="field-label">
-                                <span>Wind Strength</span>
-                                <span class="field-value" id="wind-strength-value">0.80</span>
-                            </label>
+                        <div class="ctrl-slider">
+                            <span>Strength</span>
                             <input type="range" id="wind-strength" min="0.1" max="1" step="0.1" value="0.8">
+                            <span class="ctrl-val" id="wind-strength-value">0.80</span>
                         </div>
-                        <div class="field-group">
-                            <label class="field-label">
-                                <span>Rivers</span>
-                                <span class="field-value" id="num-rivers-value">30</span>
-                            </label>
+                        <div class="ctrl-slider">
+                            <span>Rivers</span>
                             <input type="range" id="num-rivers" min="5" max="100" step="5" value="30">
+                            <span class="ctrl-val" id="num-rivers-value">30</span>
                         </div>
-                        <div class="toggle-row">
-                            <label class="toggle-label">
-                                <input type="checkbox" id="show-rivers" checked>
-                                <span class="toggle-switch"></span>
-                                <span>Show Rivers</span>
-                            </label>
-                        </div>
-                        <div class="toggle-row">
-                            <label class="toggle-label">
-                                <input type="checkbox" id="show-river-sources">
-                                <span class="toggle-switch"></span>
-                                <span>Show Sources</span>
-                            </label>
-                        </div>
-                        <div class="btn-row">
-                            <button class="action-btn" id="generate-precip-btn">Precipitation</button>
-                            <button class="action-btn" id="generate-rivers-btn">Rivers</button>
-                        </div>
-                    </section>
+                        <label class="ctrl-check">
+                            <input type="checkbox" id="show-rivers" checked>
+                            <span>Show Rivers</span>
+                        </label>
+                    </div>
 
-                    <!-- Nations Panel -->
-                    <section class="panel" id="panel-nations">
-                        <div class="field-group">
-                            <label class="field-label">
-                                <span>Kingdoms</span>
-                                <span class="field-value" id="num-kingdoms-value">12</span>
-                            </label>
+                    <!-- Nations -->
+                    <div class="ctrl-section">
+                        <div class="ctrl-section-head">
+                            <span>Nations</span>
+                            <button class="ctrl-action-btn" id="generate-kingdoms-btn">Generate</button>
+                        </div>
+                        <div class="ctrl-slider">
+                            <span>Kingdoms</span>
                             <input type="range" id="num-kingdoms" min="3" max="30" step="1" value="12">
+                            <span class="ctrl-val" id="num-kingdoms-value">12</span>
                         </div>
-                        <div class="field-group">
-                            <label class="field-label">
-                                <span>Road Density</span>
-                                <span class="field-value" id="road-density-value">7</span>
-                            </label>
+                        <div class="ctrl-slider">
+                            <span>Roads</span>
                             <input type="range" id="road-density" min="0" max="10" step="1" value="7">
+                            <span class="ctrl-val" id="road-density-value">7</span>
                         </div>
-                        <div class="toggle-row">
-                            <label class="toggle-label">
-                                <input type="checkbox" id="dashed-borders">
-                                <span class="toggle-switch"></span>
-                                <span>Dashed Borders</span>
-                            </label>
-                        </div>
-                        <button class="action-btn" id="generate-kingdoms-btn">Generate Kingdoms</button>
-                    </section>
+                    </div>
 
-                    <!-- Display Panel -->
-                    <section class="panel" id="panel-display">
-                        <div class="field-group">
-                            <label class="field-label">
-                                <span>Contour Smoothing</span>
-                                <span class="field-value" id="subdivision-value">2</span>
-                            </label>
+                    <!-- Display -->
+                    <div class="ctrl-section">
+                        <div class="ctrl-section-head"><span>Display</span></div>
+                        <div class="ctrl-slider">
+                            <span>Contours</span>
                             <input type="range" id="subdivision" min="0" max="4" step="1" value="2">
+                            <span class="ctrl-val" id="subdivision-value">2</span>
                         </div>
-                        <div class="toggle-row">
-                            <label class="toggle-label">
-                                <input type="checkbox" id="show-windrose">
-                                <span class="toggle-switch"></span>
-                                <span>Wind Rose</span>
-                            </label>
-                        </div>
-                        <div class="toggle-row">
-                            <label class="toggle-label">
+                        <div class="ctrl-checks">
+                            <label class="ctrl-check">
                                 <input type="checkbox" id="show-edges" checked>
-                                <span class="toggle-switch"></span>
-                                <span>Cell Edges</span>
+                                <span>Edges</span>
                             </label>
-                        </div>
-                        <div class="toggle-row">
-                            <label class="toggle-label">
+                            <label class="ctrl-check">
                                 <input type="checkbox" id="show-centers">
-                                <span class="toggle-switch"></span>
-                                <span>Cell Centers</span>
+                                <span>Centers</span>
                             </label>
-                        </div>
-                        <div class="toggle-row">
-                            <label class="toggle-label">
+                            <label class="ctrl-check">
                                 <input type="checkbox" id="show-delaunay">
-                                <span class="toggle-switch"></span>
-                                <span>Delaunay Mesh</span>
+                                <span>Mesh</span>
+                            </label>
+                            <label class="ctrl-check">
+                                <input type="checkbox" id="show-windrose">
+                                <span>Compass Rose</span>
                             </label>
                         </div>
-                        <div class="divider"></div>
-                        <div class="field-group">
-                            <label class="field-label">Suggested Cells</label>
-                            <span class="suggested-value" id="suggested-cells">50,000</span>
+                    </div>
+
+                    <!-- Export -->
+                    <div class="ctrl-section">
+                        <div class="ctrl-section-head"><span>Export</span></div>
+                        <div class="ctrl-export-row">
+                            <button class="ctrl-export-btn" id="export-png">
+                                <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                                PNG
+                            </button>
+                            <button class="ctrl-export-btn" id="export-json">
+                                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
+                                JSON
+                            </button>
                         </div>
-                        <button class="action-btn" id="redraw-btn">Redraw at Resolution</button>
-                        <div class="divider"></div>
-                        <div class="btn-row">
-                            <button class="action-btn secondary" id="export-json">Export JSON</button>
-                            <button class="action-btn secondary" id="export-png">Export PNG</button>
-                        </div>
-                    </section>
+                    </div>
+                </div>
+
+                <!-- Stats Footer -->
+                <div class="sidebar-footer">
+                    <div class="stats-bar">
+                        <span><b id="stat-cells">0</b> cells</span>
+                        <span><b id="stat-land">0%</b> land</span>
+                        <span><b id="stat-gen-time">0</b>ms</span>
+                    </div>
+                    <span id="stat-visible" style="display:none">0</span>
+                    <span id="stat-render-time" style="display:none">0</span>
                 </div>
             </aside>
 
@@ -440,25 +389,9 @@
     <script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6"></script>
     <script src="https://cdn.jsdelivr.net/npm/d3-contour@4"></script>
     
-    <!-- Tab Navigation (UI only) -->
+    <!-- Loading Progress -->
     <script>
     document.addEventListener('DOMContentLoaded', () => {
-        // Tab switching
-        const tabs = document.querySelectorAll('.nav-tab');
-        const panels = document.querySelectorAll('.panel');
-        
-        tabs.forEach(tab => {
-            tab.addEventListener('click', () => {
-                const target = tab.dataset.panel;
-                
-                tabs.forEach(t => t.classList.remove('active'));
-                panels.forEach(p => p.classList.remove('active'));
-                
-                tab.classList.add('active');
-                document.getElementById('panel-' + target)?.classList.add('active');
-            });
-        });
-        
         // Progress bar updates based on loading status
         const progressFill = document.getElementById('loading-progress');
         const statusEl = document.getElementById('loading-status');
@@ -487,6 +420,6 @@
     });
     </script>
     
-    <script type="module" src="app.js?v=205"></script>
+    <script type="module" src="app.js?v=300"></script>
 </body>
 </html>

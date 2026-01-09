@@ -284,19 +284,24 @@ export class NameGenerator {
     }
     
     /**
-     * Generate river name
+     * Generate river name - shorter, elegant style for maps
      */
     _generateRiverName() {
         const style = this._random();
+        const culture = this._pickCulture();
+        const baseName = this._pick(culture.starts);
         
-        if (style < 0.5) {
-            return this._generateBaseName() + ' River';
-        } else if (style < 0.75) {
-            const adjectives = ['Crystal', 'Silver', 'Golden', 'Winding', 'Swift', 'White',
-                               'Black', 'Blue', 'Green', 'Red', 'Long', 'Great'];
-            return 'The ' + this._pick(adjectives) + ' River';
+        if (style < 0.6) {
+            // Simple: "Name R." or "R. Name"
+            return baseName + ' R.';
+        } else if (style < 0.85) {
+            // With suffix: "Namebrook", "Namewater"
+            const suffixes = ['brook', 'water', 'burn', 'beck', 'run'];
+            return baseName + this._pick(suffixes);
         } else {
-            return 'River ' + this._generateBaseName();
+            // Adjective style: "Blue R.", "Swift R."
+            const adjectives = ['Blue', 'White', 'Black', 'Red', 'Swift', 'Long', 'Clear'];
+            return this._pick(adjectives) + ' R.';
         }
     }
     

@@ -75,9 +75,7 @@ export class VoronoiGenerator {
         this.showDelaunay = false;
         this.showWindrose = false;  // Show compass/wind rose on map
         this.showRivers = true;  // Show rivers on terrain
-        this.showRiverSources = false;  // Show river start points
-        this.dashedBorders = false;  // Use dashed lines for internal kingdom borders
-        this.renderMode = 'political'; // 'cells', 'heightmap', 'terrain', 'precipitation', 'political', 'landmass'
+        this.renderMode = 'political'; // 'heightmap', 'terrain', 'precipitation', 'political'
         this.seaLevel = 0.4;
         this.subdivisionLevel = 2;  // 0 = no subdivision, 1-4 = subdivision levels
         
@@ -213,8 +211,9 @@ export class VoronoiGenerator {
     _onMouseMove(e) {
         if (!this.isDragging) return;
         
-        const dx = e.clientX - this.dragStart.x;
-        const dy = e.clientY - this.dragStart.y;
+        const panSpeed = 2.0; // Pan speed multiplier
+        const dx = (e.clientX - this.dragStart.x) * panSpeed;
+        const dy = (e.clientY - this.dragStart.y) * panSpeed;
         
         this.viewport.x = this.lastPan.x + dx;
         this.viewport.y = this.lastPan.y + dy;
@@ -254,8 +253,9 @@ export class VoronoiGenerator {
         if (e.touches.length === 1 && this.isDragging) {
             e.preventDefault();
             const touch = e.touches[0];
-            const dx = touch.clientX - this.dragStart.x;
-            const dy = touch.clientY - this.dragStart.y;
+            const panSpeed = 2.0; // Pan speed multiplier
+            const dx = (touch.clientX - this.dragStart.x) * panSpeed;
+            const dy = (touch.clientY - this.dragStart.y) * panSpeed;
             
             this.viewport.x = this.lastPan.x + dx;
             this.viewport.y = this.lastPan.y + dy;
@@ -378,103 +378,6 @@ export class VoronoiGenerator {
     }
     
     /**
-     * Store the current visible region bounds for redraw
-     */
-    captureVisibleRegion() {
-        return {
-            bounds: this.getVisibleBounds(),
-            zoom: this.viewport.zoom
-        };
-    }
-    
-    /**
-     * Regenerate cells at enhanced resolution for current viewport
-     * Redraws with more cells to fill the zoomed-in view
-     */
-    redrawAtResolution(options = {}) {
-        const {
-            cellCount = null,       // Target cell count, null = auto-calculate
-            distribution = null,    // null = keep current
-            seed = null,            // null = keep current
-            regenerateHeightmap = true
-        } = options;
-        
-        const bounds = this.getVisibleBounds();
-        const zoom = this.viewport.zoom;
-        
-        // If not zoomed in, nothing to enhance
-        if (zoom <= 1.0) {
-            console.log('Redraw skipped: not zoomed in');
-            return null;
-        }
-        
-        // Calculate visible region dimensions
-        const visibleWidth = bounds.right - bounds.left;
-        const visibleHeight = bounds.bottom - bounds.top;
-        const visibleArea = visibleWidth * visibleHeight;
-        const totalArea = this.width * this.height;
-        
-        // Store current settings
-        const currentSeed = this._lastSeed || 12345;
-        const currentDistribution = this._lastDistribution || 'jittered';
-        const heightmapOptions = this._lastHeightmapOptions || null;
-        
-        // Calculate new cell count to maintain visual density
-        // More zoom = we're seeing less area, so we need more cells per unit area
-        const baseDensity = this.cellCount / totalArea;
-        const targetCellCount = cellCount || Math.min(
-            150000, 
-            Math.max(5000, Math.round(totalArea * baseDensity * zoom))
-        );
-        
-        // Store region info for the generation
-        this._redrawRegion = {
-            left: bounds.left,
-            top: bounds.top, 
-            right: bounds.right,
-            bottom: bounds.bottom,
-            originalWidth: this.width,
-            originalHeight: this.height
-        };
-        
-        // Generate new cells focused on visible region
-        const result = this.generate({
-            cellCount: targetCellCount,
-            distribution: distribution || currentDistribution,
-            seed: seed || currentSeed,
-            region: this._redrawRegion
-        });
-        
-        // Reset viewport since we regenerated for this view
-        this.viewport.x = 0;
-        this.viewport.y = 0;
-        this.viewport.zoom = 1;
-        
-        // Regenerate heightmap if requested and we had one
-        if (regenerateHeightmap && heightmapOptions) {
-            this.generateHeightmap(heightmapOptions);
-        }
-        
-        this._onZoomChange();
-        
-        return {
-            previousZoom: zoom,
-            previousBounds: bounds,
-            newCellCount: targetCellCount,
-            metrics: result
-        };
-    }
-    
-    /**
-     * Get suggested cell count for current zoom level
-     */
-    getSuggestedCellCount() {
-        const zoom = this.viewport.zoom;
-        const baseDensity = (this.cellCount || 50000) / (this.width * this.height);
-        return Math.min(150000, Math.max(5000, Math.round(this.width * this.height * baseDensity * zoom)));
-    }
-    
-    /**
      * Resize canvas to container
      */
     resize() {
@@ -499,7 +402,7 @@ export class VoronoiGenerator {
     /**
      * Generate points with specified distribution
      */
-    generate(count, distribution = 'jittered', seed = 12345) {
+    generate(count, distribution = 'jittered', seed = 12345, heightmapOptions = null) {
         const start = performance.now();
         
         // Store settings for potential redraw
@@ -530,22 +433,25 @@ export class VoronoiGenerator {
         const w = this.width - margin * 2;
         const h = this.height - margin * 2;
         
+        // Generate land probability map for biased distribution
+        const landProb = heightmapOptions ? this._generateLandProbabilityMap(seed, heightmapOptions) : null;
+        
         switch (distribution) {
             case 'random':
-                this._generateRandom(margin, w, h);
+                this._generateRandomBiased(margin, w, h, landProb);
                 break;
             case 'jittered':
-                this._generateJittered(margin, w, h);
+                this._generateJitteredBiased(margin, w, h, landProb);
                 break;
             case 'poisson':
-                this._generatePoisson(margin, w, h);
+                this._generatePoissonBiased(margin, w, h, landProb);
                 break;
             case 'relaxed':
-                this._generateJittered(margin, w, h);
+                this._generateJitteredBiased(margin, w, h, landProb);
                 this._relaxPoints(3); // 3 iterations of Lloyd relaxation
                 break;
             default:
-                this._generateJittered(margin, w, h);
+                this._generateJitteredBiased(margin, w, h, landProb);
         }
         
         this.updateDiagram();
@@ -1257,7 +1163,6 @@ export class VoronoiGenerator {
         this.lakes = [];
         this.lakeCells = new Set();
         this.lakeDepths = new Map();
-        this.riverStartPoints = [];
         
         // Find all land cells
         const landCells = [];
@@ -1272,14 +1177,6 @@ export class VoronoiGenerator {
         // Place river start points randomly across high elevation areas
         const startCells = this._selectRiverStartPoints(landCells, numberOfRivers);
         
-        // Store start points for visualization
-        this.riverStartPoints = startCells.map(cell => ({
-            cell: cell,
-            x: this.points[cell * 2],
-            y: this.points[cell * 2 + 1],
-            elevation: this.heights[cell]
-        }));
-        
         console.log(`=== RIVER v11 (Independent rivers): Tracing ${startCells.length} rivers ===`);
         
         // Trace each river to ocean
@@ -1291,6 +1188,9 @@ export class VoronoiGenerator {
                 reachedOcean++;
             }
         }
+        
+        // Generate names for rivers
+        this._generateRiverNames();
         
         console.log(`Created ${reachedOcean} rivers (from ${startCells.length} starts)`);
     }
@@ -1553,13 +1453,8 @@ export class VoronoiGenerator {
             }
         }
         
-        // Smooth kingdom borders and remove exclaves - interleaved for best results
-        for (let round = 0; round < 2; round++) {
-            this._smoothKingdomBorders(2);
-            this._removeKingdomExclaves();
-        }
-        
-        // Final exclave cleanup pass
+        // Smooth kingdom borders and remove exclaves - single pass is usually sufficient
+        this._smoothKingdomBorders(2);
         this._removeKingdomExclaves();
         
         // Update kingdom count
@@ -1802,7 +1697,7 @@ export class VoronoiGenerator {
         this.cities = [];      // Array of {cell, kingdom, type}
         this.cityNames = [];
         
-        // Build a set of river cells and near-river cells
+        // Build a set of river cells and near-river cells for scoring
         const riverCells = new Set();
         const nearRiverCells = new Set();
         if (this.rivers) {
@@ -1812,7 +1707,6 @@ export class VoronoiGenerator {
                         const cellIdx = point.cell !== undefined ? point.cell : point;
                         if (cellIdx >= 0) {
                             riverCells.add(cellIdx);
-                            // Mark neighbors as near-river (good for cities)
                             const neighbors = this.getNeighbors(cellIdx);
                             for (const n of neighbors) {
                                 if (!riverCells.has(n) && this.heights[n] >= ELEVATION.SEA_LEVEL) {
@@ -1825,7 +1719,7 @@ export class VoronoiGenerator {
             }
         }
         
-        // Build set of coastal cells
+        // Build set of coastal cells for scoring
         const coastalCells = new Set();
         for (let i = 0; i < this.cellCount; i++) {
             if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
@@ -1843,15 +1737,13 @@ export class VoronoiGenerator {
             if (!cells || cells.length === 0) continue;
             
             const capitolCell = this.capitols[k];
-            const centroid = this.kingdomCentroids[k];
             
             // Calculate number of cities based on kingdom size and road density
-            // roadDensity 0 = minimal, 5 = normal, 10 = maximum
             const density = this.roadDensity !== undefined ? this.roadDensity : 5;
-            if (density === 0) continue; // Skip cities entirely if density is 0
+            if (density === 0) continue;
             
-            const densityFactor = 0.5 + (density / 5); // 0.5 to 2.5 range
-            const baseNumCities = Math.floor(cells.length / 40); // More cities base (was 60)
+            const densityFactor = 0.5 + (density / 5);
+            const baseNumCities = Math.floor(cells.length / 40);
             const numCities = Math.min(20, Math.max(1, Math.floor(baseNumCities * densityFactor)));
             
             // Score all cells for city placement
@@ -1871,7 +1763,7 @@ export class VoronoiGenerator {
                     const x = this.points[cellIdx * 2];
                     const y = this.points[cellIdx * 2 + 1];
                     const distToCapitol = Math.sqrt((x - capX) ** 2 + (y - capY) ** 2);
-                    if (distToCapitol < 40) continue; // Minimum distance from capitol
+                    if (distToCapitol < 40) continue;
                 }
                 
                 let score = 0;
@@ -1879,60 +1771,42 @@ export class VoronoiGenerator {
                 const isOnRiver = riverCells.has(cellIdx);
                 const isNearRiver = nearRiverCells.has(cellIdx);
                 
-                // Skip cells that are directly on rivers (cities go beside rivers)
+                // Skip cells directly on rivers
                 if (isOnRiver) continue;
                 
-                // Determine city type based on location
-                let cityType = 'town';
-                
+                // Score based on location (all are just "city" type now)
                 if (isCoastal) {
-                    cityType = 'port';
                     score += 30;
-                } else if (height > 1800) {
-                    cityType = 'fortress';
-                    score += 15; // Fortresses are less common
                 } else if (isNearRiver) {
-                    cityType = 'town';
-                    score += 40; // Near-river towns are valuable
+                    score += 40;
                 }
                 
-                // Elevation scoring for towns
-                if (cityType === 'town') {
-                    if (height > 1200) {
-                        score += 5;
-                    } else if (height > 500) {
-                        score += 20; // Ideal
-                    } else if (height > 100) {
-                        score += 15;
-                    } else {
-                        score += 10;
-                    }
+                // Elevation scoring
+                if (height > 1200) {
+                    score += 5;
+                } else if (height > 500) {
+                    score += 20;
+                } else if (height > 100) {
+                    score += 15;
+                } else {
+                    score += 10;
                 }
                 
-                // Some randomness to spread cities out
+                // Randomness to spread cities
                 score += Math.random() * 25;
                 
-                cellScores.push({ cell: cellIdx, score, type: cityType });
+                cellScores.push({ cell: cellIdx, score });
             }
             
             // Sort by score descending
             cellScores.sort((a, b) => b.score - a.score);
             
             // Select cities ensuring minimum distance between them
-            // Distance scales inversely with density
             const selectedCities = [];
-            const minCityDistance = Math.max(25, 50 - density * 2); // 30-50 range based on density
-            let portCount = 0;
-            let fortressCount = 0;
-            const maxPorts = Math.ceil(3 + density / 3); // 3-6 ports
-            const maxFortresses = Math.ceil(2 + density / 4); // 2-4 fortresses
+            const minCityDistance = Math.max(25, 50 - density * 2);
             
             for (const candidate of cellScores) {
                 if (selectedCities.length >= numCities) break;
-                
-                // Check type limits
-                if (candidate.type === 'port' && portCount >= maxPorts) continue;
-                if (candidate.type === 'fortress' && fortressCount >= maxFortresses) continue;
                 
                 const x = this.points[candidate.cell * 2];
                 const y = this.points[candidate.cell * 2 + 1];
@@ -1953,11 +1827,8 @@ export class VoronoiGenerator {
                     selectedCities.push({
                         cell: candidate.cell,
                         kingdom: k,
-                        type: candidate.type
+                        type: 'city'  // All non-capitals are just cities now
                     });
-                    
-                    if (candidate.type === 'port') portCount++;
-                    if (candidate.type === 'fortress') fortressCount++;
                 }
             }
             
@@ -2557,8 +2428,8 @@ export class VoronoiGenerator {
      * Reassigns disconnected cells to nearest appropriate kingdom
      */
     _removeKingdomExclaves() {
-        // Run multiple passes until no more exclaves exist
-        let maxIterations = 20;
+        // Limit iterations - some small exclaves are acceptable
+        const maxIterations = 3;
         let iteration = 0;
         let totalRemoved = 0;
         
@@ -2614,28 +2485,8 @@ export class VoronoiGenerator {
                         }
                     }
                     
-                    // If no land neighbors from other kingdoms, find nearest land cell from another kingdom
-                    if (bestKingdom < 0) {
-                        const x = this.points[i * 2];
-                        const y = this.points[i * 2 + 1];
-                        let nearestDist = Infinity;
-                        
-                        for (let j = 0; j < this.cellCount; j++) {
-                            const jk = this.kingdoms[j];
-                            if (jk < 0 || jk === k) continue;
-                            // Must be land
-                            if (this.heights[j] < ELEVATION.SEA_LEVEL) continue;
-                            
-                            const jx = this.points[j * 2];
-                            const jy = this.points[j * 2 + 1];
-                            const dist = (jx - x) ** 2 + (jy - y) ** 2;
-                            if (dist < nearestDist) {
-                                nearestDist = dist;
-                                bestKingdom = jk;
-                            }
-                        }
-                    }
-                    
+                    // If no land neighbors from other kingdoms, just unassign the cell
+                    // (Skip expensive O(n²) nearest-cell search)
                     if (bestKingdom >= 0) {
                         this.kingdoms[i] = bestKingdom;
                         removedThisPass++;
@@ -2873,6 +2724,47 @@ export class VoronoiGenerator {
         }
         
         return { path };
+    }
+    
+    /**
+     * Generate names for all rivers
+     */
+    _generateRiverNames() {
+        if (!this.rivers || this.rivers.length === 0) return;
+        
+        // Generate unique river names
+        const riverNames = this.nameGenerator.generateNames(this.rivers.length, 'river');
+        
+        // Assign names to rivers, prioritizing longer rivers
+        const sortedIndices = this.rivers
+            .map((r, i) => ({ index: i, length: r.path.length }))
+            .sort((a, b) => b.length - a.length)
+            .map(r => r.index);
+        
+        for (let i = 0; i < sortedIndices.length; i++) {
+            const riverIndex = sortedIndices[i];
+            this.rivers[riverIndex].name = riverNames[i];
+            
+            // Calculate midpoint for label placement
+            const path = this.rivers[riverIndex].path;
+            const midIndex = Math.floor(path.length / 2);
+            this.rivers[riverIndex].labelPoint = path[midIndex];
+            
+            // Calculate angle at midpoint for text rotation
+            if (midIndex > 0 && midIndex < path.length - 1) {
+                const prev = path[midIndex - 1];
+                const next = path[midIndex + 1];
+                const dx = next.x - prev.x;
+                const dy = next.y - prev.y;
+                let angle = Math.atan2(dy, dx);
+                // Normalize angle so text is never upside down
+                if (angle > Math.PI / 2) angle -= Math.PI;
+                if (angle < -Math.PI / 2) angle += Math.PI;
+                this.rivers[riverIndex].labelAngle = angle;
+            } else {
+                this.rivers[riverIndex].labelAngle = 0;
+            }
+        }
     }
     
     /**
@@ -3330,7 +3222,7 @@ export class VoronoiGenerator {
     }
 
     /**
-     * Random uniform distribution
+     * Random uniform distribution (fallback)
      */
     _generateRandom(margin, w, h) {
         for (let i = 0; i < this.cellCount; i++) {
@@ -3340,15 +3232,14 @@ export class VoronoiGenerator {
     }
     
     /**
-     * Jittered grid - more uniform than random
-     * Good for fantasy maps
+     * Jittered grid - fallback without biasing
      */
     _generateJittered(margin, w, h) {
         const cols = Math.ceil(Math.sqrt(this.cellCount * (w / h)));
         const rows = Math.ceil(this.cellCount / cols);
         const cellW = w / cols;
         const cellH = h / rows;
-        const jitter = 0.4; // Jitter amount (0-0.5)
+        const jitter = 0.4;
         
         let idx = 0;
         for (let row = 0; row < rows && idx < this.cellCount; row++) {
@@ -3361,6 +3252,282 @@ export class VoronoiGenerator {
                 idx++;
             }
         }
+    }
+    
+    /**
+     * Generate land probability map for biased distribution
+     */
+    _generateLandProbabilityMap(seed, heightmapOptions) {
+        const {
+            algorithm = 'continental',
+            frequency = 3,
+            seaLevel = 0.4,
+            falloff = 'radial',
+            falloffStrength = 0.7
+        } = heightmapOptions || {};
+        
+        Noise.init(seed);
+        
+        const cx = this.width / 2;
+        const cy = this.height / 2;
+        const maxDist = Math.sqrt(cx * cx + cy * cy);
+        const margin = 1;
+        const w = this.width - margin * 2;
+        const h = this.height - margin * 2;
+        
+        const gridSize = 32;
+        const landProb = new Float32Array(gridSize * gridSize);
+        
+        for (let gy = 0; gy < gridSize; gy++) {
+            for (let gx = 0; gx < gridSize; gx++) {
+                const x = margin + (gx + 0.5) * (w / gridSize);
+                const y = margin + (gy + 0.5) * (h / gridSize);
+                
+                const nx = x / this.width;
+                const ny = y / this.height;
+                
+                let noiseVal;
+                switch (algorithm) {
+                    case 'continental':
+                        noiseVal = Noise.continental(nx, ny, { frequency, octaves: 6 });
+                        break;
+                    case 'ridged':
+                        noiseVal = Noise.ridged(nx, ny, { frequency, octaves: 6 }) * 0.5;
+                        break;
+                    default:
+                        noiseVal = Noise.fbm(nx, ny, { frequency, octaves: 6 });
+                }
+                
+                if (falloff === 'radial') {
+                    const dx = x - cx;
+                    const dy = y - cy;
+                    const dist = Math.sqrt(dx * dx + dy * dy) / maxDist;
+                    noiseVal -= dist * falloffStrength * 2;
+                } else if (falloff === 'square') {
+                    const edgeDistX = Math.min(x - margin, margin + w - x) / (w / 2);
+                    const edgeDistY = Math.min(y - margin, margin + h - y) / (h / 2);
+                    const edgeDist = Math.min(edgeDistX, edgeDistY);
+                    noiseVal -= (1 - edgeDist) * falloffStrength;
+                }
+                
+                const threshold = (seaLevel - 0.5) * 2;
+                landProb[gy * gridSize + gx] = Math.max(0, Math.min(1, (noiseVal - threshold + 1) / 2));
+            }
+        }
+        
+        return { data: landProb, gridSize };
+    }
+    
+    /**
+     * Get density at a point based on land probability map
+     */
+    _getDensityAt(x, y, landProb, margin, w, h) {
+        if (!landProb) return 1;
+        
+        const { data, gridSize } = landProb;
+        const gx = Math.floor((x - margin) / w * gridSize);
+        const gy = Math.floor((y - margin) / h * gridSize);
+        const idx = Math.max(0, Math.min(gridSize - 1, gy)) * gridSize + Math.max(0, Math.min(gridSize - 1, gx));
+        const p = data[idx];
+        
+        return p * 3.0 + (1 - p) * 0.3;
+    }
+    
+    /**
+     * Land-biased random distribution
+     */
+    _generateRandomBiased(margin, w, h, landProb) {
+        if (!landProb) {
+            return this._generateRandom(margin, w, h);
+        }
+        
+        const points = [];
+        const targetCount = this.cellCount;
+        const maxAttempts = targetCount * 20;
+        let attempts = 0;
+        const maxDensity = 3.0;
+        
+        while (points.length < targetCount * 2 && attempts < maxAttempts) {
+            const x = margin + PRNG.random() * w;
+            const y = margin + PRNG.random() * h;
+            
+            const density = this._getDensityAt(x, y, landProb, margin, w, h);
+            const acceptProb = density / maxDensity;
+            
+            if (PRNG.random() < acceptProb) {
+                points.push(x, y);
+            }
+            attempts++;
+        }
+        
+        this.cellCount = Math.floor(points.length / 2);
+        this.points = new Float64Array(points);
+    }
+    
+    /**
+     * Land-biased jittered grid distribution
+     */
+    _generateJitteredBiased(margin, w, h, landProb) {
+        if (!landProb) {
+            return this._generateJittered(margin, w, h);
+        }
+        
+        const { data, gridSize } = landProb;
+        const landDensity = 3.0;
+        const oceanDensity = 0.3;
+        
+        let totalWeight = 0;
+        for (let i = 0; i < data.length; i++) {
+            const p = data[i];
+            totalWeight += p * landDensity + (1 - p) * oceanDensity;
+        }
+        
+        const avgWeight = totalWeight / data.length;
+        const basePointsPerCell = this.cellCount / (gridSize * gridSize * avgWeight);
+        
+        const points = [];
+        const cellW = w / gridSize;
+        const cellH = h / gridSize;
+        const jitter = 0.8;
+        
+        for (let gy = 0; gy < gridSize; gy++) {
+            for (let gx = 0; gx < gridSize; gx++) {
+                const p = data[gy * gridSize + gx];
+                const density = p * landDensity + (1 - p) * oceanDensity;
+                const numPoints = Math.round(basePointsPerCell * density);
+                
+                const cellLeft = margin + gx * cellW;
+                const cellTop = margin + gy * cellH;
+                
+                if (numPoints <= 1) {
+                    if (numPoints === 1 || PRNG.random() < density / landDensity) {
+                        const x = cellLeft + (0.5 + (PRNG.random() - 0.5) * jitter) * cellW;
+                        const y = cellTop + (0.5 + (PRNG.random() - 0.5) * jitter) * cellH;
+                        points.push(x, y);
+                    }
+                } else {
+                    const subCols = Math.ceil(Math.sqrt(numPoints));
+                    const subRows = Math.ceil(numPoints / subCols);
+                    const subW = cellW / subCols;
+                    const subH = cellH / subRows;
+                    
+                    let placed = 0;
+                    for (let sy = 0; sy < subRows && placed < numPoints; sy++) {
+                        for (let sx = 0; sx < subCols && placed < numPoints; sx++) {
+                            const x = cellLeft + (sx + 0.5 + (PRNG.random() - 0.5) * jitter) * subW;
+                            const y = cellTop + (sy + 0.5 + (PRNG.random() - 0.5) * jitter) * subH;
+                            points.push(x, y);
+                            placed++;
+                        }
+                    }
+                }
+            }
+        }
+        
+        this.cellCount = Math.floor(points.length / 2);
+        this.points = new Float64Array(points);
+        console.log(`Land-biased jittered: ${this.cellCount} cells`);
+    }
+    
+    /**
+     * Land-biased poisson disk sampling
+     */
+    _generatePoissonBiased(margin, w, h, landProb) {
+        if (!landProb) {
+            return this._generatePoisson(margin, w, h);
+        }
+        
+        const baseMinDist = Math.sqrt((w * h) / this.cellCount) * 0.8;
+        const minDistLand = baseMinDist * 0.6;
+        const minDistOcean = baseMinDist * 1.8;
+        
+        const cellSize = minDistLand / Math.SQRT2;
+        const gridW = Math.ceil(w / cellSize);
+        const gridH = Math.ceil(h / cellSize);
+        const grid = new Int32Array(gridW * gridH).fill(-1);
+        
+        const points = [];
+        const active = [];
+        const maxAttempts = 30;
+        
+        const startX = margin + PRNG.random() * w;
+        const startY = margin + PRNG.random() * h;
+        points.push(startX, startY);
+        
+        const gx = Math.floor((startX - margin) / cellSize);
+        const gy = Math.floor((startY - margin) / cellSize);
+        if (gx >= 0 && gx < gridW && gy >= 0 && gy < gridH) {
+            grid[gy * gridW + gx] = 0;
+        }
+        active.push(0);
+        
+        while (active.length > 0 && points.length / 2 < this.cellCount * 1.5) {
+            const randIdx = PRNG.int(0, active.length - 1);
+            const parentIdx = active[randIdx];
+            const px = points[parentIdx * 2];
+            const py = points[parentIdx * 2 + 1];
+            
+            const parentDensity = this._getDensityAt(px, py, landProb, margin, w, h);
+            const localMinDist = parentDensity > 1.5 ? minDistLand : minDistOcean;
+            
+            let found = false;
+            
+            for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                const angle = PRNG.random() * Math.PI * 2;
+                const dist = localMinDist + PRNG.random() * localMinDist;
+                const nx = px + Math.cos(angle) * dist;
+                const ny = py + Math.sin(angle) * dist;
+                
+                if (nx < margin || nx > margin + w || ny < margin || ny > margin + h) {
+                    continue;
+                }
+                
+                const ngx = Math.floor((nx - margin) / cellSize);
+                const ngy = Math.floor((ny - margin) / cellSize);
+                
+                const newDensity = this._getDensityAt(nx, ny, landProb, margin, w, h);
+                const checkDist = newDensity > 1.5 ? minDistLand : minDistOcean;
+                
+                let valid = true;
+                const checkRadius = Math.ceil(minDistOcean / cellSize) + 1;
+                
+                for (let dy = -checkRadius; dy <= checkRadius && valid; dy++) {
+                    for (let dx = -checkRadius; dx <= checkRadius && valid; dx++) {
+                        const cx = ngx + dx;
+                        const cy = ngy + dy;
+                        if (cx >= 0 && cx < gridW && cy >= 0 && cy < gridH) {
+                            const neighborIdx = grid[cy * gridW + cx];
+                            if (neighborIdx >= 0) {
+                                const ex = points[neighborIdx * 2];
+                                const ey = points[neighborIdx * 2 + 1];
+                                const d = Math.hypot(nx - ex, ny - ey);
+                                if (d < checkDist) valid = false;
+                            }
+                        }
+                    }
+                }
+                
+                if (valid) {
+                    const newIdx = points.length / 2;
+                    points.push(nx, ny);
+                    
+                    if (ngx >= 0 && ngx < gridW && ngy >= 0 && ngy < gridH) {
+                        grid[ngy * gridW + ngx] = newIdx;
+                    }
+                    active.push(newIdx);
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (!found) {
+                active.splice(randIdx, 1);
+            }
+        }
+        
+        this.cellCount = Math.floor(points.length / 2);
+        this.points = new Float64Array(points);
+        console.log(`Land-biased poisson: ${this.cellCount} cells`);
     }
     
     /**

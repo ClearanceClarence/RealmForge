@@ -37,9 +37,6 @@ render() {
         if (this.showRivers && this.rivers && this.rivers.length > 0) {
             this._renderRivers(ctx, bounds);
         }
-        if (this.showRiverSources && this.riverStartPoints && this.riverStartPoints.length > 0) {
-            this._renderRiverSources(ctx, bounds);
-        }
     }
     
     // Render precipitation if data exists
@@ -53,6 +50,9 @@ render() {
     
     // Render political map (kingdoms)
     if (this.renderMode === 'political') {
+        // Initialize hit boxes for hover detection
+        this._labelHitBoxes = [];
+        
         this._renderPoliticalMap(ctx, bounds);
         // Render contour lines (subtle elevation indicators)
         if (this.heights) {
@@ -78,33 +78,6 @@ render() {
             this._renderCities(ctx, bounds);
         }
         this._placedCityLabels = null;
-    }
-    
-    // Render landmass view
-    if (this.renderMode === 'landmass') {
-        this._renderLandmassMap(ctx, bounds);
-        if (this.showRivers && this.rivers && this.rivers.length > 0) {
-            this._renderRivers(ctx, bounds);
-        }
-    }
-    
-    // Render flow mode
-    if (this.renderMode === 'rivers') {
-        if (this.heights) {
-            this._renderTerrainCells(ctx, bounds);
-        }
-        // Always draw rivers in rivers mode
-        if (this.rivers && this.rivers.length > 0) {
-            this._renderRivers(ctx, bounds);
-        }
-        // Draw river source points
-        if (this.showRiverSources && this.riverStartPoints && this.riverStartPoints.length > 0) {
-            this._renderRiverSources(ctx, bounds);
-        }
-        // Draw flow direction arrows
-        if (this.drainage) {
-            this._renderFlowArrows(ctx, bounds);
-        }
     }
     
     // Render Delaunay triangulation (behind)
@@ -729,82 +702,6 @@ _collectKingdomBorderEdges() {
     }
     
     return borderEdges;
-},
-/**
- * Render landmass view - each landmass as a single merged polygon with smoothing
- */
-_renderLandmassMap(ctx, bounds) {
-    if (!this.heights) return;
-    
-    // Ocean color
-    const oceanColor = '#B8C9C4';
-    // Land color (parchment)
-    const landColor = '#E8DCC4';
-    // Border color
-    const borderColor = '#5A4A3A';
-    
-    // Fill entire visible area with ocean
-    ctx.fillStyle = oceanColor;
-    ctx.fillRect(bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top);
-    
-    // Build smooth coastline loops
-    if (!this._coastlineCache) { this._coastlineCache = this._buildSmoothCoastlineLoops(); } const smoothedLoops = this._coastlineCache;
-    
-    if (smoothedLoops.length === 0) return;
-    
-    // Use clipping to constrain land fill to smooth coastline
-    ctx.save();
-    ctx.beginPath();
-    for (const loop of smoothedLoops) {
-        if (loop.length < 3) continue;
-        ctx.moveTo(loop[0][0], loop[0][1]);
-        for (let i = 1; i < loop.length; i++) {
-            ctx.lineTo(loop[i][0], loop[i][1]);
-        }
-        ctx.closePath();
-    }
-    ctx.clip();
-    
-    // Fill land cells (clipped to smooth coastline)
-    ctx.fillStyle = landColor;
-    ctx.fillRect(bounds.left - 100, bounds.top - 100, 
-                 bounds.right - bounds.left + 200, bounds.bottom - bounds.top + 200);
-    
-    // Draw lakes on top with ocean color (still clipped)
-    if (this.lakeCells && this.lakeCells.size > 0) {
-        ctx.fillStyle = oceanColor;
-        for (const cellIndex of this.lakeCells) {
-            const cell = this.voronoi.cellPolygon(cellIndex);
-            if (!cell || cell.length < 3) continue;
-            
-            ctx.beginPath();
-            ctx.moveTo(cell[0][0], cell[0][1]);
-            for (let j = 1; j < cell.length; j++) {
-                ctx.lineTo(cell[j][0], cell[j][1]);
-            }
-            ctx.closePath();
-            ctx.fill();
-        }
-    }
-    
-    // Restore (remove clipping)
-    ctx.restore();
-    
-    // Draw smoothed coastline border
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = Math.max(0.5, 1.0 / this.viewport.zoom);
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    
-    for (const loop of smoothedLoops) {
-        ctx.beginPath();
-        ctx.moveTo(loop[0][0], loop[0][1]);
-        for (let i = 1; i < loop.length; i++) {
-            ctx.lineTo(loop[i][0], loop[i][1]);
-        }
-        ctx.closePath();
-        ctx.stroke();
-    }
 },
 
 
@@ -1612,6 +1509,16 @@ _renderKingdomNames(ctx, bounds) {
         // Add to placed labels
         placedLabels.push(labelBox);
         
+        // Store hit box for hover detection
+        if (this._labelHitBoxes) {
+            this._labelHitBoxes.push({
+                type: 'kingdom',
+                index: k,
+                name: name,
+                box: labelBox
+            });
+        }
+        
         // Draw text - curved for elongated kingdoms, straight otherwise
         if (isElongated && Math.abs(angle) < 0.3) {
             this._drawCurvedKingdomText(ctx, name, textCenterX, textCenterY, fontSize, spanWidth, zoom, aspectRatio > 1, cells, minX, maxX);
@@ -1770,6 +1677,22 @@ _renderCapitols(ctx, bounds) {
         // Track this label
         placedLabels.push(bestPos.box);
         
+        // Store hit box for hover detection (include marker area)
+        if (this._labelHitBoxes) {
+            this._labelHitBoxes.push({
+                type: 'capital',
+                index: k,
+                cell: capitolCell,
+                name: capitolName,
+                box: {
+                    left: Math.min(x - markerSize, bestPos.box.left),
+                    right: Math.max(x + markerSize, bestPos.box.right),
+                    top: Math.min(y - markerSize, bestPos.box.top),
+                    bottom: Math.max(y + markerSize, bestPos.box.bottom)
+                }
+            });
+        }
+        
         ctx.restore();
     }
 },
@@ -1809,26 +1732,12 @@ _renderCities(ctx, bounds) {
         
         ctx.save();
         
-        // Draw different markers based on city type (smaller, more subtle)
+        // Draw simple circle marker for all cities
         ctx.globalAlpha = Math.min(1, zoom * 0.7);
-        
-        if (city.type === 'port') {
-            const r = markerSize * 0.5;
-            ctx.beginPath();
-            ctx.arc(x, y, r, 0, Math.PI * 2);
-            ctx.fillStyle = '#2C2416';
-            ctx.fill();
-        } else if (city.type === 'fortress') {
-            const half = markerSize * 0.45;
-            ctx.fillStyle = '#2C2416';
-            ctx.fillRect(x - half, y - half, half * 2, half * 2);
-        } else {
-            // Town: simple small circle
-            ctx.beginPath();
-            ctx.arc(x, y, markerSize * 0.4, 0, Math.PI * 2);
-            ctx.fillStyle = '#2C2416';
-            ctx.fill();
-        }
+        ctx.beginPath();
+        ctx.arc(x, y, markerSize * 0.4, 0, Math.PI * 2);
+        ctx.fillStyle = '#2C2416';
+        ctx.fill();
         
         ctx.globalAlpha = 1;
         ctx.restore();
@@ -1848,7 +1757,7 @@ _renderCities(ctx, bounds) {
     ctx.font = `italic ${fontSize}px 'IM Fell English', Georgia, serif`;
     
     for (const city of cityPositions) {
-        const { x, y, name, markerSize } = city;
+        const { x, y, name, markerSize, index } = city;
         
         const textWidth = ctx.measureText(name).width;
         const textHeight = fontSize;
@@ -1994,6 +1903,24 @@ _renderCities(ctx, bounds) {
         
         // Add this label to placed labels
         placedLabels.push(bestPos.box);
+        
+        // Store hit box for hover detection (include marker area)
+        if (this._labelHitBoxes) {
+            const cityObj = this.cities[index];
+            this._labelHitBoxes.push({
+                type: 'city',
+                index: index,
+                cell: cityObj ? cityObj.cell : -1,
+                kingdom: cityObj ? cityObj.kingdom : -1,
+                name: name,
+                box: {
+                    left: Math.min(x - markerSize, bestPos.box.left),
+                    right: Math.max(x + markerSize, bestPos.box.right),
+                    top: Math.min(y - markerSize, bestPos.box.top),
+                    bottom: Math.max(y + markerSize, bestPos.box.bottom)
+                }
+            });
+        }
     }
 },
 
@@ -3915,96 +3842,33 @@ _renderHoveredLake(ctx, lake) {
     ctx.stroke();
 },
 /**
- * Render flow direction arrows across the map
- * Shows where water would flow based on drainage
- */
-_renderFlowArrows(ctx, bounds) {
-    if (!this.drainage || this.cellCount === 0) return;
-    
-    // Arrow settings - bigger arrows
-    const arrowLength = 18 / this.viewport.zoom;
-    const arrowHeadSize = 7 / this.viewport.zoom;
-    const lineWidth = 2.5 / this.viewport.zoom;
-    
-    ctx.strokeStyle = 'rgba(20, 80, 160, 0.85)';
-    ctx.fillStyle = 'rgba(20, 80, 160, 0.85)';
-    ctx.lineWidth = lineWidth;
-    ctx.lineCap = 'round';
-    
-    // Sample cells to avoid overcrowding
-    const sampleRate = Math.max(1, Math.floor(2 / this.viewport.zoom));
-    
-    for (let i = 0; i < this.cellCount; i += sampleRate) {
-        // Skip ocean cells
-        if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
-        
-        // Skip lake cells
-        if (this.lakeCells && this.lakeCells.has(i)) continue;
-        
-        const drainTo = this.drainage[i];
-        if (drainTo < 0) continue; // No outflow
-        
-        // Current cell position
-        const x = this.points[i * 2];
-        const y = this.points[i * 2 + 1];
-        
-        // Frustum culling
-        if (x < bounds.left - 20 || x > bounds.right + 20 ||
-            y < bounds.top - 20 || y > bounds.bottom + 20) continue;
-        
-        // Target cell position (lower neighbor)
-        const tx = this.points[drainTo * 2];
-        const ty = this.points[drainTo * 2 + 1];
-        
-        // Direction vector: from HERE to THERE (downhill)
-        const dx = tx - x;
-        const dy = ty - y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 1) continue;
-        
-        // Unit vector pointing downhill
-        const ux = dx / dist;
-        const uy = dy / dist;
-        
-        // Draw arrow from cell center toward the lower neighbor
-        const startX = x;
-        const startY = y;
-        const endX = x + ux * arrowLength;
-        const endY = y + uy * arrowLength;
-        
-        // Draw arrow shaft
-        ctx.beginPath();
-        ctx.moveTo(startX, startY);
-        ctx.lineTo(endX, endY);
-        ctx.stroke();
-        
-        // Draw arrow head
-        const angle = Math.atan2(uy, ux);
-        const headAngle = Math.PI / 5;
-        
-        ctx.beginPath();
-        ctx.moveTo(endX, endY);
-        ctx.lineTo(
-            endX - arrowHeadSize * Math.cos(angle - headAngle),
-            endY - arrowHeadSize * Math.sin(angle - headAngle)
-        );
-        ctx.lineTo(
-            endX - arrowHeadSize * Math.cos(angle + headAngle),
-            endY - arrowHeadSize * Math.sin(angle + headAngle)
-        );
-        ctx.closePath();
-        ctx.fill();
-    }
-},
-/**
  * Render rivers as filled polygons that get wider - single color, no 3D
  */
 _renderRivers(ctx, bounds) {
     if (!this.rivers || this.rivers.length === 0) return;
+    if (!this.heights) return;
     
     const zoom = this.viewport.zoom;
     
+    // Clip rivers to coastline - rivers extend into ocean but get clipped at coast edge
+    const coastLoops = this._coastlineCache || this._buildSmoothCoastlineLoops();
+    const hasClip = coastLoops.length > 0;
+    if (hasClip) {
+        ctx.save();
+        ctx.beginPath();
+        for (const loop of coastLoops) {
+            if (loop.length < 3) continue;
+            ctx.moveTo(loop[0][0], loop[0][1]);
+            for (let i = 1; i < loop.length; i++) {
+                ctx.lineTo(loop[i][0], loop[i][1]);
+            }
+            ctx.closePath();
+        }
+        ctx.clip();
+    }
+    
     for (const river of this.rivers) {
+        // Use full path - clipping will cut it at coastline
         const path = river.path;
         if (path.length < 2) continue;
         
@@ -4019,7 +3883,7 @@ _renderRivers(ctx, bounds) {
         }
         if (!inView) continue;
         
-        // Interpolate path using cardinal spline (include ocean cells)
+        // Interpolate path using cardinal spline
         const smoothPath = this._interpolateRiverCurve(path);
         if (smoothPath.length < 2) continue;
         
@@ -4074,14 +3938,137 @@ _renderRivers(ctx, bounds) {
         }
         ctx.closePath();
         
-        // River color - same as ocean (use political color in political mode)
-        if (this.renderMode === 'political' || this.renderMode === 'landmass') {
-            ctx.fillStyle = POLITICAL_OCEAN;
-        } else {
-            ctx.fillStyle = OCEAN_COLORS[0];
-        }
+        // River fill - same color as coastline border
+        ctx.fillStyle = '#5A4A3A';
         ctx.fill();
     }
+    
+    // Restore context (release coastline clip)
+    if (hasClip) {
+        ctx.restore();
+    }
+    
+    // Render river names
+    this._renderRiverNames(ctx, bounds);
+},
+
+/**
+ * Render river names along the river paths - subtle vintage style
+ */
+_renderRiverNames(ctx, bounds) {
+    if (!this.rivers || this.rivers.length === 0) return;
+    
+    const zoom = this.viewport.zoom;
+    
+    // Only show river names at sufficient zoom
+    if (zoom < 1.0) return;
+    
+    ctx.save();
+    
+    // Style for river labels - subtle, no outline
+    const fontSize = Math.max(6, Math.min(9, 8 / zoom));
+    ctx.font = `italic ${fontSize}px "Times New Roman", Georgia, serif`;
+    ctx.fillStyle = 'rgba(60, 80, 100, 0.7)';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    
+    // Only label longer rivers
+    const minLength = 30;
+    
+    for (const river of this.rivers) {
+        if (!river.name) continue;
+        if (river.path.length < minLength) continue;
+        
+        // Find a relatively straight section of the river for the label
+        const labelSection = this._findStraightSection(river.path);
+        if (!labelSection) continue;
+        
+        // Check if this section is in view
+        if (labelSection.x < bounds.minX - 50 || labelSection.x > bounds.maxX + 50 ||
+            labelSection.y < bounds.minY - 50 || labelSection.y > bounds.maxY + 50) {
+            continue;
+        }
+        
+        // Draw text along a straight line following the river direction
+        ctx.save();
+        ctx.translate(labelSection.x, labelSection.y);
+        ctx.rotate(labelSection.angle);
+        
+        // Add letter spacing for elegant look
+        const text = river.name;
+        let xOffset = 0;
+        for (const char of text) {
+            ctx.fillText(char, xOffset, 0);
+            xOffset += ctx.measureText(char).width + fontSize * 0.15;
+        }
+        
+        ctx.restore();
+    }
+    
+    ctx.restore();
+},
+
+/**
+ * Find a relatively straight section of the river path for labeling
+ */
+_findStraightSection(path) {
+    if (path.length < 10) return null;
+    
+    // Look at the middle portion of the river
+    const startSearch = Math.floor(path.length * 0.3);
+    const endSearch = Math.floor(path.length * 0.7);
+    
+    let bestSection = null;
+    let bestStraightness = Infinity;
+    
+    // Sample sections and find the straightest one
+    const sectionLength = Math.min(15, Math.floor((endSearch - startSearch) / 2));
+    
+    for (let i = startSearch; i < endSearch - sectionLength; i += 3) {
+        const p1 = path[i];
+        const p2 = path[i + sectionLength];
+        
+        // Calculate direct distance vs path distance
+        const directDist = Math.sqrt(
+            Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2)
+        );
+        
+        let pathDist = 0;
+        for (let j = i; j < i + sectionLength; j++) {
+            const pa = path[j];
+            const pb = path[j + 1];
+            pathDist += Math.sqrt(
+                Math.pow(pb.x - pa.x, 2) + Math.pow(pb.y - pa.y, 2)
+            );
+        }
+        
+        // Straightness = how much longer the path is than direct line
+        const straightness = pathDist / Math.max(directDist, 1);
+        
+        if (straightness < bestStraightness && directDist > 30) {
+            bestStraightness = straightness;
+            
+            // Calculate angle
+            let angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+            
+            // Flip if text would be upside down
+            if (angle > Math.PI / 2) angle -= Math.PI;
+            if (angle < -Math.PI / 2) angle += Math.PI;
+            
+            // Use midpoint of section
+            const midIdx = i + Math.floor(sectionLength / 2);
+            bestSection = {
+                x: path[midIdx].x,
+                y: path[midIdx].y,
+                angle: angle
+            };
+        }
+    }
+    
+    // Only use if reasonably straight (path is less than 1.3x direct distance)
+    if (bestStraightness > 1.5) return null;
+    
+    return bestSection;
 },
 
 /**
@@ -4190,29 +4177,6 @@ _renderCoastline3D(ctx, bounds) {
     ctx.lineJoin = 'round';
     ctx.stroke();
 },
-/**
- * Render river source points as bright markers
- */
-_renderRiverSources(ctx, bounds) {
-    if (!this.riverStartPoints || this.riverStartPoints.length === 0) return;
-    
-    const radius = Math.max(8, 12 / this.viewport.zoom);
-    
-    for (const point of this.riverStartPoints) {
-        // Frustum culling
-        if (point.x < bounds.left - radius || point.x > bounds.right + radius ||
-            point.y < bounds.top - radius || point.y > bounds.bottom + radius) continue;
-        
-        // Bright magenta circle with black outline
-        ctx.beginPath();
-        ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgb(255, 0, 255)';
-        ctx.fill();
-        ctx.strokeStyle = 'black';
-        ctx.lineWidth = 2 / this.viewport.zoom;
-        ctx.stroke();
-    }
-},
 
 /**
  * Render decorative wind rose / compass in corner of map
@@ -4223,11 +4187,29 @@ _renderWindrose(ctx) {
     // Reset transform to draw in screen coordinates
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     
-    // Position in bottom-right corner
+    // Position in top-left corner
     const size = 140;
     const margin = 30;
-    const cx = this.width - margin - size/2;
-    const cy = this.height - margin - size/2;
+    const cx = margin + size/2;
+    const cy = margin + size/2;
+    
+    // Draw dashed lines extending from compass to edge of screen
+    ctx.strokeStyle = 'rgba(90, 74, 58, 0.25)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([8, 6]);
+    
+    const lineLength = Math.max(this.width, this.height) * 1.5;
+    const directions = [0, 45, 90, 135, 180, 225, 270, 315];
+    
+    for (const deg of directions) {
+        const rad = deg * Math.PI / 180;
+        const startDist = size/2 + 10;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.sin(rad) * startDist, cy - Math.cos(rad) * startDist);
+        ctx.lineTo(cx + Math.sin(rad) * lineLength, cy - Math.cos(rad) * lineLength);
+        ctx.stroke();
+    }
+    ctx.setLineDash([]);
     
     // Background circle (parchment colored)
     ctx.beginPath();
@@ -4374,6 +4356,14 @@ _drawCompassPoint(ctx, cx, cy, angle, length, width) {
     ctx.fill();
     ctx.stroke();
 },
+
+/**
+ * Draw a single star point - kept for compatibility
+ */
+_drawStarPoint(ctx, cx, cy, angle, length, width, color, filled) {
+    // No longer used but kept to avoid errors
+},
+
 /**
  * Set hovered cell and re-render
  */
@@ -4585,5 +4575,206 @@ _getHeightsHash() {
         hash = hash * 31 + (this.heights[i] | 0);
     }
     return hash;
+},
+
+/**
+ * Hit test for labels - returns info about label at screen coordinates
+ * @param {number} screenX - Screen X coordinate
+ * @param {number} screenY - Screen Y coordinate
+ * @returns {Object|null} - Label info or null if no hit
+ */
+hitTestLabel(screenX, screenY) {
+    if (!this._labelHitBoxes || this._labelHitBoxes.length === 0) return null;
+    
+    // Convert screen coordinates to world coordinates
+    const worldX = (screenX - this.viewport.x) / this.viewport.zoom;
+    const worldY = (screenY - this.viewport.y) / this.viewport.zoom;
+    
+    // Check hit boxes in reverse order (last drawn = on top)
+    for (let i = this._labelHitBoxes.length - 1; i >= 0; i--) {
+        const label = this._labelHitBoxes[i];
+        const box = label.box;
+        
+        if (worldX >= box.left && worldX <= box.right &&
+            worldY >= box.top && worldY <= box.bottom) {
+            return label;
+        }
+    }
+    
+    return null;
+},
+
+/**
+ * Get kingdom statistics
+ * @param {number} kingdomIndex - Kingdom index
+ * @returns {Object} - Kingdom stats
+ */
+getKingdomStats(kingdomIndex) {
+    if (kingdomIndex < 0 || kingdomIndex >= this.kingdomCount) return null;
+    
+    const cells = this.kingdomCells[kingdomIndex] || [];
+    const name = this.kingdomNames ? this.kingdomNames[kingdomIndex] : `Kingdom ${kingdomIndex}`;
+    const capitalName = this.capitolNames ? this.capitolNames[kingdomIndex] : null;
+    
+    // Count cities in this kingdom
+    let cityCount = 0;
+    if (this.cities) {
+        for (const city of this.cities) {
+            if (city.kingdom === kingdomIndex) cityCount++;
+        }
+    }
+    
+    // Calculate approximate area (using average cell size)
+    const avgCellArea = (this.width * this.height) / this.cellCount;
+    const areaKm2 = Math.round(cells.length * avgCellArea / 100); // Arbitrary scale
+    
+    // Calculate terrain breakdown
+    let mountains = 0, highlands = 0, lowlands = 0, coastal = 0;
+    for (const cellIdx of cells) {
+        const height = this.heights[cellIdx];
+        if (height > 2000) mountains++;
+        else if (height > 1000) highlands++;
+        else lowlands++;
+        
+        // Check if coastal
+        for (const n of this.voronoi.neighbors(cellIdx)) {
+            if (this.heights[n] < ELEVATION.SEA_LEVEL) {
+                coastal++;
+                break;
+            }
+        }
+    }
+    
+    return {
+        name,
+        capitalName,
+        cellCount: cells.length,
+        cityCount,
+        areaKm2,
+        terrain: {
+            mountains: Math.round(mountains / cells.length * 100),
+            highlands: Math.round(highlands / cells.length * 100),
+            lowlands: Math.round(lowlands / cells.length * 100),
+            coastalCells: coastal
+        }
+    };
+},
+
+/**
+ * Get city statistics
+ * @param {number} cityIndex - City index
+ * @returns {Object} - City stats
+ */
+getCityStats(cityIndex) {
+    if (!this.cities || cityIndex < 0 || cityIndex >= this.cities.length) return null;
+    
+    const city = this.cities[cityIndex];
+    const name = this.cityNames ? this.cityNames[cityIndex] : `City ${cityIndex}`;
+    const kingdomName = this.kingdomNames && city.kingdom >= 0 ? this.kingdomNames[city.kingdom] : 'Unknown';
+    
+    const cellIdx = city.cell;
+    const height = this.heights ? Math.round(this.heights[cellIdx]) : 0;
+    
+    // Check terrain features
+    let isCoastal = false;
+    let isNearRiver = false;
+    
+    for (const n of this.voronoi.neighbors(cellIdx)) {
+        if (this.heights[n] < ELEVATION.SEA_LEVEL) {
+            isCoastal = true;
+        }
+    }
+    
+    // Check if near river
+    if (this.rivers) {
+        const x = this.points[cellIdx * 2];
+        const y = this.points[cellIdx * 2 + 1];
+        for (const river of this.rivers) {
+            if (river.path) {
+                for (const point of river.path) {
+                    const px = point.x !== undefined ? point.x : this.points[point.cell * 2];
+                    const py = point.y !== undefined ? point.y : this.points[point.cell * 2 + 1];
+                    const dist = Math.sqrt((x - px) ** 2 + (y - py) ** 2);
+                    if (dist < 30) {
+                        isNearRiver = true;
+                        break;
+                    }
+                }
+            }
+            if (isNearRiver) break;
+        }
+    }
+    
+    return {
+        name,
+        kingdomName,
+        elevation: height,
+        isCoastal,
+        isNearRiver
+    };
+},
+
+/**
+ * Get capital statistics
+ * @param {number} kingdomIndex - Kingdom index
+ * @returns {Object} - Capital stats
+ */
+getCapitalStats(kingdomIndex) {
+    if (kingdomIndex < 0 || kingdomIndex >= this.kingdomCount) return null;
+    if (!this.capitols || this.capitols[kingdomIndex] < 0) return null;
+    
+    const cellIdx = this.capitols[kingdomIndex];
+    const name = this.capitolNames ? this.capitolNames[kingdomIndex] : `Capital ${kingdomIndex}`;
+    const kingdomName = this.kingdomNames ? this.kingdomNames[kingdomIndex] : `Kingdom ${kingdomIndex}`;
+    
+    const height = this.heights ? Math.round(this.heights[cellIdx]) : 0;
+    
+    // Check terrain features
+    let isCoastal = false;
+    let isNearRiver = false;
+    
+    for (const n of this.voronoi.neighbors(cellIdx)) {
+        if (this.heights[n] < ELEVATION.SEA_LEVEL) {
+            isCoastal = true;
+        }
+    }
+    
+    // Check if near river
+    if (this.rivers) {
+        const x = this.points[cellIdx * 2];
+        const y = this.points[cellIdx * 2 + 1];
+        for (const river of this.rivers) {
+            if (river.path) {
+                for (const point of river.path) {
+                    const px = point.x !== undefined ? point.x : this.points[point.cell * 2];
+                    const py = point.y !== undefined ? point.y : this.points[point.cell * 2 + 1];
+                    const dist = Math.sqrt((x - px) ** 2 + (y - py) ** 2);
+                    if (dist < 30) {
+                        isNearRiver = true;
+                        break;
+                    }
+                }
+            }
+            if (isNearRiver) break;
+        }
+    }
+    
+    // Count cities in this kingdom
+    let cityCount = 0;
+    if (this.cities) {
+        for (const city of this.cities) {
+            if (city.kingdom === kingdomIndex) cityCount++;
+        }
+    }
+    
+    return {
+        name,
+        kingdomName,
+        elevation: height,
+        isCoastal,
+        isNearRiver,
+        isCapital: true,
+        cityCount
+    };
 }
 };

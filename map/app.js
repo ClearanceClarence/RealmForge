@@ -29,6 +29,7 @@ const distributionSelect = document.getElementById('distribution');
 const seedInput = document.getElementById('seed');
 const randomSeedBtn = document.getElementById('random-seed');
 const generateBtn = document.getElementById('generate-btn');
+const generateBtnSidebar = document.getElementById('generate-btn-sidebar');
 
 // DOM Elements - Heightmap
 const noiseAlgorithm = document.getElementById('noise-algorithm');
@@ -63,7 +64,6 @@ const windStrengthValue = document.getElementById('wind-strength-value');
 const generatePrecipBtn = document.getElementById('generate-precip-btn');
 const generateRiversBtn = document.getElementById('generate-rivers-btn');
 const showRiversToggle = document.getElementById('show-rivers');
-const showRiverSourcesToggle = document.getElementById('show-river-sources');
 const numRiversSlider = document.getElementById('num-rivers');
 const numRiversValue = document.getElementById('num-rivers-value');
 
@@ -73,7 +73,6 @@ const numKingdomsValue = document.getElementById('num-kingdoms-value');
 const roadDensitySlider = document.getElementById('road-density');
 const roadDensityValue = document.getElementById('road-density-value');
 const generateKingdomsBtn = document.getElementById('generate-kingdoms-btn');
-const dashedBordersToggle = document.getElementById('dashed-borders');
 
 // DOM Elements - Display
 const renderMode = document.getElementById('render-mode');
@@ -89,8 +88,6 @@ const zoomInBtn = document.getElementById('zoom-in');
 const zoomOutBtn = document.getElementById('zoom-out');
 const zoomResetBtn = document.getElementById('zoom-reset');
 const zoomLevelDisplay = document.getElementById('zoom-level');
-const suggestedCellsDisplay = document.getElementById('suggested-cells');
-const redrawBtn = document.getElementById('redraw-btn');
 
 // DOM Elements - Export
 const exportJsonBtn = document.getElementById('export-json');
@@ -135,30 +132,110 @@ function generate() {
     const validCount = Math.max(100, Math.min(100000, count));
     cellCountInput.value = validCount;
     
-    // Show loading state
-    generateBtn.classList.add('loading');
-    generateBtn.textContent = 'Generating';
+    // Show loading screen
+    showLoading('Generating new landmass...');
     
     // Use setTimeout to allow UI to update
     setTimeout(() => {
-        const metrics = generator.generate(validCount, distribution, seed);
+        updateLoadingStatus('Creating terrain cells...');
         
-        // Update stats
-        statCells.textContent = validCount.toLocaleString();
+        // Pass heightmap options for land-biased generation
+        const heightmapOptions = {
+            seed: seed,
+            algorithm: noiseAlgorithm.value,
+            frequency: parseFloat(noiseFrequency.value),
+            seaLevel: parseFloat(seaLevel.value),
+            falloff: falloffType.value,
+            falloffStrength: parseFloat(falloffStrength.value)
+        };
+        
+        const metrics = generator.generate(validCount, distribution, seed, heightmapOptions);
+        
+        // Update stats - cell count may differ due to land biasing
+        statCells.textContent = generator.cellCount.toLocaleString();
         statLand.textContent = '—';
         statGenTime.textContent = metrics.genTime.toFixed(1) + 'ms';
         statRenderTime.textContent = metrics.renderTime.toFixed(1) + 'ms';
         
-        // Reset button
-        generateBtn.classList.remove('loading');
-        generateBtn.textContent = 'Generate';
+        // Auto-generate heightmap with loading status
+        generateHeightmapWithLoading();
+    }, 50);
+}
+
+function generateHeightmapWithLoading() {
+    if (!generator.points || generator.cellCount === 0) {
+        hideLoading();
+        return;
+    }
+    
+    const seed = parseInt(seedInput.value) || 12345;
+    
+    setTimeout(() => {
+        updateLoadingStatus('Sculpting terrain...');
         
-        // Auto-generate heightmap
-        generateHeightmap();
-    }, 10);
+        const options = {
+            seed: seed + 1000,
+            algorithm: noiseAlgorithm.value,
+            frequency: parseFloat(noiseFrequency.value),
+            octaves: parseInt(noiseOctaves.value),
+            seaLevel: parseFloat(seaLevel.value),
+            falloff: falloffType.value,
+            falloffStrength: parseFloat(falloffStrength.value),
+            smoothing: parseInt(smoothing.value),
+            smoothingStrength: parseFloat(smoothingStrength.value)
+        };
+        
+        generator.generateHeightmap(options);
+        
+        setTimeout(() => {
+            updateLoadingStatus('Applying erosion...');
+            
+            generator.applyHydraulicErosion({
+                iterations: parseInt(erosionIterations.value),
+                erosionStrength: parseFloat(erosionStrength.value),
+                depositionRate: parseFloat(depositionRate.value)
+            });
+            
+            setTimeout(() => {
+                updateLoadingStatus('Simulating climate...');
+                
+                generator.generatePrecipitation({
+                    windDirection: parseInt(windDirection.value),
+                    windStrength: parseFloat(windStrengthSlider.value)
+                });
+                generator.calculateDrainage({
+                    numberOfRivers: parseInt(numRiversSlider.value)
+                });
+                
+                setTimeout(() => {
+                    updateLoadingStatus('Forming kingdoms...');
+                    
+                    if (generator.renderMode === 'political') {
+                        generator.generateKingdoms(parseInt(numKingdomsSlider.value), parseInt(roadDensitySlider.value));
+                    }
+                    
+                    setTimeout(() => {
+                        updateLoadingStatus('Rendering map...');
+                        
+                        generator.render();
+                        
+                        // Update stats
+                        const landCount = generator.getLandCount();
+                        const landPercent = ((landCount / generator.cellCount) * 100).toFixed(1);
+                        statLand.textContent = `${landPercent}%`;
+                        statRenderTime.textContent = generator.metrics.renderTime.toFixed(1) + 'ms';
+                        
+                        // Hide loading screen
+                        hideLoading();
+                    }, 20);
+                }, 20);
+            }, 20);
+        }, 20);
+    }, 20);
 }
 
 generateBtn.addEventListener('click', generate);
+if (generateBtnSidebar) generateBtnSidebar.addEventListener('click', generate);
 
 // Generate on Enter in inputs
 cellCountInput.addEventListener('keypress', (e) => {
@@ -181,58 +258,11 @@ randomSeedBtn.addEventListener('click', () => {
 function generateHeightmap() {
     if (!generator.points || generator.cellCount === 0) return;
     
-    const seed = parseInt(seedInput.value) || 12345;
+    // Show loading screen
+    showLoading('Regenerating terrain...');
     
-    const options = {
-        seed: seed + 1000, // Offset from cell seed
-        algorithm: noiseAlgorithm.value,
-        frequency: parseFloat(noiseFrequency.value),
-        octaves: parseInt(noiseOctaves.value),
-        seaLevel: parseFloat(seaLevel.value),
-        falloff: falloffType.value,
-        falloffStrength: parseFloat(falloffStrength.value),
-        smoothing: parseInt(smoothing.value),
-        smoothingStrength: parseFloat(smoothingStrength.value)
-    };
-    
-    generateHeightmapBtn.classList.add('loading');
-    generateHeightmapBtn.textContent = 'Generating';
-    
-    setTimeout(() => {
-        generator.generateHeightmap(options);
-        
-        // Apply hydraulic erosion
-        generator.applyHydraulicErosion({
-            iterations: parseInt(erosionIterations.value),
-            erosionStrength: parseFloat(erosionStrength.value),
-            depositionRate: parseFloat(depositionRate.value)
-        });
-        
-        // Always generate precipitation and drainage for flow visualization
-        generator.generatePrecipitation({
-            windDirection: parseInt(windDirection.value),
-            windStrength: parseFloat(windStrengthSlider.value)
-        });
-        generator.calculateDrainage({
-            numberOfRivers: parseInt(numRiversSlider.value)
-        });
-        
-        // Auto-generate kingdoms if in political mode
-        if (generator.renderMode === 'political') {
-            generator.generateKingdoms(parseInt(numKingdomsSlider.value), parseInt(roadDensitySlider.value));
-        }
-        
-        generator.render();
-        
-        // Update stats
-        const landCount = generator.getLandCount();
-        const landPercent = ((landCount / generator.cellCount) * 100).toFixed(1);
-        statLand.textContent = `${landPercent}%`;
-        statRenderTime.textContent = generator.metrics.renderTime.toFixed(1) + 'ms';
-        
-        generateHeightmapBtn.classList.remove('loading');
-        generateHeightmapBtn.textContent = 'Generate Heightmap';
-    }, 10);
+    // Use the loading version
+    generateHeightmapWithLoading();
 }
 
 generateHeightmapBtn.addEventListener('click', generateHeightmap);
@@ -386,16 +416,16 @@ function generateRivers() {
             numberOfRivers: parseInt(numRiversSlider.value)
         });
         
-        // Switch to flow arrows view
-        renderMode.value = 'rivers';
-        generator.renderMode = 'rivers';
+        // Switch to terrain view to see rivers
+        renderMode.value = 'terrain';
+        generator.renderMode = 'terrain';
         generator.render();
         updateRenderStats();
         
         generateRiversBtn.classList.remove('loading');
-        generateRiversBtn.textContent = 'Generate Rivers';
+        generateRiversBtn.textContent = 'Rivers';
         
-        console.log(`Created ${generator.rivers.length} rivers, ${generator.lakes.length} lakes`);
+        console.log(`Created ${generator.rivers.length} rivers`);
     }, 10);
 }
 
@@ -518,18 +548,6 @@ showRiversToggle.addEventListener('change', (e) => {
     updateRenderStats();
 });
 
-showRiverSourcesToggle.addEventListener('change', (e) => {
-    generator.showRiverSources = e.target.checked;
-    generator.render();
-    updateRenderStats();
-});
-
-dashedBordersToggle.addEventListener('change', (e) => {
-    generator.dashedBorders = e.target.checked;
-    generator.render();
-    updateRenderStats();
-});
-
 function updateRenderStats() {
     statRenderTime.textContent = generator.metrics.renderTime.toFixed(1) + 'ms';
     if (statVisible) {
@@ -540,16 +558,6 @@ function updateRenderStats() {
 function updateZoomDisplay() {
     const zoom = generator.viewport.zoom;
     zoomLevelDisplay.textContent = `${Math.round(zoom * 100)}%`;
-    
-    // Update suggested cells based on zoom
-    const suggested = generator.getSuggestedCellCount();
-    suggestedCellsDisplay.textContent = suggested.toLocaleString();
-    
-    // Enable/disable redraw button based on zoom
-    redrawBtn.disabled = zoom <= 1.0;
-    redrawBtn.title = zoom <= 1.0 
-        ? 'Zoom in first to enable redraw' 
-        : `Regenerate ${suggested.toLocaleString()} cells for current view`;
 }
 
 // ========================================
@@ -572,40 +580,6 @@ zoomResetBtn.addEventListener('click', () => {
     generator.resetView();
     updateZoomDisplay();
     updateRenderStats();
-});
-
-// Redraw at enhanced resolution
-redrawBtn.addEventListener('click', () => {
-    if (generator.viewport.zoom <= 1.0) {
-        console.log('Zoom in first to use redraw');
-        return;
-    }
-    
-    redrawBtn.disabled = true;
-    redrawBtn.textContent = 'Redrawing...';
-    
-    // Use requestAnimationFrame to let UI update
-    requestAnimationFrame(() => {
-        const result = generator.redrawAtResolution({
-            regenerateHeightmap: true
-        });
-        
-        if (result) {
-            console.log(`Redrew with ${result.newCellCount.toLocaleString()} cells (was ${generator.viewport.zoom.toFixed(1)}x zoom)`);
-            
-            // Update all stats
-            statCells.textContent = generator.cellCount.toLocaleString();
-            statGenTime.textContent = generator.metrics.genTime.toFixed(1) + 'ms';
-            
-            const landCount = generator.getLandCount();
-            const landPercent = ((landCount / generator.cellCount) * 100).toFixed(1);
-            statLand.textContent = `${landPercent}%`;
-        }
-        
-        redrawBtn.textContent = 'Redraw at Resolution';
-        updateZoomDisplay();
-        updateRenderStats();
-    });
 });
 
 // Listen for zoom changes from mouse wheel/touch
@@ -653,6 +627,7 @@ exportPngBtn.addEventListener('click', () => {
 // ========================================
 
 let lastHoveredCell = -1;
+let lastHoveredLabel = null;
 const tooltip = document.getElementById('cell-tooltip');
 
 canvas.addEventListener('mousemove', (e) => {
@@ -665,6 +640,73 @@ canvas.addEventListener('mousemove', (e) => {
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+    
+    // In political mode, check for label hovers first
+    if (generator.renderMode === 'political') {
+        const labelHit = generator.hitTestLabel(x, y);
+        
+        if (labelHit) {
+            // Check if it's a different label than before
+            const sameLabel = lastHoveredLabel && 
+                lastHoveredLabel.type === labelHit.type && 
+                lastHoveredLabel.index === labelHit.index;
+            
+            if (!sameLabel) {
+                // Show label-specific tooltip
+                let html = '<div class="tt-content">';
+                
+                if (labelHit.type === 'kingdom') {
+                    const stats = generator.getKingdomStats(labelHit.index);
+                    if (stats) {
+                        html += `<div class="tt-title">${stats.name}</div>`;
+                        html += `<div class="tt-stats">`;
+                        html += `<div class="tt-stat"><span class="tt-label">Capital:</span> ${stats.capitalName || 'Unknown'}</div>`;
+                        html += `<div class="tt-stat"><span class="tt-label">Cities:</span> ${stats.cityCount}</div>`;
+                        html += `<div class="tt-stat"><span class="tt-label">Territory:</span> ${stats.cellCount.toLocaleString()} cells</div>`;
+                        if (stats.terrain.coastalCells > 0) {
+                            html += `<div class="tt-stat"><span class="tt-label">Coastal:</span> Yes</div>`;
+                        }
+                        html += `</div>`;
+                    }
+                } else if (labelHit.type === 'capital') {
+                    const stats = generator.getCapitalStats(labelHit.index);
+                    if (stats) {
+                        html += `<div class="tt-title">★ ${stats.name}</div>`;
+                        html += `<div class="tt-subtitle">Capital of ${stats.kingdomName}</div>`;
+                        html += `<div class="tt-stats">`;
+                        html += `<div class="tt-stat"><span class="tt-label">Elevation:</span> ${stats.elevation}m</div>`;
+                        if (stats.isCoastal) html += `<div class="tt-stat"><span class="tt-label">Coastal:</span> Yes</div>`;
+                        if (stats.isNearRiver) html += `<div class="tt-stat"><span class="tt-label">River:</span> Nearby</div>`;
+                        html += `<div class="tt-stat"><span class="tt-label">Cities:</span> ${stats.cityCount}</div>`;
+                        html += `</div>`;
+                    }
+                } else if (labelHit.type === 'city') {
+                    const stats = generator.getCityStats(labelHit.index);
+                    if (stats) {
+                        html += `<div class="tt-title">${stats.name}</div>`;
+                        html += `<div class="tt-subtitle">${stats.kingdomName}</div>`;
+                        html += `<div class="tt-stats">`;
+                        html += `<div class="tt-stat"><span class="tt-label">Elevation:</span> ${stats.elevation}m</div>`;
+                        if (stats.isCoastal) html += `<div class="tt-stat"><span class="tt-label">Coastal:</span> Yes</div>`;
+                        if (stats.isNearRiver) html += `<div class="tt-stat"><span class="tt-label">River:</span> Nearby</div>`;
+                        html += `</div>`;
+                    }
+                }
+                
+                html += '</div>';
+                tooltip.innerHTML = html;
+                tooltip.classList.add('visible');
+                lastHoveredLabel = labelHit;
+                lastHoveredCell = -1;
+            }
+            
+            // Position tooltip
+            positionTooltip(e, rect);
+            return;
+        }
+        
+        lastHoveredLabel = null;
+    }
     
     const cellIndex = generator.findCell(x, y);
     
@@ -738,27 +780,32 @@ canvas.addEventListener('mousemove', (e) => {
     
     // Position tooltip relative to cursor
     if (tooltip.classList.contains('visible')) {
-        const offsetX = 15;
-        const offsetY = 15;
-        let tooltipX = e.clientX - rect.left + offsetX;
-        let tooltipY = e.clientY - rect.top + offsetY;
-        
-        // Keep tooltip within canvas bounds
-        const tooltipRect = tooltip.getBoundingClientRect();
-        if (tooltipX + tooltipRect.width > rect.width) {
-            tooltipX = e.clientX - rect.left - tooltipRect.width - offsetX;
-        }
-        if (tooltipY + tooltipRect.height > rect.height) {
-            tooltipY = e.clientY - rect.top - tooltipRect.height - offsetY;
-        }
-        
-        tooltip.style.left = `${tooltipX}px`;
-        tooltip.style.top = `${tooltipY}px`;
+        positionTooltip(e, rect);
     }
 });
 
+function positionTooltip(e, rect) {
+    const offsetX = 15;
+    const offsetY = 15;
+    let tooltipX = e.clientX - rect.left + offsetX;
+    let tooltipY = e.clientY - rect.top + offsetY;
+    
+    // Keep tooltip within canvas bounds
+    const tooltipRect = tooltip.getBoundingClientRect();
+    if (tooltipX + tooltipRect.width > rect.width) {
+        tooltipX = e.clientX - rect.left - tooltipRect.width - offsetX;
+    }
+    if (tooltipY + tooltipRect.height > rect.height) {
+        tooltipY = e.clientY - rect.top - tooltipRect.height - offsetY;
+    }
+    
+    tooltip.style.left = `${tooltipX}px`;
+    tooltip.style.top = `${tooltipY}px`;
+}
+
 canvas.addEventListener('mouseleave', () => {
     lastHoveredCell = -1;
+    lastHoveredLabel = null;
     generator.setHoveredCell(-1);
     tooltip.classList.remove('visible');
 });
@@ -796,12 +843,6 @@ document.addEventListener('keydown', (e) => {
             break;
         case 'v':
             generateRivers();
-            break;
-        case 'r':
-            // Redraw at resolution
-            if (generator.viewport.zoom > 1.0) {
-                redrawBtn.click();
-            }
             break;
         case 'e':
             showEdgesToggle.checked = !showEdgesToggle.checked;
@@ -870,8 +911,18 @@ setTimeout(() => {
     const distribution = distributionSelect.value;
     const seed = parseInt(seedInput.value) || Date.now();
     
-    const metrics = generator.generate(count, distribution, seed);
-    statCells.textContent = count.toLocaleString();
+    // Pass heightmap options for land-biased generation
+    const heightmapOptions = {
+        seed: seed + 1000,
+        algorithm: noiseAlgorithm.value,
+        frequency: parseFloat(noiseFrequency.value),
+        seaLevel: parseFloat(seaLevel.value),
+        falloff: falloffType.value,
+        falloffStrength: parseFloat(falloffStrength.value)
+    };
+    
+    const metrics = generator.generate(count, distribution, seed, heightmapOptions);
+    statCells.textContent = generator.cellCount.toLocaleString();
     statGenTime.textContent = metrics.genTime.toFixed(1) + 'ms';
     
     updateLoadingStatus('Creating terrain');
@@ -940,4 +991,4 @@ setTimeout(() => {
     }, 50);
 }, 100);
 
-console.log('Shortcuts: G=Generate, H=Heightmap, P=Precipitation, V=Flow, F=Rivers, R=Redraw, E=Edges, C=Centers, D=Delaunay, +/-=Zoom, 0=Reset');
+console.log('Shortcuts: G=Generate, H=Heightmap, P=Precipitation, V=Rivers, F=Toggle Rivers, E=Edges, C=Centers, D=Delaunay, +/-=Zoom, 0=Reset');
