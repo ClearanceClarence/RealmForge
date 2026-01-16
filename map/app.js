@@ -110,6 +110,10 @@ const zoomOutBtn = document.getElementById('zoom-out');
 const zoomResetBtn = document.getElementById('zoom-reset');
 const zoomLevelDisplay = document.getElementById('zoom-level');
 
+// DOM Elements - Overlays
+const heightmapOverlay = document.getElementById('heightmap-overlay');
+const toggleHeightmapBtn = document.getElementById('toggle-heightmap');
+
 // DOM Elements - Export
 const exportJsonBtn = document.getElementById('export-json');
 const exportPngBtn = document.getElementById('export-png');
@@ -494,7 +498,7 @@ function generateRivers() {
         generateRiversBtn.classList.remove('loading');
         generateRiversBtn.textContent = 'Rivers';
         
-        console.log(`Created ${generator.rivers.length} rivers`);
+        
     }, 10);
 }
 
@@ -512,11 +516,12 @@ roadDensitySlider.addEventListener('input', (e) => {
     roadDensityValue.textContent = e.target.value;
 });
 
-// Regenerate roads when slider is released (keep existing cities)
+// Regenerate cities and roads when slider is released
 roadDensitySlider.addEventListener('change', (e) => {
-    if (generator.kingdoms && generator.kingdomCount > 0 && generator.cities && generator.cities.length > 0) {
+    if (generator.kingdoms && generator.kingdomCount > 0) {
         generator.roadDensity = parseInt(e.target.value);
-        generator._generateRoads();
+        // Regenerate cities (which also regenerates roads and population)
+        generator._generateCities();
         generator.render();
     }
 });
@@ -652,6 +657,153 @@ function updateRenderStats() {
     }
 }
 
+// ========================================
+// HEIGHTMAP OVERLAY TOGGLE
+// ========================================
+
+let heightmapOverlayActive = false;
+let heightmapCtx = null;
+let lastOverlayViewport = { x: 0, y: 0, zoom: 1 };
+
+if (toggleHeightmapBtn && heightmapOverlay) {
+    heightmapCtx = heightmapOverlay.getContext('2d');
+    
+    toggleHeightmapBtn.addEventListener('click', () => {
+        heightmapOverlayActive = !heightmapOverlayActive;
+        toggleHeightmapBtn.classList.toggle('active', heightmapOverlayActive);
+        heightmapOverlay.classList.toggle('active', heightmapOverlayActive);
+        
+        if (heightmapOverlayActive) {
+            // Store current viewport as reference for transforms
+            lastOverlayViewport = {
+                x: generator.viewport.x,
+                y: generator.viewport.y,
+                zoom: generator.viewport.zoom
+            };
+            renderHeightmapOverlay();
+        }
+    });
+}
+
+function renderHeightmapOverlay() {
+    if (!heightmapOverlay || !heightmapCtx) return;
+    if (!generator.heights || !generator.voronoi) return;
+    
+    // Match main canvas size exactly (including DPR)
+    const dpr = generator.dpr || window.devicePixelRatio || 1;
+    heightmapOverlay.width = generator.width * dpr;
+    heightmapOverlay.height = generator.height * dpr;
+    
+    // Match CSS size
+    heightmapOverlay.style.width = generator.width + 'px';
+    heightmapOverlay.style.height = generator.height + 'px';
+    
+    // Reset and apply same transform as main canvas
+    heightmapCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    heightmapCtx.clearRect(0, 0, generator.width, generator.height);
+    
+    // Apply viewport transform (same as render method)
+    heightmapCtx.save();
+    heightmapCtx.translate(generator.viewport.x, generator.viewport.y);
+    heightmapCtx.scale(generator.viewport.zoom, generator.viewport.zoom);
+    
+    const heights = generator.heights;
+    const numCells = generator.cellCount;
+    
+    // Heights are in meters: sea level = 0, max = ~6000m
+    const maxElevation = 6000;
+    
+    // Set line width to cover gaps between cells
+    heightmapCtx.lineWidth = 1.5 / generator.viewport.zoom;
+    heightmapCtx.lineJoin = 'round';
+    
+    // Draw each cell
+    for (let i = 0; i < numCells; i++) {
+        const h = heights[i];
+        
+        // Skip water cells (below sea level)
+        if (h < 0) continue;
+        
+        // Get cell polygon from voronoi
+        let polygon;
+        try {
+            polygon = generator.voronoi.cellPolygon(i);
+        } catch (e) {
+            continue;
+        }
+        
+        if (!polygon || polygon.length < 3) continue;
+        
+        // Normalize height (0 to 1) based on elevation
+        const normalizedHeight = Math.min(1, Math.max(0, h / maxElevation));
+        
+        // Apply contrast curve for more dramatic effect
+        const contrast = Math.pow(normalizedHeight, 0.6);
+        
+        // For overlay blend: <128 darkens, >128 lightens
+        // Low elevation = dark (darken map), high elevation = bright (lighten map)
+        const shade = Math.round(30 + contrast * 225);
+        const color = `rgb(${shade}, ${shade}, ${shade})`;
+        
+        heightmapCtx.fillStyle = color;
+        heightmapCtx.strokeStyle = color;
+        heightmapCtx.beginPath();
+        heightmapCtx.moveTo(polygon[0][0], polygon[0][1]);
+        for (let j = 1; j < polygon.length; j++) {
+            heightmapCtx.lineTo(polygon[j][0], polygon[j][1]);
+        }
+        heightmapCtx.closePath();
+        heightmapCtx.fill();
+        heightmapCtx.stroke();
+    }
+    
+    heightmapCtx.restore();
+}
+
+function applyOverlayTransform() {
+    if (!heightmapOverlay || !heightmapOverlayActive) return;
+    
+    const last = lastOverlayViewport;
+    const curr = generator.viewport;
+    
+    // Calculate the transform relative to last rendered state
+    const scale = curr.zoom / last.zoom;
+    const dx = curr.x - last.x * scale;
+    const dy = curr.y - last.y * scale;
+    
+    heightmapOverlay.style.transformOrigin = '0 0';
+    heightmapOverlay.style.transform = `translate(${dx}px, ${dy}px) scale(${scale})`;
+}
+
+function resetOverlayTransform() {
+    if (!heightmapOverlay) return;
+    heightmapOverlay.style.transform = '';
+    lastOverlayViewport = {
+        x: generator.viewport.x,
+        y: generator.viewport.y,
+        zoom: generator.viewport.zoom
+    };
+}
+
+// Update overlay when map is re-rendered (full render)
+const originalRender = generator.render.bind(generator);
+generator.render = function(...args) {
+    originalRender(...args);
+    if (heightmapOverlayActive) {
+        resetOverlayTransform();
+        renderHeightmapOverlay();
+    }
+};
+
+// Apply CSS transform during low-res render (interaction)
+const originalRenderLowRes = generator.renderLowRes.bind(generator);
+generator.renderLowRes = function(...args) {
+    originalRenderLowRes(...args);
+    if (heightmapOverlayActive) {
+        applyOverlayTransform();
+    }
+};
+
 function updateZoomDisplay() {
     const zoom = generator.viewport.zoom;
     zoomLevelDisplay.textContent = `${Math.round(zoom * 100)}%`;
@@ -725,7 +877,169 @@ exportPngBtn.addEventListener('click', () => {
 
 let lastHoveredCell = -1;
 let lastHoveredLabel = null;
+let dragStartPos = null;
+const DRAG_THRESHOLD = 5; // pixels
 const tooltip = document.getElementById('cell-tooltip');
+const infoPanel = document.getElementById('info-panel');
+const infoPanelContent = document.getElementById('info-panel-content');
+const infoPanelClose = document.getElementById('info-panel-close');
+
+// Track drag start position
+canvas.addEventListener('mousedown', (e) => {
+    dragStartPos = { x: e.clientX, y: e.clientY };
+});
+
+// Close info panel
+if (infoPanelClose) {
+    infoPanelClose.addEventListener('click', (e) => {
+        e.stopPropagation();
+        infoPanel.classList.remove('visible');
+    });
+}
+
+// Click handler for labels
+canvas.addEventListener('click', (e) => {
+    // Check if this was actually a drag (mouse moved significantly)
+    if (dragStartPos) {
+        const dx = Math.abs(e.clientX - dragStartPos.x);
+        const dy = Math.abs(e.clientY - dragStartPos.y);
+        if (dx > DRAG_THRESHOLD || dy > DRAG_THRESHOLD) {
+            dragStartPos = null;
+            return; // This was a drag, not a click
+        }
+    }
+    dragStartPos = null;
+    
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    // In political mode, check for label clicks
+    if (generator.renderMode === 'political') {
+        const labelHit = generator.hitTestLabel(x, y);
+        
+        if (labelHit) {
+            showInfoPanel(labelHit);
+            return;
+        }
+    }
+    
+    // If clicked elsewhere, close the panel
+    infoPanel.classList.remove('visible');
+});
+
+function showInfoPanel(labelHit) {
+    let html = '';
+    
+    if (labelHit.type === 'kingdom') {
+        const stats = generator.getKingdomStats(labelHit.index);
+        if (stats) {
+            html = `
+                <div class="ip-header">
+                    <span class="ip-icon">🏰</span>
+                    <div>
+                        <div class="ip-title">${stats.name}</div>
+                        <div class="ip-subtitle">Kingdom</div>
+                    </div>
+                </div>
+                <div class="ip-stats">
+                    <div class="ip-stat">
+                        <span class="ip-stat-label">Population</span>
+                        <span class="ip-stat-value">${stats.population.toLocaleString()}</span>
+                    </div>
+                    <div class="ip-stat">
+                        <span class="ip-stat-label">Capital</span>
+                        <span class="ip-stat-value">${stats.capitalName || 'Unknown'}</span>
+                    </div>
+                    <div class="ip-stat">
+                        <span class="ip-stat-label">Cities</span>
+                        <span class="ip-stat-value">${stats.cityCount}</span>
+                    </div>
+                    <div class="ip-stat">
+                        <span class="ip-stat-label">Territory</span>
+                        <span class="ip-stat-value">${stats.cellCount.toLocaleString()} cells</span>
+                    </div>
+                    ${stats.terrain.coastalCells > 0 ? `
+                    <div class="ip-stat">
+                        <span class="ip-stat-label">Coastal</span>
+                        <span class="ip-stat-value">Yes</span>
+                    </div>` : ''}
+                </div>
+            `;
+        }
+    } else if (labelHit.type === 'capital') {
+        const stats = generator.getCapitalStats(labelHit.index);
+        if (stats) {
+            html = `
+                <div class="ip-header">
+                    <span class="ip-icon">⭐</span>
+                    <div>
+                        <div class="ip-title">${stats.name}</div>
+                        <div class="ip-subtitle">Capital of ${stats.kingdomName}</div>
+                    </div>
+                </div>
+                <div class="ip-stats">
+                    <div class="ip-stat">
+                        <span class="ip-stat-label">Population</span>
+                        <span class="ip-stat-value">${stats.population.toLocaleString()}</span>
+                    </div>
+                    <div class="ip-stat">
+                        <span class="ip-stat-label">Elevation</span>
+                        <span class="ip-stat-value">${Math.round(stats.elevation)}m</span>
+                    </div>
+                    ${stats.isCoastal ? `
+                    <div class="ip-stat">
+                        <span class="ip-stat-label">Coastal</span>
+                        <span class="ip-stat-value">Yes</span>
+                    </div>` : ''}
+                    ${stats.isNearRiver ? `
+                    <div class="ip-stat">
+                        <span class="ip-stat-label">River Access</span>
+                        <span class="ip-stat-value">Yes</span>
+                    </div>` : ''}
+                </div>
+            `;
+        }
+    } else if (labelHit.type === 'city') {
+        const stats = generator.getCityStats(labelHit.index);
+        if (stats) {
+            html = `
+                <div class="ip-header">
+                    <span class="ip-icon">🏘️</span>
+                    <div>
+                        <div class="ip-title">${stats.name}</div>
+                        <div class="ip-subtitle">${stats.kingdomName}</div>
+                    </div>
+                </div>
+                <div class="ip-stats">
+                    <div class="ip-stat">
+                        <span class="ip-stat-label">Population</span>
+                        <span class="ip-stat-value">${stats.population.toLocaleString()}</span>
+                    </div>
+                    <div class="ip-stat">
+                        <span class="ip-stat-label">Elevation</span>
+                        <span class="ip-stat-value">${Math.round(stats.elevation)}m</span>
+                    </div>
+                    ${stats.isCoastal ? `
+                    <div class="ip-stat">
+                        <span class="ip-stat-label">Coastal</span>
+                        <span class="ip-stat-value">Yes</span>
+                    </div>` : ''}
+                    ${stats.isNearRiver ? `
+                    <div class="ip-stat">
+                        <span class="ip-stat-label">River Access</span>
+                        <span class="ip-stat-value">Yes</span>
+                    </div>` : ''}
+                </div>
+            `;
+        }
+    }
+    
+    if (html) {
+        infoPanelContent.innerHTML = html;
+        infoPanel.classList.add('visible');
+    }
+}
 
 canvas.addEventListener('mousemove', (e) => {
     // Don't update hover while dragging
@@ -738,70 +1052,20 @@ canvas.addEventListener('mousemove', (e) => {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     
-    // In political mode, check for label hovers first
+    // In political mode, change cursor on label hover (but no tooltip)
     if (generator.renderMode === 'political') {
         const labelHit = generator.hitTestLabel(x, y);
         
         if (labelHit) {
-            // Check if it's a different label than before
-            const sameLabel = lastHoveredLabel && 
-                lastHoveredLabel.type === labelHit.type && 
-                lastHoveredLabel.index === labelHit.index;
-            
-            if (!sameLabel) {
-                // Show label-specific tooltip
-                let html = '<div class="tt-content">';
-                
-                if (labelHit.type === 'kingdom') {
-                    const stats = generator.getKingdomStats(labelHit.index);
-                    if (stats) {
-                        html += `<div class="tt-title">${stats.name}</div>`;
-                        html += `<div class="tt-stats">`;
-                        html += `<div class="tt-stat"><span class="tt-label">Population:</span> ${stats.population.toLocaleString()}</div>`;
-                        html += `<div class="tt-stat"><span class="tt-label">Capital:</span> ${stats.capitalName || 'Unknown'}</div>`;
-                        html += `<div class="tt-stat"><span class="tt-label">Cities:</span> ${stats.cityCount}</div>`;
-                        if (stats.terrain.coastalCells > 0) {
-                            html += `<div class="tt-stat"><span class="tt-label">Coastal:</span> Yes</div>`;
-                        }
-                        html += `</div>`;
-                    }
-                } else if (labelHit.type === 'capital') {
-                    const stats = generator.getCapitalStats(labelHit.index);
-                    if (stats) {
-                        html += `<div class="tt-title">★ ${stats.name}</div>`;
-                        html += `<div class="tt-subtitle">Capital of ${stats.kingdomName}</div>`;
-                        html += `<div class="tt-stats">`;
-                        html += `<div class="tt-stat"><span class="tt-label">Population:</span> ${stats.population.toLocaleString()}</div>`;
-                        if (stats.isCoastal) html += `<div class="tt-stat"><span class="tt-label">Coastal:</span> Yes</div>`;
-                        if (stats.isNearRiver) html += `<div class="tt-stat"><span class="tt-label">River:</span> Nearby</div>`;
-                        html += `</div>`;
-                    }
-                } else if (labelHit.type === 'city') {
-                    const stats = generator.getCityStats(labelHit.index);
-                    if (stats) {
-                        html += `<div class="tt-title">${stats.name}</div>`;
-                        html += `<div class="tt-subtitle">${stats.kingdomName}</div>`;
-                        html += `<div class="tt-stats">`;
-                        html += `<div class="tt-stat"><span class="tt-label">Population:</span> ${stats.population.toLocaleString()}</div>`;
-                        if (stats.isCoastal) html += `<div class="tt-stat"><span class="tt-label">Coastal:</span> Yes</div>`;
-                        if (stats.isNearRiver) html += `<div class="tt-stat"><span class="tt-label">River:</span> Nearby</div>`;
-                        html += `</div>`;
-                    }
-                }
-                
-                html += '</div>';
-                tooltip.innerHTML = html;
-                tooltip.classList.add('visible');
-                lastHoveredLabel = labelHit;
-                lastHoveredCell = -1;
-            }
-            
-            // Position tooltip
-            positionTooltip(e, rect);
+            canvas.style.cursor = 'pointer';
+            lastHoveredLabel = labelHit;
+            // Don't show tooltip for labels - click instead
+            tooltip.classList.remove('visible');
             return;
+        } else {
+            canvas.style.cursor = 'grab';
+            lastHoveredLabel = null;
         }
-        
-        lastHoveredLabel = null;
     }
     
     const cellIndex = generator.findCell(x, y);
@@ -819,18 +1083,8 @@ canvas.addEventListener('mousemove', (e) => {
             const isLand = generator.isLand(cellIndex);
             const isLake = generator.lakeCells && generator.lakeCells.has(cellIndex);
             
-            // Check for kingdom info
-            const hasKingdom = generator.kingdoms && generator.kingdoms[cellIndex] >= 0;
-            const kingdomId = hasKingdom ? generator.kingdoms[cellIndex] : -1;
-            const kingdomName = hasKingdom && generator.kingdomNames ? generator.kingdomNames[kingdomId] : null;
-            
             // Build clean tooltip HTML
             let html = '<div class="tt-content">';
-            
-            // Kingdom name as title (if available and in political mode)
-            if (generator.renderMode === 'political' && kingdomName) {
-                html += `<div class="tt-title">${kingdomName}</div>`;
-            }
             
             // Terrain info
             if (elevation !== null) {
@@ -972,6 +1226,9 @@ document.addEventListener('keydown', (e) => {
             generator.resetView();
             updateZoomDisplay();
             updateRenderStats();
+            break;
+        case 'escape':
+            infoPanel.classList.remove('visible');
             break;
     }
 });

@@ -320,7 +320,7 @@
                             <span class="ctrl-val" id="num-kingdoms-value">12</span>
                         </div>
                         <div class="ctrl-slider">
-                            <span>Roads</span>
+                            <span>Settlements</span>
                             <input type="range" id="road-density" min="0" max="10" step="1" value="7">
                             <span class="ctrl-val" id="road-density-value">7</span>
                         </div>
@@ -403,7 +403,29 @@
             <!-- Canvas -->
             <main class="canvas-area">
                 <canvas id="voronoi-canvas"></canvas>
+                <canvas id="heightmap-overlay"></canvas>
+                <svg id="river-svg" class="map-svg"></svg>
+                <svg id="kingdom-svg" class="map-svg"></svg>
+                <svg id="road-svg" class="map-svg"></svg>
+                <svg id="city-svg" class="map-svg"></svg>
+                <svg id="label-svg" class="map-svg"></svg>
                 <div id="cell-tooltip" class="cell-tooltip"></div>
+                
+                <!-- Info Panel (click to show) -->
+                <div id="info-panel" class="info-panel">
+                    <button class="info-panel-close" id="info-panel-close">&times;</button>
+                    <div class="info-panel-content" id="info-panel-content"></div>
+                </div>
+                
+                <!-- Overlay toggle buttons -->
+                <div class="overlay-toggles">
+                    <button class="overlay-toggle-btn" id="toggle-heightmap" title="Toggle Heightmap Overlay">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M8 3l4 8 5-5 5 15H2L8 3z"/>
+                        </svg>
+                        <span>Elevation</span>
+                    </button>
+                </div>
             </main>
         </div>
     </div>

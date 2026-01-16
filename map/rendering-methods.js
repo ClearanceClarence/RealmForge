@@ -17,6 +17,40 @@ render() {
     ctx.fillStyle = this.colors.bg;
     ctx.fillRect(0, 0, this.width, this.height);
     
+    // Clear SVG layers if not in political mode
+    if (this.renderMode !== 'political') {
+        const roadSvg = document.getElementById('road-svg');
+        if (roadSvg) {
+            roadSvg.innerHTML = '';
+            roadSvg.style.opacity = '0';
+        }
+        const kingdomSvg = document.getElementById('kingdom-svg');
+        if (kingdomSvg) {
+            kingdomSvg.innerHTML = '';
+            kingdomSvg.style.opacity = '0';
+        }
+        const citySvg = document.getElementById('city-svg');
+        if (citySvg) {
+            citySvg.innerHTML = '';
+            citySvg.style.opacity = '0';
+        }
+        const labelSvg = document.getElementById('label-svg');
+        if (labelSvg) {
+            labelSvg.innerHTML = '';
+            labelSvg.style.opacity = '0';
+        }
+    }
+    
+    // Clear river SVG only if not showing rivers or not in a mode that uses them
+    if (!this.showRivers || 
+        (this.renderMode !== 'political' && this.renderMode !== 'terrain' && this.renderMode !== 'heightmap')) {
+        const riverSvg = document.getElementById('river-svg');
+        if (riverSvg) {
+            riverSvg.innerHTML = '';
+            riverSvg.style.opacity = '0';
+        }
+    }
+    
     if (!this.voronoi) {
         this.metrics.renderTime = performance.now() - start;
         this.metrics.visibleCells = 0;
@@ -35,7 +69,7 @@ render() {
     if (this.heights && (this.renderMode === 'heightmap' || this.renderMode === 'terrain')) {
         this._renderTerrainCells(ctx, bounds);
         if (this.showRivers && this.rivers && this.rivers.length > 0) {
-            this._renderRivers(ctx, bounds);
+            this._updateRiverSVG();
         }
     }
     
@@ -53,31 +87,30 @@ render() {
         // Initialize hit boxes for hover detection
         this._labelHitBoxes = [];
         
-        this._renderPoliticalMap(ctx, bounds);
-        // Render contour lines (subtle elevation indicators)
-        if (this.heights) {
-            this._renderContourLines(ctx, bounds);
-        }
+        // Canvas: Base terrain (ocean, land, lakes, coastline)
+        this._renderPoliticalBase(ctx, bounds);
+        
+        // SVG layers in order: rivers, kingdom fills+borders, roads, cities, labels
+        // 1. Rivers (SVG) - below kingdom colors so they get tinted
         if (this.showRivers && this.rivers && this.rivers.length > 0) {
-            this._renderRivers(ctx, bounds);
+            this._updateRiverSVG();
         }
-        if (this.kingdoms && this.kingdomCount > 0 && this.kingdomNames && this.kingdomCentroids) {
-            this._renderKingdomNames(ctx, bounds);
+        
+        // 2. Kingdom fills and borders (SVG) - tints rivers below
+        if (this.kingdoms && this.kingdomCount > 0) {
+            this._updateKingdomSVG();
         }
-        // Render roads first (below cities)
+        
+        // 3. Roads (SVG)
         if (this.roads && this.roads.length > 0) {
-            this._renderRoads(ctx, bounds);
+            this._updateRoadSVG();
         }
-        // Render capitols first (they have priority), then cities
-        // Use shared placed labels for collision detection
-        this._placedCityLabels = [];
-        if (this.capitols && this.capitolNames) {
-            this._renderCapitols(ctx, bounds);
-        }
-        if (this.cities && this.cityNames) {
-            this._renderCities(ctx, bounds);
-        }
-        this._placedCityLabels = null;
+        
+        // 4. Cities and Capitols (SVG)
+        this._updateCitySVG();
+        
+        // 5. All labels: kingdom names, city names (SVG)
+        this._updateLabelSVG();
     }
     
     // Render Delaunay triangulation (behind)
@@ -159,6 +192,26 @@ render() {
  */
 renderLowRes() {
     const ctx = this.ctx;
+    const zoom = this.viewport.zoom;
+    const tx = this.viewport.x;
+    const ty = this.viewport.y;
+    
+    // Update all SVG group transforms to match viewport (keep them visible during pan/zoom)
+    // Use direct style transform for GPU acceleration
+    const svgIds = ['road-svg', 'river-svg', 'kingdom-svg', 'city-svg', 'label-svg'];
+    for (const id of svgIds) {
+        const svg = document.getElementById(id);
+        if (svg) {
+            // Find the main content group (direct child of svg, not defs)
+            const groups = svg.children;
+            for (let i = 0; i < groups.length; i++) {
+                const child = groups[i];
+                if (child.tagName === 'g') {
+                    child.setAttribute('transform', `translate(${tx}, ${ty}) scale(${zoom})`);
+                }
+            }
+        }
+    }
     
     // Clear canvas
     ctx.fillStyle = this.colors.bg;
@@ -174,8 +227,8 @@ renderLowRes() {
     const bounds = this.getVisibleBounds();
     
     // Render based on mode - simplified versions
-    if (this.renderMode === 'political' && this.kingdoms && this.kingdomCount > 0) {
-        this._renderPoliticalCellsLowRes(ctx, bounds);
+    if (this.renderMode === 'political') {
+        this._renderPoliticalBaseLowRes(ctx, bounds);
     } else {
         this._renderTerrainCellsLowRes(ctx, bounds);
     }
@@ -184,7 +237,32 @@ renderLowRes() {
 },
 
 /**
- * Low-res political map rendering - just colored cells, no borders/labels
+ * Low-res political base - just ocean and land, no cells visible
+ */
+_renderPoliticalBaseLowRes(ctx, bounds) {
+    // Fill with ocean
+    ctx.fillStyle = POLITICAL_OCEAN;
+    ctx.fillRect(bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top);
+    
+    // Fill land with base color using coastline
+    const coastLoops = this._coastlineCache || this._buildSmoothCoastlineLoops();
+    if (coastLoops.length > 0) {
+        ctx.fillStyle = '#E8DCC8';
+        ctx.beginPath();
+        for (const loop of coastLoops) {
+            if (loop.length < 3) continue;
+            ctx.moveTo(loop[0][0], loop[0][1]);
+            for (let i = 1; i < loop.length; i++) {
+                ctx.lineTo(loop[i][0], loop[i][1]);
+            }
+            ctx.closePath();
+        }
+        ctx.fill();
+    }
+},
+
+/**
+ * Low-res political map rendering - DEPRECATED
  */
 _renderPoliticalCellsLowRes(ctx, bounds) {
     const hasKingdoms = this.kingdoms && this.kingdomCount > 0;
@@ -518,6 +596,62 @@ _renderSmoothLakes(ctx, bounds) {
         }
     }
 },
+
+/**
+ * Render base layer for political map - just ocean and land base color
+ * Kingdom colors are rendered via SVG overlay
+ */
+_renderPoliticalBase(ctx, bounds) {
+    if (!this.heights) return;
+    
+    // 1. Fill with ocean color
+    ctx.fillStyle = POLITICAL_OCEAN;
+    ctx.fillRect(bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top);
+    
+    // Use cached coastline loops
+    if (!this._coastlineCache) {
+        this._coastlineCache = this._buildSmoothCoastlineLoops();
+    }
+    const coastLoops = this._coastlineCache;
+    
+    if (coastLoops.length === 0) return;
+    
+    // 2. Fill land with base parchment color
+    ctx.fillStyle = '#E8DCC8'; // Base parchment - kingdoms will tint this
+    ctx.beginPath();
+    for (const loop of coastLoops) {
+        if (loop.length < 3) continue;
+        ctx.moveTo(loop[0][0], loop[0][1]);
+        for (let i = 1; i < loop.length; i++) {
+            ctx.lineTo(loop[i][0], loop[i][1]);
+        }
+        ctx.closePath();
+    }
+    ctx.fill();
+    
+    // 3. Draw lakes
+    if (this.lakeCells && this.lakeCells.size > 0) {
+        ctx.fillStyle = POLITICAL_OCEAN;
+        for (const cellIndex of this.lakeCells) {
+            const cell = this.voronoi.cellPolygon(cellIndex);
+            if (!cell || cell.length < 3) continue;
+            
+            ctx.beginPath();
+            ctx.moveTo(cell[0][0], cell[0][1]);
+            for (let j = 1; j < cell.length; j++) {
+                ctx.lineTo(cell[j][0], cell[j][1]);
+            }
+            ctx.closePath();
+            ctx.fill();
+        }
+    }
+    
+    // 4. Draw coastline stroke
+    const borderColor = '#5A4A3A';
+    const lineWidth = Math.max(0.3, 1 / this.viewport.zoom);
+    this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
+},
+
 /**
  * Render political map - clean cell-based rendering
  */
@@ -858,7 +992,7 @@ _buildKingdomBoundary(kingdomId) {
         if (loop.length < 3) continue;
         
         let smoothed = loop;
-        for (let iter = 0; iter < 2; iter++) {
+        for (let iter = 0; iter < 4; iter++) {
             smoothed = this._smoothClosedLoop(smoothed);
         }
         smoothedLoops.push(smoothed);
@@ -970,6 +1104,14 @@ _smoothClosedLoop(points) {
  */
 _collectKingdomBorderEdges() {
     const borderEdges = [];
+    const addedEdges = new Set();
+    
+    // Helper to create a unique key for an edge (order-independent)
+    const edgeKey = (x1, y1, x2, y2) => {
+        const k1 = `${Math.round(x1*10)},${Math.round(y1*10)}`;
+        const k2 = `${Math.round(x2*10)},${Math.round(y2*10)}`;
+        return k1 < k2 ? `${k1}-${k2}` : `${k2}-${k1}`;
+    };
     
     for (let i = 0; i < this.cellCount; i++) {
         if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
@@ -982,35 +1124,42 @@ _collectKingdomBorderEdges() {
         
         const neighbors = Array.from(this.voronoi.neighbors(i));
         
-        for (const j of neighbors) {
-            if (j < 0 || j >= this.cellCount) continue;
-            if (j < i) continue; // Only process each pair once
-            if (this.heights[j] < ELEVATION.SEA_LEVEL) continue;
+        // For each edge of the cell
+        for (let e = 0; e < cellI.length - 1; e++) {
+            const v1 = cellI[e];
+            const v2 = cellI[e + 1];
+            const midX = (v1[0] + v2[0]) / 2;
+            const midY = (v1[1] + v2[1]) / 2;
             
-            const neighborKingdom = this.kingdoms[j];
-            if (neighborKingdom < 0 || neighborKingdom === myKingdom) continue;
+            // Find which neighbor this edge faces
+            let closestNeighbor = -1;
+            let closestDist = Infinity;
             
-            // Find the edge in cell i that faces cell j
-            const jx = this.points[j * 2];
-            const jy = this.points[j * 2 + 1];
-            
-            let bestEdge = null;
-            let bestDist = Infinity;
-            
-            for (let e = 0; e < cellI.length - 1; e++) {
-                const v1 = cellI[e];
-                const v2 = cellI[e + 1];
-                const midX = (v1[0] + v2[0]) / 2;
-                const midY = (v1[1] + v2[1]) / 2;
+            for (const j of neighbors) {
+                if (j < 0 || j >= this.cellCount) continue;
+                const jx = this.points[j * 2];
+                const jy = this.points[j * 2 + 1];
                 const dist = (midX - jx) ** 2 + (midY - jy) ** 2;
-                if (dist < bestDist) {
-                    bestDist = dist;
-                    bestEdge = { x1: v1[0], y1: v1[1], x2: v2[0], y2: v2[1] };
+                if (dist < closestDist) {
+                    closestDist = dist;
+                    closestNeighbor = j;
                 }
             }
             
-            if (bestEdge) {
-                borderEdges.push(bestEdge);
+            if (closestNeighbor < 0) continue;
+            
+            // Check if this is a border with a different kingdom (not ocean)
+            const neighborHeight = this.heights[closestNeighbor];
+            if (neighborHeight < ELEVATION.SEA_LEVEL) continue; // Skip ocean borders
+            
+            const neighborKingdom = this.kingdoms[closestNeighbor];
+            if (neighborKingdom < 0 || neighborKingdom === myKingdom) continue;
+            
+            // Add this edge if not already added
+            const key = edgeKey(v1[0], v1[1], v2[0], v2[1]);
+            if (!addedEdges.has(key)) {
+                addedEdges.add(key);
+                borderEdges.push({ x1: v1[0], y1: v1[1], x2: v2[0], y2: v2[1] });
             }
         }
     }
@@ -1181,21 +1330,6 @@ _buildSmoothCoastlineLoops() {
     return smoothedLoops;
 },
 /**
- * Draw smooth coastline fill (used by terrain/political modes)
- */
-_drawSmoothCoastFill(ctx, loops, fillColor) {
-    ctx.fillStyle = fillColor;
-    for (const loop of loops) {
-        ctx.beginPath();
-        ctx.moveTo(loop[0][0], loop[0][1]);
-        for (let i = 1; i < loop.length; i++) {
-            ctx.lineTo(loop[i][0], loop[i][1]);
-        }
-        ctx.closePath();
-        ctx.fill();
-    }
-},
-/**
  * Draw smooth coastline stroke
  */
 _drawSmoothCoastStroke(ctx, loops, strokeColor, lineWidth) {
@@ -1249,98 +1383,6 @@ _identifyLandmasses() {
         this.landmasses.push({ cells, size: cells.length });
     }
     
-    console.log(`Identified ${this.landmasses.length} landmasses`);
-},
-/**
- * Build smooth boundaries for all landmasses
- */
-_buildLandmassBoundaries() {
-    if (!this.landmasses) return;
-    
-    this.landmassBoundaries = [];
-    
-    for (const landmass of this.landmasses) {
-        const boundaries = this._extractAndSmoothBoundary(landmass.cells);
-        this.landmassBoundaries.push(boundaries);
-    }
-},
-/**
- * Extract boundary and apply smoothing
- */
-_extractAndSmoothBoundary(cellIndices) {
-    if (!cellIndices || cellIndices.length === 0) return [];
-    
-    const cellSet = new Set(cellIndices);
-    const boundaryEdges = [];
-    
-    // For each cell, check each edge
-    for (const i of cellIndices) {
-        const cell = this.voronoi.cellPolygon(i);
-        if (!cell || cell.length < 3) continue;
-        
-        // Get neighbors
-        const neighbors = new Set(this.voronoi.neighbors(i));
-        
-        for (let j = 0; j < cell.length - 1; j++) {
-            const v1 = cell[j];
-            const v2 = cell[j + 1];
-            
-            // Check if this edge borders water
-            // An edge borders water if the cell on the other side is not land
-            let bordersWater = true;
-            
-            for (const neighbor of neighbors) {
-                if (!cellSet.has(neighbor)) continue; // Neighbor is not in our landmass
-                
-                // Check if this neighbor shares this edge
-                const neighborCell = this.voronoi.cellPolygon(neighbor);
-                if (!neighborCell) continue;
-                
-                for (let k = 0; k < neighborCell.length - 1; k++) {
-                    const nv1 = neighborCell[k];
-                    const nv2 = neighborCell[k + 1];
-                    
-                    // Check if edges match (reversed direction)
-                    const d1 = Math.hypot(v1[0] - nv2[0], v1[1] - nv2[1]);
-                    const d2 = Math.hypot(v2[0] - nv1[0], v2[1] - nv1[1]);
-                    
-                    if (d1 < 1 && d2 < 1) {
-                        bordersWater = false;
-                        break;
-                    }
-                }
-                if (!bordersWater) break;
-            }
-            
-            if (bordersWater) {
-                boundaryEdges.push({
-                    x1: v1[0], y1: v1[1],
-                    x2: v2[0], y2: v2[1]
-                });
-            }
-        }
-    }
-    
-    if (boundaryEdges.length === 0) return [];
-    
-    // Chain edges into continuous loops
-    const loops = this._chainEdgesIntoLoops(boundaryEdges);
-    
-    // Apply smoothing to each loop
-    const smoothedLoops = [];
-    for (const loop of loops) {
-        if (loop.length < 4) continue;
-        
-        // Apply Chaikin smoothing (2 iterations for gentle smoothing)
-        let smoothed = loop;
-        for (let iter = 0; iter < 2; iter++) {
-            smoothed = this._chaikinSmooth(smoothed);
-        }
-        
-        smoothedLoops.push(smoothed);
-    }
-    
-    return smoothedLoops;
 },
 /**
  * Chain edges into continuous loops
@@ -1440,125 +1482,6 @@ _chaikinSmooth(points) {
     }
     
     return smoothed;
-},
-/**
- * Extract boundary edges for a region (set of cells)
- * Returns array of closed paths (for regions with holes/islands)
- */
-_extractRegionBoundary(cellIndices) {
-    if (!cellIndices || cellIndices.length === 0) return [];
-    
-    const cellSet = new Set(cellIndices);
-    const boundaryEdges = [];
-    
-    // Find all edges that are on the boundary (neighbor not in region)
-    for (const i of cellIndices) {
-        const cell = this.voronoi.cellPolygon(i);
-        if (!cell || cell.length < 3) continue;
-        
-        const neighbors = Array.from(this.voronoi.neighbors(i));
-        
-        for (let j = 0; j < cell.length - 1; j++) {
-            const v1 = cell[j];
-            const v2 = cell[j + 1];
-            
-            // Find which neighbor shares this edge
-            const edgeMidX = (v1[0] + v2[0]) / 2;
-            const edgeMidY = (v1[1] + v2[1]) / 2;
-            
-            let edgeNeighbor = -1;
-            let minDist = Infinity;
-            for (const n of neighbors) {
-                const nx = this.points[n * 2];
-                const ny = this.points[n * 2 + 1];
-                const distSq = (nx - edgeMidX) ** 2 + (ny - edgeMidY) ** 2;
-                if (distSq < minDist) {
-                    minDist = distSq;
-                    edgeNeighbor = n;
-                }
-            }
-            
-            // If neighbor is not in region (or is ocean/outside), this is a boundary edge
-            const neighborInRegion = edgeNeighbor >= 0 && cellSet.has(edgeNeighbor);
-            
-            if (!neighborInRegion) {
-                boundaryEdges.push({
-                    x1: v1[0], y1: v1[1],
-                    x2: v2[0], y2: v2[1]
-                });
-            }
-        }
-    }
-    
-    // Chain edges into closed paths
-    return this._chainEdgesIntoPaths(boundaryEdges);
-},
-/**
- * Chain edges into closed paths
- */
-_chainEdgesIntoPaths(edges) {
-    if (edges.length === 0) return [];
-    
-    const tolerance = 2.0;
-    const paths = [];
-    const used = new Set();
-    
-    for (let startIdx = 0; startIdx < edges.length; startIdx++) {
-        if (used.has(startIdx)) continue;
-        
-        const path = [];
-        let currentEdge = edges[startIdx];
-        used.add(startIdx);
-        
-        path.push({ x: currentEdge.x1, y: currentEdge.y1 });
-        path.push({ x: currentEdge.x2, y: currentEdge.y2 });
-        
-        // Keep extending until we close the loop or can't extend
-        let extended = true;
-        let iterations = 0;
-        const maxIter = edges.length * 2;
-        
-        while (extended && iterations < maxIter) {
-            extended = false;
-            iterations++;
-            
-            const lastPoint = path[path.length - 1];
-            const firstPoint = path[0];
-            
-            // Check if we've closed the loop
-            const closeDist = Math.abs(lastPoint.x - firstPoint.x) + Math.abs(lastPoint.y - firstPoint.y);
-            if (path.length > 3 && closeDist < tolerance) {
-                break; // Closed loop
-            }
-            
-            // Try to extend forward
-            for (let i = 0; i < edges.length; i++) {
-                if (used.has(i)) continue;
-                
-                const edge = edges[i];
-                const d1 = Math.abs(edge.x1 - lastPoint.x) + Math.abs(edge.y1 - lastPoint.y);
-                const d2 = Math.abs(edge.x2 - lastPoint.x) + Math.abs(edge.y2 - lastPoint.y);
-                
-                if (d1 < tolerance) {
-                    path.push({ x: edge.x2, y: edge.y2 });
-                    used.add(i);
-                    extended = true;
-                    break;
-                } else if (d2 < tolerance) {
-                    path.push({ x: edge.x1, y: edge.y1 });
-                    used.add(i);
-                    extended = true;
-                    break;
-                }
-            }
-        }
-        
-        if (path.length >= 3) {
-            paths.push(path);
-        }
-    }
-    
-    return paths;
 },
 /**
  * Smooth a path using Catmull-Rom splines
@@ -2416,87 +2339,170 @@ _renderCities(ctx, bounds) {
 /**
  * Render roads connecting cities
  */
+/**
+ * Render roads connecting cities
+ */
 _renderRoads(ctx, bounds) {
+    // Roads are rendered via SVG overlay, not canvas
+    this._updateRoadSVG();
+},
+/**
+ * Update SVG overlay with road paths
+ */
+_updateRoadSVG() {
+    const svg = document.getElementById('road-svg');
+    if (!svg) return;
+    
+    // Show SVG (may have been hidden during low-res render)
+    svg.style.opacity = '1';
+    
+    // Clear existing paths
+    svg.innerHTML = '';
+    
     if (!this.roads || this.roads.length === 0) return;
     
     const zoom = this.viewport.zoom;
     
     // Only show roads when somewhat zoomed in
-    if (zoom < 0.8) return;
+    if (zoom < 0.5) return;
     
-    // Collect all unique segments first
-    const drawnSegments = new Set();
-    const segments = [];
+    // Set SVG viewBox to match canvas
+    svg.setAttribute('viewBox', `0 0 ${this.width} ${this.height}`);
     
+    // Create a group for all roads with transform
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('transform', `translate(${this.viewport.x}, ${this.viewport.y}) scale(${zoom})`);
+    
+    // Stroke width - 1px in world space
+    const strokeWidth = 0.7;
+    
+    // Dash pattern - smaller dashes
+    const dashLength = 1;
+    const gapLength = 2;
+    
+    // Draw each road as its own path
     for (const road of this.roads) {
         const path = road.path;
         if (!path || path.length < 2) continue;
         
-        // Check if road is in view
-        let inView = false;
-        for (const p of path) {
-            if (p.x >= bounds.left - 50 && p.x <= bounds.right + 50 &&
-                p.y >= bounds.top - 50 && p.y <= bounds.bottom + 50) {
-                inView = true;
-                break;
-            }
-        }
-        if (!inView) continue;
+        // Simplify path to remove redundant points
+        const points = path.map(p => ({ x: p.x, y: p.y }));
+        const simplified = this._simplifyPath(points, 3);
         
-        for (let i = 0; i < path.length - 1; i++) {
-            const p1 = path[i];
-            const p2 = path[i + 1];
-            
-            // Create segment key using cell indices
-            const c1 = p1.cell !== undefined ? p1.cell : `${Math.round(p1.x)},${Math.round(p1.y)}`;
-            const c2 = p2.cell !== undefined ? p2.cell : `${Math.round(p2.x)},${Math.round(p2.y)}`;
-            const segKey = c1 < c2 ? `${c1}|${c2}` : `${c2}|${c1}`;
-            
-            if (!drawnSegments.has(segKey)) {
-                drawnSegments.add(segKey);
-                segments.push({ 
-                    x1: p1.x, y1: p1.y, 
-                    x2: p2.x, y2: p2.y,
-                    k1: `${Math.round(p1.x)},${Math.round(p1.y)}`,
-                    k2: `${Math.round(p2.x)},${Math.round(p2.y)}`
-                });
-            }
+        // Build path with gentle curves
+        const d = this._buildRoadSVGPath(simplified);
+        
+        const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        pathEl.setAttribute('d', d);
+        pathEl.setAttribute('stroke-width', strokeWidth);
+        pathEl.setAttribute('stroke-dasharray', `${dashLength} ${gapLength}`);
+        
+        g.appendChild(pathEl);
+    }
+    
+    svg.appendChild(g);
+},
+
+/**
+ * Simplify path using Douglas-Peucker algorithm
+ */
+_simplifyPath(points, tolerance) {
+    if (points.length <= 2) return points;
+    
+    // Find point with maximum distance from line between first and last
+    let maxDist = 0;
+    let maxIdx = 0;
+    
+    const first = points[0];
+    const last = points[points.length - 1];
+    
+    for (let i = 1; i < points.length - 1; i++) {
+        const dist = this._pointToLineDistance(points[i], first, last);
+        if (dist > maxDist) {
+            maxDist = dist;
+            maxIdx = i;
         }
     }
     
-    if (segments.length === 0) return;
+    // If max distance is greater than tolerance, recursively simplify
+    if (maxDist > tolerance) {
+        const left = this._simplifyPath(points.slice(0, maxIdx + 1), tolerance);
+        const right = this._simplifyPath(points.slice(maxIdx), tolerance);
+        return left.slice(0, -1).concat(right);
+    } else {
+        return [first, last];
+    }
+},
+
+/**
+ * Calculate perpendicular distance from point to line
+ */
+_pointToLineDistance(point, lineStart, lineEnd) {
+    const dx = lineEnd.x - lineStart.x;
+    const dy = lineEnd.y - lineStart.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
     
-    // Build connected paths from segments
-    const paths = this._buildRoadPaths(segments);
+    if (len === 0) return Math.sqrt((point.x - lineStart.x) ** 2 + (point.y - lineStart.y) ** 2);
     
-    ctx.save();
+    const t = Math.max(0, Math.min(1, ((point.x - lineStart.x) * dx + (point.y - lineStart.y) * dy) / (len * len)));
+    const projX = lineStart.x + t * dx;
+    const projY = lineStart.y + t * dy;
     
-    const lineWidth = Math.max(0.25, 1 / zoom);
-    const dashSize = Math.max(1, 3 / zoom);
-    const gapSize = Math.max(1, 2 / zoom);
+    return Math.sqrt((point.x - projX) ** 2 + (point.y - projY) ** 2);
+},
+
+/**
+ * Build SVG path with gentle quadratic curves at corners
+ */
+_buildRoadSVGPath(points) {
+    if (points.length < 2) return '';
     
-    ctx.strokeStyle = 'rgba(44, 36, 22, 0.35)';
-    ctx.lineWidth = lineWidth;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.setLineDash([dashSize, gapSize]);
-    
-    // Draw each connected path
-    for (const path of paths) {
-        if (path.length < 2) continue;
-        
-        ctx.beginPath();
-        ctx.moveTo(path[0].x, path[0].y);
-        
-        for (let i = 1; i < path.length; i++) {
-            ctx.lineTo(path[i].x, path[i].y);
-        }
-        
-        ctx.stroke();
+    if (points.length === 2) {
+        return `M ${points[0].x} ${points[0].y} L ${points[1].x} ${points[1].y}`;
     }
     
-    ctx.setLineDash([]);
-    ctx.restore();
+    // Use straight lines with rounded corners
+    let d = `M ${points[0].x} ${points[0].y}`;
+    
+    const cornerRadius = 5; // Small radius for gentle curves at corners
+    
+    for (let i = 1; i < points.length - 1; i++) {
+        const prev = points[i - 1];
+        const curr = points[i];
+        const next = points[i + 1];
+        
+        // Direction vectors
+        const dx1 = curr.x - prev.x;
+        const dy1 = curr.y - prev.y;
+        const dx2 = next.x - curr.x;
+        const dy2 = next.y - curr.y;
+        
+        const len1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
+        const len2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+        
+        // Skip if segments are too short
+        if (len1 < 1 || len2 < 1) {
+            d += ` L ${curr.x} ${curr.y}`;
+            continue;
+        }
+        
+        // Calculate how far back to start the curve
+        const r = Math.min(cornerRadius, len1 / 2, len2 / 2);
+        
+        // Points where curve starts and ends
+        const startX = curr.x - (dx1 / len1) * r;
+        const startY = curr.y - (dy1 / len1) * r;
+        const endX = curr.x + (dx2 / len2) * r;
+        const endY = curr.y + (dy2 / len2) * r;
+        
+        // Line to curve start, then quadratic curve through corner
+        d += ` L ${startX} ${startY} Q ${curr.x} ${curr.y} ${endX} ${endY}`;
+    }
+    
+    // Final line to last point
+    d += ` L ${points[points.length - 1].x} ${points[points.length - 1].y}`;
+    
+    return d;
 },
 
 /**
@@ -2709,7 +2715,6 @@ _generateContourCache() {
         return;
     }
     
-    console.log('Generating contour cache...');
     const startTime = performance.now();
     
     // Initialize cache
@@ -2797,7 +2802,6 @@ _generateContourCache() {
         }
     }
     
-    console.log(`Contour cache generated: ${this._contourCache.length} levels, ${(performance.now() - startTime).toFixed(1)}ms`);
     } catch (e) {
         console.warn('Failed to generate contour cache:', e);
         this._contourCache = [];
@@ -3452,72 +3456,6 @@ _drawCurvedKingdomText(ctx, name, centerX, centerY, fontSize, spanWidth, zoom, c
     }
 },
 /**
- * Find organic spine path through kingdom by sampling cell positions
- */
-_findKingdomSpine(cells, centerX, centerY, minX, maxX) {
-    const width = maxX - minX;
-    const numSamples = 12;
-    const sampleWidth = width / numSamples;
-    
-    // Sample average Y position at each X slice
-    const samples = [];
-    
-    for (let i = 0; i <= numSamples; i++) {
-        const sampleX = minX + i * sampleWidth;
-        let sumY = 0;
-        let count = 0;
-        
-        // Find cells near this X position
-        for (const cellIdx of cells) {
-            const cx = this.points[cellIdx * 2];
-            const cy = this.points[cellIdx * 2 + 1];
-            
-            if (Math.abs(cx - sampleX) < sampleWidth * 0.8) {
-                sumY += cy;
-                count++;
-            }
-        }
-        
-        if (count > 0) {
-            samples.push({ x: sampleX, y: sumY / count });
-        }
-    }
-    
-    // Need at least 2 points
-    if (samples.length < 2) {
-        return [
-            { x: minX, y: centerY },
-            { x: maxX, y: centerY }
-        ];
-    }
-    
-    // Smooth the path using Chaikin's algorithm
-    let smoothed = samples;
-    for (let iter = 0; iter < 2; iter++) {
-        const newPoints = [];
-        newPoints.push(smoothed[0]); // Keep first point
-        
-        for (let i = 0; i < smoothed.length - 1; i++) {
-            const p0 = smoothed[i];
-            const p1 = smoothed[i + 1];
-            
-            newPoints.push({
-                x: p0.x * 0.75 + p1.x * 0.25,
-                y: p0.y * 0.75 + p1.y * 0.25
-            });
-            newPoints.push({
-                x: p0.x * 0.25 + p1.x * 0.75,
-                y: p0.y * 0.25 + p1.y * 0.75
-            });
-        }
-        
-        newPoints.push(smoothed[smoothed.length - 1]); // Keep last point
-        smoothed = newPoints;
-    }
-    
-    return smoothed;
-},
-/**
  * Get total length of a path
  */
 _getPathLength(path) {
@@ -4035,79 +3973,6 @@ _getLakeBoundaryPoints(lake) {
     return boundaryPoints;
 },
 /**
- * Order boundary points into a continuous loop using nearest neighbor
- */
-_orderBoundaryPoints(points) {
-    if (points.length < 3) return points;
-    
-    const ordered = [];
-    const remaining = [...points];
-    
-    // Start with the leftmost point
-    remaining.sort((a, b) => a.x - b.x);
-    ordered.push(remaining.shift());
-    
-    // Greedily add nearest point
-    while (remaining.length > 0) {
-        const last = ordered[ordered.length - 1];
-        let nearestIdx = 0;
-        let nearestDist = Infinity;
-        
-        for (let i = 0; i < remaining.length; i++) {
-            const dist = (remaining[i].x - last.x) ** 2 + (remaining[i].y - last.y) ** 2;
-            if (dist < nearestDist) {
-                nearestDist = dist;
-                nearestIdx = i;
-            }
-        }
-        
-        ordered.push(remaining.splice(nearestIdx, 1)[0]);
-    }
-    
-    return ordered;
-},
-/**
- * Smooth boundary points using Catmull-Rom interpolation
- */
-_smoothBoundary(points) {
-    if (points.length < 4) return points;
-    
-    const result = [];
-    const n = points.length;
-    const segments = 3; // Points between each original point
-    
-    for (let i = 0; i < n; i++) {
-        const p0 = points[(i - 1 + n) % n];
-        const p1 = points[i];
-        const p2 = points[(i + 1) % n];
-        const p3 = points[(i + 2) % n];
-        
-        for (let t = 0; t < segments; t++) {
-            const s = t / segments;
-            const s2 = s * s;
-            const s3 = s2 * s;
-            
-            const x = 0.5 * (
-                (2 * p1.x) +
-                (-p0.x + p2.x) * s +
-                (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * s2 +
-                (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * s3
-            );
-            
-            const y = 0.5 * (
-                (2 * p1.y) +
-                (-p0.y + p2.y) * s +
-                (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * s2 +
-                (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * s3
-            );
-            
-            result.push({ x, y });
-        }
-    }
-    
-    return result;
-},
-/**
  * Render precipitation-colored cells
  */
 _renderPrecipitationCells(ctx, bounds) {
@@ -4331,15 +4196,29 @@ _renderHoveredLake(ctx, lake) {
     ctx.stroke();
 },
 /**
- * Render rivers as filled polygons that get wider - single color, no 3D
+ * Render rivers via SVG overlay
  */
 _renderRivers(ctx, bounds) {
+    // Rivers are rendered via SVG overlay, not canvas
+    this._updateRiverSVG();
+    
+    // Still render river names on canvas
+    this._renderRiverNames(ctx, bounds);
+},
+
+/**
+ * Update SVG overlay with river paths
+ */
+/**
+ * Render rivers on canvas (for political mode where rivers are below kingdom colors)
+ */
+_renderRiversCanvas(ctx, bounds) {
     if (!this.rivers || this.rivers.length === 0) return;
     if (!this.heights) return;
     
     const zoom = this.viewport.zoom;
     
-    // Clip rivers to coastline - rivers extend into ocean but get clipped at coast edge
+    // Clip rivers to coastline
     const coastLoops = this._coastlineCache || this._buildSmoothCoastlineLoops();
     const hasClip = coastLoops.length > 0;
     if (hasClip) {
@@ -4356,8 +4235,11 @@ _renderRivers(ctx, bounds) {
         ctx.clip();
     }
     
+    // Width parameters (in world space, will scale with zoom)
+    const minWidth = 0.3;
+    const maxWidth = 2.0;
+    
     for (const river of this.rivers) {
-        // Use full path - clipping will cut it at coastline
         const path = river.path;
         if (path.length < 2) continue;
         
@@ -4376,11 +4258,7 @@ _renderRivers(ctx, bounds) {
         const smoothPath = this._interpolateRiverCurve(path);
         if (smoothPath.length < 2) continue;
         
-        // Width: starts super narrow, gets wider
-        const minWidth = 0.3 / zoom;  // Tiny at source
-        const maxWidth = 4.0 / zoom;  // Wide at mouth
-        
-        // Draw as tapered polygon
+        // Build tapered polygon
         const leftEdge = [];
         const rightEdge = [];
         
@@ -4388,7 +4266,7 @@ _renderRivers(ctx, bounds) {
             const p = smoothPath[i];
             const progress = i / (smoothPath.length - 1);
             
-            // Exponential width growth - very narrow at start
+            // Exponential width growth
             const width = minWidth + (maxWidth - minWidth) * Math.pow(progress, 1.5);
             
             // Calculate perpendicular direction
@@ -4427,18 +4305,787 @@ _renderRivers(ctx, bounds) {
         }
         ctx.closePath();
         
-        // River fill - same color as coastline border
-        ctx.fillStyle = '#5A4A3A';
+        // River fill color
+        ctx.fillStyle = 'rgb(166, 155, 125)';
         ctx.fill();
     }
     
-    // Restore context (release coastline clip)
     if (hasClip) {
         ctx.restore();
     }
+},
+
+_updateRiverSVG() {
+    const svg = document.getElementById('river-svg');
+    if (!svg) return;
     
-    // Render river names
-    this._renderRiverNames(ctx, bounds);
+    svg.style.opacity = '1';
+    svg.innerHTML = '';
+    
+    if (!this.rivers || this.rivers.length === 0) return;
+    if (!this.heights) return;
+    
+    const zoom = this.viewport.zoom;
+    
+    // Set SVG viewBox to match canvas
+    svg.setAttribute('viewBox', `0 0 ${this.width} ${this.height}`);
+    
+    // Create a group for all rivers with transform
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('transform', `translate(${this.viewport.x}, ${this.viewport.y}) scale(${zoom})`);
+    
+    // Create clipping path from coastline
+    const coastLoops = this._coastlineCache || this._buildSmoothCoastlineLoops();
+    if (coastLoops.length > 0) {
+        const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+        const clipPath = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
+        clipPath.setAttribute('id', 'coastline-clip');
+        
+        let clipD = '';
+        for (const loop of coastLoops) {
+            if (loop.length < 3) continue;
+            clipD += `M ${loop[0][0]} ${loop[0][1]} `;
+            for (let i = 1; i < loop.length; i++) {
+                clipD += `L ${loop[i][0]} ${loop[i][1]} `;
+            }
+            clipD += 'Z ';
+        }
+        
+        const clipPathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        clipPathEl.setAttribute('d', clipD);
+        clipPath.appendChild(clipPathEl);
+        defs.appendChild(clipPath);
+        svg.appendChild(defs);
+        
+        g.setAttribute('clip-path', 'url(#coastline-clip)');
+    }
+    
+    // Width parameters (in world space, will scale with zoom)
+    const minWidth = 0.3;
+    const maxWidth = 2.0;
+    
+    for (const river of this.rivers) {
+        const path = river.path;
+        if (path.length < 2) continue;
+        
+        // Interpolate path using cardinal spline
+        const smoothPath = this._interpolateRiverCurve(path);
+        if (smoothPath.length < 2) continue;
+        
+        // Build tapered polygon
+        const leftEdge = [];
+        const rightEdge = [];
+        
+        for (let i = 0; i < smoothPath.length; i++) {
+            const p = smoothPath[i];
+            const progress = i / (smoothPath.length - 1);
+            
+            // Exponential width growth
+            const width = minWidth + (maxWidth - minWidth) * Math.pow(progress, 1.5);
+            
+            // Calculate perpendicular direction
+            let dx, dy;
+            if (i === 0) {
+                dx = smoothPath[1].x - p.x;
+                dy = smoothPath[1].y - p.y;
+            } else if (i === smoothPath.length - 1) {
+                dx = p.x - smoothPath[i - 1].x;
+                dy = p.y - smoothPath[i - 1].y;
+            } else {
+                dx = smoothPath[i + 1].x - smoothPath[i - 1].x;
+                dy = smoothPath[i + 1].y - smoothPath[i - 1].y;
+            }
+            
+            const len = Math.sqrt(dx * dx + dy * dy);
+            if (len < 0.001) continue;
+            
+            const px = -dy / len;
+            const py = dx / len;
+            
+            leftEdge.push({ x: p.x + px * width, y: p.y + py * width });
+            rightEdge.push({ x: p.x - px * width, y: p.y - py * width });
+        }
+        
+        if (leftEdge.length < 2) continue;
+        
+        // Build SVG path data for polygon
+        let d = `M ${leftEdge[0].x} ${leftEdge[0].y}`;
+        for (let i = 1; i < leftEdge.length; i++) {
+            d += ` L ${leftEdge[i].x} ${leftEdge[i].y}`;
+        }
+        for (let i = rightEdge.length - 1; i >= 0; i--) {
+            d += ` L ${rightEdge[i].x} ${rightEdge[i].y}`;
+        }
+        d += ' Z';
+        
+        const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        pathEl.setAttribute('d', d);
+        g.appendChild(pathEl);
+    }
+    
+    svg.appendChild(g);
+},
+
+/**
+ * Update SVG overlay with kingdom fills and borders
+ */
+_updateKingdomSVG() {
+    const svg = document.getElementById('kingdom-svg');
+    if (!svg) return;
+    
+    svg.style.opacity = '1';
+    svg.innerHTML = '';
+    
+    if (!this.kingdoms || this.kingdomCount <= 0) return;
+    if (!this.kingdomCells) return;
+    
+    const zoom = this.viewport.zoom;
+    
+    // Set SVG viewBox to match canvas
+    svg.setAttribute('viewBox', `0 0 ${this.width} ${this.height}`);
+    
+    // Create clipping path from coastline
+    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    const coastLoops = this._coastlineCache || this._buildSmoothCoastlineLoops();
+    
+    if (coastLoops.length > 0) {
+        const clipPath = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
+        clipPath.setAttribute('id', 'coast-clip');
+        
+        let clipD = '';
+        for (const loop of coastLoops) {
+            if (loop.length < 3) continue;
+            clipD += `M ${loop[0][0]} ${loop[0][1]} `;
+            for (let i = 1; i < loop.length; i++) {
+                clipD += `L ${loop[i][0]} ${loop[i][1]} `;
+            }
+            clipD += 'Z ';
+        }
+        
+        const clipPathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        clipPathEl.setAttribute('d', clipD);
+        clipPath.appendChild(clipPathEl);
+        defs.appendChild(clipPath);
+    }
+    svg.appendChild(defs);
+    
+    // Create a group with transform
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('transform', `translate(${this.viewport.x}, ${this.viewport.y}) scale(${zoom})`);
+    if (coastLoops.length > 0) {
+        g.setAttribute('clip-path', 'url(#coast-clip)');
+    }
+    
+    // 1. First pass: Render all kingdom fills (no strokes)
+    for (let k = 0; k < this.kingdomCount; k++) {
+        const cells = this.kingdomCells[k];
+        if (!cells || cells.length === 0) continue;
+        
+        // Build smooth boundary for this kingdom
+        const boundaries = this._buildKingdomBoundary(k);
+        if (boundaries.length === 0) continue;
+        
+        // Get kingdom color
+        const colorIndex = (this.kingdomColors && this.kingdomColors[k] >= 0) 
+            ? this.kingdomColors[k] 
+            : k % POLITICAL_COLORS.length;
+        const color = POLITICAL_COLORS[colorIndex];
+        
+        // Draw each boundary loop as a filled path (no stroke)
+        for (const boundary of boundaries) {
+            if (boundary.length < 3) continue;
+            
+            let d = `M ${boundary[0][0]} ${boundary[0][1]}`;
+            for (let i = 1; i < boundary.length; i++) {
+                d += ` L ${boundary[i][0]} ${boundary[i][1]}`;
+            }
+            d += ' Z';
+            
+            const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            pathEl.setAttribute('d', d);
+            pathEl.setAttribute('fill', color);
+            pathEl.setAttribute('stroke', 'none');
+            pathEl.setAttribute('class', 'kingdom-fill');
+            g.appendChild(pathEl);
+        }
+    }
+    
+    // 2. Second pass: Draw border lines between different kingdoms
+    const borderEdges = this._collectKingdomBorderEdges();
+    const strokeWidth = Math.max(0.8, 1.2 / zoom);
+    
+    if (borderEdges.length > 0) {
+        // Chain edges into continuous paths
+        const chainedPaths = this._chainEdgesIntoPaths(borderEdges);
+        
+        // Draw all paths as a single SVG path element
+        let d = '';
+        for (const path of chainedPaths) {
+            if (path.length < 2) continue;
+            d += `M ${path[0].x} ${path[0].y} `;
+            for (let i = 1; i < path.length; i++) {
+                d += `L ${path[i].x} ${path[i].y} `;
+            }
+        }
+        
+        if (d) {
+            const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            pathEl.setAttribute('d', d);
+            pathEl.setAttribute('fill', 'none');
+            pathEl.setAttribute('stroke', '#3D2F1F');
+            pathEl.setAttribute('stroke-width', strokeWidth);
+            pathEl.setAttribute('stroke-linecap', 'round');
+            pathEl.setAttribute('stroke-linejoin', 'round');
+            pathEl.setAttribute('class', 'kingdom-border');
+            g.appendChild(pathEl);
+        }
+    }
+    
+    svg.appendChild(g);
+},
+
+/**
+ * Chain disconnected edges into continuous paths
+ */
+_chainEdgesIntoPaths(edges) {
+    if (edges.length === 0) return [];
+    
+    const tolerance = 0.5;
+    const paths = [];
+    const used = new Set();
+    
+    const dist = (x1, y1, x2, y2) => Math.abs(x1 - x2) + Math.abs(y1 - y2);
+    
+    for (let startIdx = 0; startIdx < edges.length; startIdx++) {
+        if (used.has(startIdx)) continue;
+        
+        const path = [];
+        let currentEdge = edges[startIdx];
+        used.add(startIdx);
+        
+        path.push({ x: currentEdge.x1, y: currentEdge.y1 });
+        path.push({ x: currentEdge.x2, y: currentEdge.y2 });
+        
+        // Keep extending in both directions
+        let extended = true;
+        while (extended) {
+            extended = false;
+            
+            const first = path[0];
+            const last = path[path.length - 1];
+            
+            for (let i = 0; i < edges.length; i++) {
+                if (used.has(i)) continue;
+                
+                const edge = edges[i];
+                
+                // Check if edge connects to end
+                if (dist(edge.x1, edge.y1, last.x, last.y) < tolerance) {
+                    path.push({ x: edge.x2, y: edge.y2 });
+                    used.add(i);
+                    extended = true;
+                    break;
+                } else if (dist(edge.x2, edge.y2, last.x, last.y) < tolerance) {
+                    path.push({ x: edge.x1, y: edge.y1 });
+                    used.add(i);
+                    extended = true;
+                    break;
+                }
+                
+                // Check if edge connects to start
+                if (dist(edge.x1, edge.y1, first.x, first.y) < tolerance) {
+                    path.unshift({ x: edge.x2, y: edge.y2 });
+                    used.add(i);
+                    extended = true;
+                    break;
+                } else if (dist(edge.x2, edge.y2, first.x, first.y) < tolerance) {
+                    path.unshift({ x: edge.x1, y: edge.y1 });
+                    used.add(i);
+                    extended = true;
+                    break;
+                }
+            }
+        }
+        
+        if (path.length >= 2) {
+            paths.push(path);
+        }
+    }
+    
+    return paths;
+},
+
+/**
+ * Smooth an open path (not closed loop)
+ */
+_smoothOpenPath(points) {
+    if (points.length < 3) return points;
+    
+    const smoothed = [points[0]]; // Keep first point
+    
+    for (let i = 1; i < points.length - 1; i++) {
+        const prev = points[i - 1];
+        const curr = points[i];
+        const next = points[i + 1];
+        
+        // Average with neighbors
+        const x = (prev[0] + curr[0] * 2 + next[0]) / 4;
+        const y = (prev[1] + curr[1] * 2 + next[1]) / 4;
+        smoothed.push([x, y]);
+    }
+    
+    smoothed.push(points[points.length - 1]); // Keep last point
+    return smoothed;
+},
+
+/**
+ * Update SVG overlay with city and capitol icons
+ */
+_updateCitySVG() {
+    const svg = document.getElementById('city-svg');
+    if (!svg) return;
+    
+    svg.style.opacity = '1';
+    svg.innerHTML = '';
+    
+    const zoom = this.viewport.zoom;
+    
+    // Set SVG viewBox to match canvas
+    svg.setAttribute('viewBox', `0 0 ${this.width} ${this.height}`);
+    
+    // Create defs for icon symbols
+    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    
+    // Capitol icon - grand castle with towers and flags
+    const capitolSymbol = document.createElementNS('http://www.w3.org/2000/svg', 'symbol');
+    capitolSymbol.setAttribute('id', 'capitol-icon');
+    capitolSymbol.setAttribute('viewBox', '0 0 32 24');
+    capitolSymbol.innerHTML = `
+        <g fill="#3D2F1F">
+            <!-- Left tower -->
+            <rect x="1" y="10" width="6" height="14"/>
+            <rect x="0" y="8" width="8" height="3"/>
+            <rect x="0" y="6" width="1.5" height="2"/>
+            <rect x="3.25" y="6" width="1.5" height="2"/>
+            <rect x="6.5" y="6" width="1.5" height="2"/>
+            
+            <!-- Left wall -->
+            <rect x="7" y="16" width="4" height="8"/>
+            
+            <!-- Center keep -->
+            <rect x="11" y="8" width="10" height="16"/>
+            <rect x="10" y="5" width="12" height="4"/>
+            <rect x="10" y="3" width="2" height="2"/>
+            <rect x="14" y="3" width="4" height="2"/>
+            <rect x="20" y="3" width="2" height="2"/>
+            
+            <!-- Main tower/spire -->
+            <rect x="14.5" y="0" width="3" height="3"/>
+            <polygon points="16,0 14,3 18,3"/>
+            
+            <!-- Flag -->
+            <rect x="15.75" y="-4" width="0.5" height="4"/>
+            <polygon points="16.25,-4 16.25,-1.5 19,-2.75"/>
+            
+            <!-- Right wall -->
+            <rect x="21" y="16" width="4" height="8"/>
+            
+            <!-- Right tower -->
+            <rect x="25" y="10" width="6" height="14"/>
+            <rect x="24" y="8" width="8" height="3"/>
+            <rect x="24" y="6" width="1.5" height="2"/>
+            <rect x="27.25" y="6" width="1.5" height="2"/>
+            <rect x="30.5" y="6" width="1.5" height="2"/>
+            
+            <!-- Gate -->
+            <rect x="14" y="18" width="4" height="6" fill="#C4B998"/>
+            <path d="M14,18 Q16,15 18,18" fill="#3D2F1F"/>
+        </g>
+    `;
+    defs.appendChild(capitolSymbol);
+    
+    // City icon - medieval town with church and buildings
+    const citySymbol = document.createElementNS('http://www.w3.org/2000/svg', 'symbol');
+    citySymbol.setAttribute('id', 'city-icon');
+    citySymbol.setAttribute('viewBox', '0 0 24 18');
+    citySymbol.innerHTML = `
+        <g fill="#3D2F1F">
+            <!-- Left small house -->
+            <rect x="0" y="12" width="5" height="6"/>
+            <polygon points="0,12 2.5,8 5,12"/>
+            
+            <!-- Left medium building -->
+            <rect x="5" y="10" width="4" height="8"/>
+            <polygon points="5,10 7,6 9,10"/>
+            
+            <!-- Church (center) -->
+            <rect x="9" y="8" width="6" height="10"/>
+            <polygon points="9,8 12,3 15,8"/>
+            <rect x="11.5" y="0" width="1" height="3"/>
+            <rect x="10.5" y="0.5" width="3" height="0.8"/>
+            
+            <!-- Right building -->
+            <rect x="15" y="11" width="4" height="7"/>
+            <polygon points="15,11 17,7 19,11"/>
+            
+            <!-- Right small house -->
+            <rect x="19" y="13" width="5" height="5"/>
+            <polygon points="19,13 21.5,9 24,13"/>
+        </g>
+    `;
+    defs.appendChild(citySymbol);
+    
+    svg.appendChild(defs);
+    
+    // Create a group with transform
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('transform', `translate(${this.viewport.x}, ${this.viewport.y}) scale(${zoom})`);
+    
+    // Icon scale in world space
+    const capitolScale = 0.5;
+    const cityScale = 0.45;
+    
+    // Draw capitols
+    if (this.capitols && this.capitolNames) {
+        for (let k = 0; k < this.kingdomCount; k++) {
+            const capitolCell = this.capitols[k];
+            if (capitolCell < 0) continue;
+            
+            const x = this.points[capitolCell * 2];
+            const y = this.points[capitolCell * 2 + 1];
+            
+            const w = 32 * capitolScale;
+            const h = 24 * capitolScale;
+            
+            const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+            use.setAttribute('href', '#capitol-icon');
+            use.setAttribute('x', x - w / 2);
+            use.setAttribute('y', y - h + 2);
+            use.setAttribute('width', w);
+            use.setAttribute('height', h);
+            use.setAttribute('class', 'capitol-icon');
+            g.appendChild(use);
+            
+            // Add hit box for capitol icon
+            if (this._labelHitBoxes) {
+                this._labelHitBoxes.push({
+                    type: 'capital',
+                    index: k,
+                    cell: capitolCell,
+                    kingdom: k,
+                    name: this.capitolNames[k] || `Capitol ${k}`,
+                    box: {
+                        left: x - w / 2 - 2,
+                        right: x + w / 2 + 2,
+                        top: y - h,
+                        bottom: y + 4
+                    }
+                });
+            }
+        }
+    }
+    
+    // Draw cities (only when zoomed in enough)
+    if (zoom > 0.6 && this.cities && this.cityNames) {
+        for (let i = 0; i < this.cities.length; i++) {
+            const city = this.cities[i];
+            if (!city || city.cell < 0) continue;
+            
+            const x = this.points[city.cell * 2];
+            const y = this.points[city.cell * 2 + 1];
+            
+            const w = 24 * cityScale;
+            const h = 18 * cityScale;
+            
+            const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+            use.setAttribute('href', '#city-icon');
+            use.setAttribute('x', x - w / 2);
+            use.setAttribute('y', y - h + 1);
+            use.setAttribute('width', w);
+            use.setAttribute('height', h);
+            use.setAttribute('class', 'city-icon');
+            g.appendChild(use);
+            
+            // Add hit box for city icon
+            if (this._labelHitBoxes) {
+                this._labelHitBoxes.push({
+                    type: 'city',
+                    index: i,
+                    cell: city.cell,
+                    kingdom: city.kingdom,
+                    name: this.cityNames[i] || `City ${i}`,
+                    box: {
+                        left: x - w / 2 - 2,
+                        right: x + w / 2 + 2,
+                        top: y - h,
+                        bottom: y + 3
+                    }
+                });
+            }
+        }
+    }
+    
+    svg.appendChild(g);
+},
+
+/**
+ * Update SVG overlay with all labels (kingdom names, city names)
+ */
+_updateLabelSVG() {
+    const svg = document.getElementById('label-svg');
+    if (!svg) return;
+    
+    svg.style.opacity = '1';
+    svg.innerHTML = '';
+    
+    const zoom = this.viewport.zoom;
+    
+    // Set SVG viewBox to match canvas
+    svg.setAttribute('viewBox', `0 0 ${this.width} ${this.height}`);
+    
+    // Create a group with transform
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('transform', `translate(${this.viewport.x}, ${this.viewport.y}) scale(${zoom})`);
+    
+    // Track placed labels for collision detection
+    const placedLabels = [];
+    
+    // Text sizes need to be divided by zoom to appear constant on screen
+    // 1. Kingdom names (largest first for priority)
+    if (this.kingdomNames && this.kingdomCentroids && this.kingdomCells) {
+        // Sort by size
+        const kingdomOrder = [];
+        for (let k = 0; k < this.kingdomCount; k++) {
+            const cellCount = this.kingdomCells[k] ? this.kingdomCells[k].length : 0;
+            kingdomOrder.push({ index: k, size: cellCount });
+        }
+        kingdomOrder.sort((a, b) => b.size - a.size);
+        
+        const maxSize = kingdomOrder[0]?.size || 1;
+        
+        for (const kingdom of kingdomOrder) {
+            const k = kingdom.index;
+            const name = this.kingdomNames[k];
+            const cells = this.kingdomCells[k];
+            
+            if (!name || !cells || cells.length === 0) continue;
+            
+            // Find label position
+            const labelPos = this._findBestKingdomLabelPosition(cells, k);
+            if (!labelPos) continue;
+            
+            const { centerX, centerY, spanWidth, regionHeight } = labelPos;
+            
+            // Calculate font size based on kingdom size (smaller overall)
+            const sizeRatio = Math.sqrt(kingdom.size / maxSize);
+            const baseFontSize = 4 + (sizeRatio * 10);
+            const fontSize = Math.max(2.5, Math.min(baseFontSize, spanWidth * 0.08, regionHeight * 0.2));
+            
+            // Parse name for display
+            const { prefix, mainName } = this._parseKingdomName(name);
+            const displayText = (mainName || name).toUpperCase();
+            
+            // Calculate collision box for the entire label (including prefix)
+            const estWidth = displayText.length * fontSize * 0.65;
+            const totalHeight = prefix ? fontSize * 1.8 : fontSize;
+            const box = {
+                left: centerX - estWidth / 2 - 3,
+                right: centerX + estWidth / 2 + 3,
+                top: centerY - totalHeight / 2 - 3,
+                bottom: centerY + totalHeight / 2 + 3
+            };
+            
+            // Check collision
+            let collides = false;
+            for (const placed of placedLabels) {
+                if (box.left < placed.right && box.right > placed.left &&
+                    box.top < placed.bottom && box.bottom > placed.top) {
+                    collides = true;
+                    break;
+                }
+            }
+            
+            if (collides) continue;
+            
+            // Create text element
+            const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            text.setAttribute('x', centerX);
+            text.setAttribute('y', centerY);
+            text.setAttribute('text-anchor', 'middle');
+            text.setAttribute('dominant-baseline', 'middle');
+            text.setAttribute('class', 'kingdom-label');
+            text.setAttribute('font-size', fontSize);
+            text.setAttribute('letter-spacing', '0.2em');
+            text.textContent = displayText;
+            
+            // Add prefix if exists
+            if (prefix) {
+                const prefixText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                prefixText.setAttribute('x', centerX);
+                prefixText.setAttribute('y', centerY - fontSize * 0.9);
+                prefixText.setAttribute('text-anchor', 'middle');
+                prefixText.setAttribute('dominant-baseline', 'middle');
+                prefixText.setAttribute('class', 'kingdom-label');
+                prefixText.setAttribute('font-size', fontSize * 0.45);
+                prefixText.textContent = prefix;
+                g.appendChild(prefixText);
+            }
+            
+            g.appendChild(text);
+            
+            // Track for collision
+            placedLabels.push(box);
+            
+            // Store hit box for click detection
+            if (this._labelHitBoxes) {
+                this._labelHitBoxes.push({
+                    type: 'kingdom',
+                    index: k,
+                    name: name,
+                    box: box
+                });
+            }
+        }
+    }
+    
+    // 2. Capitol names - positioned below the castle icon
+    if (this.capitols && this.capitolNames) {
+        const fontSize = 5.5;
+        
+        for (let k = 0; k < this.kingdomCount; k++) {
+            const capitolCell = this.capitols[k];
+            const capitolName = this.capitolNames[k];
+            
+            if (capitolCell < 0 || !capitolName) continue;
+            
+            const x = this.points[capitolCell * 2];
+            const y = this.points[capitolCell * 2 + 1];
+            
+            // Position below the icon, centered (more space)
+            const labelX = x;
+            const labelY = y + 8;
+            
+            // Check collision before placing
+            const estWidth = capitolName.length * fontSize * 0.55;
+            const box = {
+                left: labelX - estWidth / 2 - 2,
+                right: labelX + estWidth / 2 + 2,
+                top: labelY - fontSize / 2 - 2,
+                bottom: labelY + fontSize / 2 + 2
+            };
+            
+            let collides = false;
+            for (const placed of placedLabels) {
+                if (box.left < placed.right && box.right > placed.left &&
+                    box.top < placed.bottom && box.bottom > placed.top) {
+                    collides = true;
+                    break;
+                }
+            }
+            
+            if (collides) continue;
+            
+            const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            text.setAttribute('x', labelX);
+            text.setAttribute('y', labelY);
+            text.setAttribute('text-anchor', 'middle');
+            text.setAttribute('dominant-baseline', 'middle');
+            text.setAttribute('class', 'capitol-label');
+            text.setAttribute('font-size', fontSize);
+            text.textContent = capitolName;
+            g.appendChild(text);
+            
+            // Track for collision
+            placedLabels.push(box);
+            
+            // Store hit box for click detection (include icon area)
+            if (this._labelHitBoxes) {
+                this._labelHitBoxes.push({
+                    type: 'capital',
+                    index: k,
+                    cell: capitolCell,
+                    kingdom: k,
+                    name: capitolName,
+                    box: {
+                        left: Math.min(x - 10, box.left),
+                        right: Math.max(x + 10, box.right),
+                        top: y - 14,
+                        bottom: box.bottom
+                    }
+                });
+            }
+        }
+    }
+    
+    // 3. City names (only when zoomed in) - positioned below icon
+    if (zoom > 1.2 && this.cities && this.cityNames) {
+        const fontSize = 4.5;
+        
+        for (let i = 0; i < this.cities.length; i++) {
+            const city = this.cities[i];
+            const cityName = this.cityNames[i];
+            
+            if (!city || city.cell < 0 || !cityName) continue;
+            
+            const x = this.points[city.cell * 2];
+            const y = this.points[city.cell * 2 + 1];
+            
+            // Position below the icon, centered (more space)
+            const labelX = x;
+            const labelY = y + 6;
+            
+            // Collision check with padding
+            const estWidth = cityName.length * fontSize * 0.5;
+            const box = {
+                left: labelX - estWidth / 2 - 2,
+                right: labelX + estWidth / 2 + 2,
+                top: labelY - fontSize / 2 - 2,
+                bottom: labelY + fontSize / 2 + 2
+            };
+            
+            let collides = false;
+            for (const placed of placedLabels) {
+                if (box.left < placed.right && box.right > placed.left &&
+                    box.top < placed.bottom && box.bottom > placed.top) {
+                    collides = true;
+                    break;
+                }
+            }
+            
+            if (collides) continue;
+            
+            const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            text.setAttribute('x', labelX);
+            text.setAttribute('y', labelY);
+            text.setAttribute('text-anchor', 'middle');
+            text.setAttribute('dominant-baseline', 'middle');
+            text.setAttribute('class', 'city-label');
+            text.setAttribute('font-size', fontSize);
+            text.textContent = cityName;
+            g.appendChild(text);
+            
+            placedLabels.push(box);
+            
+            // Store hit box for click detection (include icon area)
+            if (this._labelHitBoxes) {
+                this._labelHitBoxes.push({
+                    type: 'city',
+                    index: i,
+                    cell: city.cell,
+                    kingdom: city.kingdom,
+                    name: cityName,
+                    box: {
+                        left: Math.min(x - 6, box.left),
+                        right: Math.max(x + 6, box.right),
+                        top: y - 10,
+                        bottom: box.bottom
+                    }
+                });
+            }
+        }
+    }
+    
+    svg.appendChild(g);
 },
 
 /**

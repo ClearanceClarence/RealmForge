@@ -68,36 +68,47 @@ export const PRECIP_COLORS = [
 // Political map kingdom colors - antique/aged map style
 // Muted, earthy tones reminiscent of historical cartography
 export const POLITICAL_COLORS = [
-    "#E6DABC", // Aged parchment
-    "#D4C4A0", // Old vellum
-    "#C9CBAB", // Faded olive
-    "#DACCB4", // Weathered tan
-    "#C4BDA8", // Dusty khaki
-    "#D8D0B8", // Antique cream
-    "#CBBFA4", // Worn leather
-    "#D0CAAE", // Pale umber
-    "#C8C4A6", // Sage parchment
-    "#DDD4BC", // Ivory
-    "#C6BCA2", // Chamois
-    "#D4CCB0", // Old paper
-    "#CCCAAA", // Faded moss
-    "#D9D2BA", // Bleached linen
-    "#C2BAA0", // Driftwood
-    "#D6CEAD", // Bone
-    "#C8C2A4", // Lichen
-    "#DCD6BE", // Pale straw
-    "#C4BEAA", // Stone
-    "#D2C8AC", // Sand
-    "#CAC6A8", // Dried herb
-    "#D8D2B6", // Wheat
-    "#C0BCA4", // Pewter
-    "#D4CEB2", // Oatmeal
-    "#C6C2A6", // Sage gray
-    "#DAD4B8", // Ecru
-    "#C2BEA2", // Clay
-    "#D0CCB0", // Mushroom
-    "#C8C4AA", // Ash
-    "#DCD8BC"  // Canvas
+    "rgba(230, 218, 188, 0.5)", // Aged parchment
+    "rgba(212, 196, 160, 0.5)", // Old vellum
+    "rgba(201, 203, 171, 0.5)", // Faded olive
+    "rgba(218, 204, 180, 0.5)", // Weathered tan
+    "rgba(196, 189, 168, 0.5)", // Dusty khaki
+    "rgba(216, 208, 184, 0.5)", // Antique cream
+    "rgba(203, 191, 164, 0.5)", // Worn leather
+    "rgba(208, 202, 174, 0.5)", // Pale umber
+    "rgba(200, 196, 166, 0.5)", // Sage parchment
+    "rgba(221, 212, 188, 0.5)", // Ivory
+    "rgba(198, 188, 162, 0.5)", // Chamois
+    "rgba(212, 204, 176, 0.5)", // Old paper
+    "rgba(204, 202, 170, 0.5)", // Faded moss
+    "rgba(217, 210, 186, 0.5)", // Bleached linen
+    "rgba(194, 186, 160, 0.5)", // Driftwood
+    "rgba(214, 206, 173, 0.5)", // Bone
+    "rgba(200, 194, 164, 0.5)", // Lichen
+    "rgba(220, 214, 190, 0.5)", // Pale straw
+    "rgba(196, 190, 170, 0.5)", // Stone
+    "rgba(210, 200, 172, 0.5)", // Sand
+    "rgba(202, 198, 168, 0.5)", // Dried herb
+    "rgba(216, 210, 182, 0.5)", // Wheat
+    "rgba(192, 188, 164, 0.5)", // Pewter
+    "rgba(212, 206, 178, 0.5)", // Oatmeal
+    "rgba(198, 194, 166, 0.5)", // Sage gray
+    "rgba(218, 212, 184, 0.5)", // Ecru
+    "rgba(194, 190, 162, 0.5)", // Clay
+    "rgba(208, 204, 176, 0.5)", // Mushroom
+    "rgba(200, 196, 170, 0.5)", // Ash
+    "rgba(220, 216, 188, 0.5)", // Canvas
+    // Additional colors for more variety
+    "rgba(225, 210, 175, 0.5)", // Golden parchment
+    "rgba(190, 200, 175, 0.5)", // Sage green
+    "rgba(205, 195, 180, 0.5)", // Warm gray
+    "rgba(215, 200, 165, 0.5)", // Honey
+    "rgba(185, 195, 170, 0.5)", // Moss
+    "rgba(210, 205, 190, 0.5)", // Pearl
+    "rgba(195, 185, 165, 0.5)", // Taupe
+    "rgba(220, 205, 175, 0.5)", // Cream
+    "rgba(188, 198, 178, 0.5)", // Celadon
+    "rgba(208, 198, 168, 0.5)"  // Buff
 ];
 
 // Ocean color for political map - aged parchment blue-gray

@@ -308,15 +308,11 @@ export class VoronoiGenerator {
             clearTimeout(this._fullRenderTimer);
         }
         
-        // During active interaction, do a fast low-res render
+        // During active interaction, do immediate low-res render
         if (this._isInteracting) {
-            // Throttle low-res renders to ~30fps during interaction
-            if (!this._lastLowResRender || performance.now() - this._lastLowResRender > 33) {
-                this._renderDebounceTimer = requestAnimationFrame(() => {
-                    this.renderLowRes();
-                    this._lastLowResRender = performance.now();
-                });
-            }
+            this._renderDebounceTimer = requestAnimationFrame(() => {
+                this.renderLowRes();
+            });
             
             // Schedule full render after interaction stops
             this._fullRenderTimer = setTimeout(() => {
@@ -332,38 +328,6 @@ export class VoronoiGenerator {
     }
     
     /**
-     * Apply CSS transform for fast visual feedback during pan/zoom
-     * (Kept for potential future use but not currently active)
-     */
-    _applyTransformCSS() {
-        if (!this._lastRenderedViewport) {
-            this._lastRenderedViewport = { x: 0, y: 0, zoom: 1 };
-        }
-        
-        const last = this._lastRenderedViewport;
-        const curr = this.viewport;
-        
-        // Calculate the transform relative to last rendered state
-        const scale = curr.zoom / last.zoom;
-        const dx = curr.x - last.x * scale;
-        const dy = curr.y - last.y * scale;
-        
-        this.canvas.style.transformOrigin = '0 0';
-        this.canvas.style.transform = `translate(${dx}px, ${dy}px) scale(${scale})`;
-    }
-    
-    /**
-     * Reset CSS transform and store current viewport as last rendered
-     */
-    _resetTransformCSS() {
-        this.canvas.style.transform = '';
-        this._lastRenderedViewport = {
-            x: this.viewport.x,
-            y: this.viewport.y,
-            zoom: this.viewport.zoom
-        };
-    }
-    
     /**
      * Called when zoom level changes significantly
      */
@@ -771,7 +735,6 @@ export class VoronoiGenerator {
             depositionRate = 0.3,
         } = options;
         
-        console.log(`Starting hydraulic erosion`);
         const startTime = performance.now();
         
         // STEP 1: Fill ALL depressions so water can flow to ocean
@@ -823,7 +786,6 @@ export class VoronoiGenerator {
             if (flowAccum[i] > maxFlow) maxFlow = flowAccum[i];
         }
         
-        console.log(`Max flow: ${maxFlow}, land cells: ${landCells.length}`);
         
         // STEP 4: Erode based on flow - use stream power law
         // Only erode where significant water accumulates (rivers)
@@ -876,7 +838,6 @@ export class VoronoiGenerator {
         this._contourCache = null;
         
         const elapsed = performance.now() - startTime;
-        console.log(`Hydraulic erosion complete in ${elapsed.toFixed(0)}ms`);
     }
     
     /**
@@ -1275,7 +1236,6 @@ export class VoronoiGenerator {
         // Place river start points randomly across high elevation areas
         const startCells = this._selectRiverStartPoints(landCells, numberOfRivers);
         
-        console.log(`=== RIVER v11 (Independent rivers): Tracing ${startCells.length} rivers ===`);
         
         // Trace each river to ocean
         let reachedOcean = 0;
@@ -1290,7 +1250,6 @@ export class VoronoiGenerator {
         // Generate names for rivers
         this._generateRiverNames();
         
-        console.log(`Created ${reachedOcean} rivers (from ${startCells.length} starts)`);
     }
     
     /**
@@ -1318,7 +1277,6 @@ export class VoronoiGenerator {
         // Store road density for use in city/road generation
         this.roadDensity = roadDensity;
         
-        console.log(`Generating ${numKingdoms} kingdoms...`);
         
         // Get all land cells using typed array for speed
         const isLand = new Uint8Array(this.cellCount);
@@ -1528,7 +1486,6 @@ export class VoronoiGenerator {
         this.nameGenerator.reset();
         this.kingdomNames = this.nameGenerator.generateNames(this.kingdomCount, 'kingdom');
         
-        console.log(`Kingdom generation: ${(performance.now() - startTime).toFixed(1)}ms`);
         
         // Generate capitols for each kingdom
         this._generateCapitols();
@@ -1539,7 +1496,6 @@ export class VoronoiGenerator {
         // Clear kingdom render caches
         this.clearKingdomCache();
         
-        console.log(`Generated ${this.kingdomCount} kingdoms (requested ${numKingdoms})`);
     }
     
     /**
@@ -2052,7 +2008,7 @@ export class VoronoiGenerator {
     
     /**
      * Generate roads connecting cities within kingdoms
-     * Creates a realistic road network ensuring all cities are connected
+     * Creates a realistic road network - simple tree structure radiating from capitol
      */
     _generateRoads() {
         this.roads = [];
@@ -2082,90 +2038,53 @@ export class VoronoiGenerator {
                 return distA - distB;
             });
             
-            // Track connected cities
-            const connectedCities = new Set([capitolCell]);
+            // Track connected nodes (cities/capitol) and their positions
+            const connectedNodes = [{
+                cell: capitolCell,
+                x: capitolX,
+                y: capitolY
+            }];
             
-            // Connect ALL cities - each one to either capitol or nearest connected city
+            // Connect each city to the nearest connected node (creates a minimum spanning tree-like structure)
             for (let i = 0; i < kingdomCities.length; i++) {
                 const city = kingdomCities[i];
                 const cityX = this.points[city.cell * 2];
                 const cityY = this.points[city.cell * 2 + 1];
                 
-                // Find nearest connected city/capitol
-                let nearestCell = capitolCell;
+                // Find nearest connected node
+                let nearestNode = connectedNodes[0];
                 let nearestDist = Infinity;
                 
-                for (const connectedCell of connectedCities) {
-                    const cx = this.points[connectedCell * 2];
-                    const cy = this.points[connectedCell * 2 + 1];
-                    const dist = Math.sqrt((cx - cityX) ** 2 + (cy - cityY) ** 2);
+                for (const node of connectedNodes) {
+                    const dist = Math.sqrt((node.x - cityX) ** 2 + (node.y - cityY) ** 2);
                     if (dist < nearestDist) {
                         nearestDist = dist;
-                        nearestCell = connectedCell;
+                        nearestNode = node;
                     }
                 }
                 
                 // Try to connect to nearest
-                let road = this._findRoadPath(nearestCell, city.cell, roadCells);
+                let road = this._findRoadPath(nearestNode.cell, city.cell, roadCells);
                 
                 // If no path found, try connecting directly to capitol
-                if (!road && nearestCell !== capitolCell) {
+                if (!road && nearestNode.cell !== capitolCell) {
                     road = this._findRoadPath(capitolCell, city.cell, roadCells);
                 }
                 
-                // If still no path, try other connected cities
-                if (!road) {
-                    for (const connectedCell of connectedCities) {
-                        if (connectedCell === nearestCell) continue;
-                        road = this._findRoadPath(connectedCell, city.cell, roadCells);
-                        if (road) break;
-                    }
-                }
-                
                 if (road && road.length >= 2) {
-                    const isMajor = nearestCell === capitolCell || i < 3;
+                    // Major road if directly connected to capitol or one of first 2 cities
+                    const isMajor = nearestNode.cell === capitolCell || i < 2;
                     this.roads.push({
                         path: road,
                         kingdom: k,
                         type: isMajor ? 'major' : 'minor'
                     });
                     this._markRoadCells(road, roadCells);
-                    connectedCities.add(city.cell);
-                }
-            }
-            
-            // Add cross-connections between nearby cities for higher density
-            const density = this.roadDensity !== undefined ? this.roadDensity : 5;
-            if (density >= 3 && kingdomCities.length >= 2) {
-                const maxCrossRoads = Math.floor((density - 2) * kingdomCities.length / 4);
-                let crossRoadCount = 0;
-                
-                for (let i = 0; i < kingdomCities.length && crossRoadCount < maxCrossRoads; i++) {
-                    const city1 = kingdomCities[i];
-                    const x1 = this.points[city1.cell * 2];
-                    const y1 = this.points[city1.cell * 2 + 1];
-                    
-                    for (let j = i + 1; j < kingdomCities.length && crossRoadCount < maxCrossRoads; j++) {
-                        const city2 = kingdomCities[j];
-                        const x2 = this.points[city2.cell * 2];
-                        const y2 = this.points[city2.cell * 2 + 1];
-                        
-                        const dist = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
-                        const maxDist = 60 + density * 10; // 90-160 based on density
-                        
-                        if (dist < maxDist && dist > 30) {
-                            const road = this._findRoadPath(city1.cell, city2.cell, roadCells);
-                            if (road && road.length >= 2) {
-                                this.roads.push({
-                                    path: road,
-                                    kingdom: k,
-                                    type: 'minor'
-                                });
-                                this._markRoadCells(road, roadCells);
-                                crossRoadCount++;
-                            }
-                        }
-                    }
+                    connectedNodes.push({
+                        cell: city.cell,
+                        x: cityX,
+                        y: cityY
+                    });
                 }
             }
         }
@@ -2487,94 +2406,6 @@ export class VoronoiGenerator {
     }
     
     /**
-     * Select good capital locations - prefer central lowlands
-     */
-    _selectGoodCapitals(landCells, count) {
-        // Score each cell based on suitability as capital
-        const scores = [];
-        
-        // Calculate centroid of landmass
-        let cx = 0, cy = 0;
-        for (const cell of landCells) {
-            cx += this.points[cell * 2];
-            cy += this.points[cell * 2 + 1];
-        }
-        cx /= landCells.length;
-        cy /= landCells.length;
-        
-        // Calculate max distance for normalization
-        let maxDist = 0;
-        for (const cell of landCells) {
-            const dx = this.points[cell * 2] - cx;
-            const dy = this.points[cell * 2 + 1] - cy;
-            maxDist = Math.max(maxDist, Math.sqrt(dx * dx + dy * dy));
-        }
-        
-        for (const cell of landCells) {
-            const x = this.points[cell * 2];
-            const y = this.points[cell * 2 + 1];
-            const elev = this.heights[cell];
-            
-            // Distance from center (prefer central)
-            const dx = x - cx;
-            const dy = y - cy;
-            const distFromCenter = Math.sqrt(dx * dx + dy * dy) / (maxDist || 1);
-            
-            // Elevation score (prefer lowlands but not coast)
-            const elevScore = elev < 0.5 ? 1.0 : (elev < 0.7 ? 0.5 : 0.2);
-            
-            // Count land neighbors (prefer interior)
-            let landNeighbors = 0;
-            for (const n of this.voronoi.neighbors(cell)) {
-                if (this.heights[n] >= ELEVATION.SEA_LEVEL) landNeighbors++;
-            }
-            const interiorScore = landNeighbors >= 3 ? 1.0 : 0.3;
-            
-            // Combined score
-            const score = (1 - distFromCenter * 0.5) * elevScore * interiorScore + PRNG.random() * 0.3;
-            scores.push({ cell, score });
-        }
-        
-        // Sort by score
-        scores.sort((a, b) => b.score - a.score);
-        
-        // Select capitals with minimum distance constraint
-        const minDistSq = (this.width / Math.sqrt(count * 3)) ** 2;
-        const capitals = [];
-        
-        for (const { cell } of scores) {
-            if (capitals.length >= count) break;
-            
-            const x = this.points[cell * 2];
-            const y = this.points[cell * 2 + 1];
-            
-            let tooClose = false;
-            for (const existing of capitals) {
-                const ex = this.points[existing * 2];
-                const ey = this.points[existing * 2 + 1];
-                if ((x - ex) ** 2 + (y - ey) ** 2 < minDistSq) {
-                    tooClose = true;
-                    break;
-                }
-            }
-            
-            if (!tooClose) {
-                capitals.push(cell);
-            }
-        }
-        
-        // Fill remaining if needed
-        for (const { cell } of scores) {
-            if (capitals.length >= count) break;
-            if (!capitals.includes(cell)) {
-                capitals.push(cell);
-            }
-        }
-        
-        return capitals;
-    }
-    
-    /**
      * Smooth kingdom borders - reduce jaggedness
      */
     _smoothKingdomBorders(iterations = 3) {
@@ -2710,7 +2541,6 @@ export class VoronoiGenerator {
         }
         
         if (totalRemoved > 0) {
-            console.log(`Removed ${totalRemoved} exclave cells in ${iteration} iterations`);
         }
     }
     
@@ -2786,7 +2616,6 @@ export class VoronoiGenerator {
      * This ensures every land cell can drain to ocean
      */
     _fillDepressions() {
-        console.log('Filling depressions with Priority-Flood...');
         
         // Create filled heights array
         this.filledHeights = new Float32Array(this.heights);
@@ -2831,7 +2660,6 @@ export class VoronoiGenerator {
             }
         }
         
-        console.log(`Filled ${fillCount} depression cells`);
     }
     
     /**
@@ -2878,7 +2706,6 @@ export class VoronoiGenerator {
             }
         }
         
-        console.log(`Selected ${starts.length} river start points (requested ${count})`);
         return starts;
     }
     
@@ -3038,7 +2865,6 @@ export class VoronoiGenerator {
         }
         
         if (filledCount > 0) {
-            console.log(`Filled ${filledCount} inland sea cells`);
         }
     }
     
@@ -3634,7 +3460,6 @@ export class VoronoiGenerator {
         
         this.cellCount = Math.floor(points.length / 2);
         this.points = new Float64Array(points);
-        console.log(`Land-biased jittered: ${this.cellCount} cells`);
     }
     
     /**
@@ -3735,7 +3560,6 @@ export class VoronoiGenerator {
         
         this.cellCount = Math.floor(points.length / 2);
         this.points = new Float64Array(points);
-        console.log(`Land-biased poisson: ${this.cellCount} cells`);
     }
     
     /**
