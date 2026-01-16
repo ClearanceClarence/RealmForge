@@ -3,7 +3,7 @@
    Cartographic Theme
    ======================================== */
 
-@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600&family=IM+Fell+English:ital@0;1&family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400&display=swap');
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -869,10 +869,148 @@ select:focus { outline: none; border-color: var(--accent); }
     cursor: grab;
     will-change: transform;
     transform-origin: 0 0;
+    position: relative;
+    z-index: 1;
 }
 
 #voronoi-canvas:active {
     cursor: grabbing;
+}
+
+/* SVG overlay layers */
+.map-svg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: visible;
+    z-index: 10;
+}
+
+.map-svg > g {
+    will-change: transform;
+}
+
+/* Heightmap overlay canvas */
+#heightmap-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    opacity: 0;
+    mix-blend-mode: hard-light;
+    transition: opacity 0.3s ease;
+    z-index: 5;
+    will-change: transform;
+    transform-origin: 0 0;
+}
+
+#heightmap-overlay.active {
+    opacity: 0.8;
+}
+
+/* Overlay toggle buttons */
+.overlay-toggles {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 100;
+}
+
+.overlay-toggle-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: var(--parchment);
+    border: 2px solid var(--ink-medium);
+    border-radius: 4px;
+    font-family: var(--font-display);
+    font-size: 12px;
+    color: var(--ink);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 2px 2px 6px rgba(0,0,0,0.2);
+}
+
+.overlay-toggle-btn:hover {
+    background: var(--parchment-light);
+    border-color: var(--ink);
+}
+
+.overlay-toggle-btn.active {
+    background: var(--ink);
+    color: var(--parchment-light);
+    border-color: var(--ink);
+}
+
+.overlay-toggle-btn svg {
+    width: 18px;
+    height: 18px;
+}
+
+/* Kingdom fills and borders */
+#kingdom-svg .kingdom-fill {
+    stroke: none;
+}
+
+#kingdom-svg .kingdom-border {
+    fill: none;
+    stroke: rgba(80, 60, 40, 0.6);
+    stroke-width: 1.5;
+    stroke-linejoin: round;
+}
+
+/* Rivers */
+#river-svg path {
+    fill: rgb(166, 155, 125);
+    stroke: none;
+}
+
+/* Roads */
+#road-svg path {
+    fill: none;
+    stroke: rgba(90, 74, 58, 0.5);
+    stroke-linecap: butt;
+    stroke-linejoin: miter;
+}
+
+/* Cities - natural marker style */
+#city-svg .city-icon {
+    /* Styles defined inline in SVG */
+}
+
+#city-svg .capitol-icon {
+    /* Styles defined inline in SVG */
+}
+
+/* Labels */
+#label-svg text {
+    font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, serif;
+    fill: rgba(60, 45, 30, 0.9);
+    pointer-events: none;
+}
+
+#label-svg .kingdom-label {
+    font-family: 'Cinzel', 'Times New Roman', serif;
+    font-variant: small-caps;
+    letter-spacing: 0.15em;
+    font-weight: 400;
+}
+
+#label-svg .city-label {
+    font-family: 'IM Fell English', 'Times New Roman', serif;
+    font-style: italic;
+}
+
+#label-svg .capitol-label {
+    font-family: 'Cormorant Garamond', 'Times New Roman', serif;
+    font-weight: 500;
 }
 
 /* ========================================
@@ -996,6 +1134,133 @@ select:focus { outline: none; border-color: var(--accent); }
     border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--parchment); }
+
+/* ========================================
+   INFO PANEL (Click to show)
+   ======================================== */
+
+.info-panel {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    width: 280px;
+    background: var(--parchment);
+    border: 2px solid var(--ink-medium);
+    border-radius: 4px;
+    box-shadow: 4px 4px 16px rgba(0,0,0,0.3);
+    z-index: 200;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-10px);
+    transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s;
+}
+
+.info-panel.visible {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+}
+
+.info-panel-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 28px;
+    height: 28px;
+    background: transparent;
+    border: 1px solid var(--ink-light);
+    border-radius: 3px;
+    font-size: 20px;
+    line-height: 1;
+    color: var(--ink-medium);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.info-panel-close:hover {
+    background: var(--ink);
+    color: var(--parchment-light);
+    border-color: var(--ink);
+}
+
+.info-panel-content {
+    padding: 16px 20px;
+}
+
+.info-panel-content .ip-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--ink-medium);
+}
+
+.info-panel-content .ip-icon {
+    font-size: 24px;
+}
+
+.info-panel-content .ip-title {
+    font-family: var(--font-display);
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--ink-dark);
+    line-height: 1.2;
+}
+
+.info-panel-content .ip-subtitle {
+    font-size: 12px;
+    color: var(--ink-light);
+    font-style: italic;
+    margin-top: 2px;
+}
+
+.info-panel-content .ip-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.info-panel-content .ip-stat {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--parchment-dark);
+}
+
+.info-panel-content .ip-stat:last-child {
+    border-bottom: none;
+}
+
+.info-panel-content .ip-stat-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--ink-light);
+}
+
+.info-panel-content .ip-stat-value {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink-dark);
+}
+
+.info-panel-content .ip-divider {
+    height: 1px;
+    background: var(--ink-medium);
+    margin: 12px 0;
+}
+
+.info-panel-content .ip-section-title {
+    font-family: var(--font-display);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--ink-medium);
+    margin-bottom: 8px;
+}
 
 /* ========================================
    RESPONSIVE
