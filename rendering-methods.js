@@ -87,29 +87,37 @@ render() {
         // Initialize hit boxes for hover detection
         this._labelHitBoxes = [];
         
-        // Canvas: Base terrain (ocean, land, lakes, coastline)
+        // Canvas: Base terrain (ocean, land, lakes)
         this._renderPoliticalBase(ctx, bounds);
         
-        // SVG layers in order: rivers, kingdom fills+borders, roads, cities, labels
+        // SVG layers in order (z-order determined by HTML element order):
+        // 0. Sea routes (SVG) - below everything, in the ocean
+        if (this.seaRoutes && this.seaRoutes.length > 0) {
+            this._updateSeaRouteSVG();
+        }
+        
         // 1. Rivers (SVG) - below kingdom colors so they get tinted
         if (this.showRivers && this.rivers && this.rivers.length > 0) {
             this._updateRiverSVG();
         }
         
-        // 2. Kingdom fills and borders (SVG) - tints rivers below
+        // 2. Kingdom fills and borders (SVG)
         if (this.kingdoms && this.kingdomCount > 0) {
             this._updateKingdomSVG();
         }
         
-        // 3. Roads (SVG)
+        // 3. Coastline (SVG) - above kingdoms
+        this._updateCoastlineSVG();
+        
+        // 4. Roads (SVG)
         if (this.roads && this.roads.length > 0) {
             this._updateRoadSVG();
         }
         
-        // 4. Cities and Capitols (SVG)
+        // 5. Cities and Capitols (SVG)
         this._updateCitySVG();
         
-        // 5. All labels: kingdom names, city names (SVG)
+        // 6. All labels: kingdom names, city names (SVG)
         this._updateLabelSVG();
     }
     
@@ -198,7 +206,7 @@ renderLowRes() {
     
     // Update all SVG group transforms to match viewport (keep them visible during pan/zoom)
     // Use direct style transform for GPU acceleration
-    const svgIds = ['road-svg', 'river-svg', 'kingdom-svg', 'city-svg', 'label-svg'];
+    const svgIds = ['sea-route-svg', 'coastline-svg', 'road-svg', 'river-svg', 'kingdom-svg', 'city-svg', 'label-svg'];
     for (const id of svgIds) {
         const svg = document.getElementById(id);
         if (svg) {
@@ -600,6 +608,7 @@ _renderSmoothLakes(ctx, bounds) {
 /**
  * Render base layer for political map - just ocean and land base color
  * Kingdom colors are rendered via SVG overlay
+ * Coastline stroke is now rendered via SVG
  */
 _renderPoliticalBase(ctx, bounds) {
     if (!this.heights) return;
@@ -646,10 +655,7 @@ _renderPoliticalBase(ctx, bounds) {
         }
     }
     
-    // 4. Draw coastline stroke
-    const borderColor = '#5A4A3A';
-    const lineWidth = Math.max(0.3, 1 / this.viewport.zoom);
-    this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
+    // Coastline stroke is now rendered via _updateCoastlineSVG()
 },
 
 /**
@@ -986,19 +992,8 @@ _buildKingdomBoundary(kingdomId) {
     // Chain edges into loops
     const loops = this._chainBoundaryEdges(boundaryEdges);
     
-    // Smooth each loop
-    const smoothedLoops = [];
-    for (const loop of loops) {
-        if (loop.length < 3) continue;
-        
-        let smoothed = loop;
-        for (let iter = 0; iter < 4; iter++) {
-            smoothed = this._smoothClosedLoop(smoothed);
-        }
-        smoothedLoops.push(smoothed);
-    }
-    
-    return smoothedLoops;
+    // Return loops without smoothing
+    return loops.filter(loop => loop.length >= 3);
 },
 
 /**
@@ -1317,17 +1312,8 @@ _buildSmoothCoastlineLoops() {
         }
     }
     
-    // Apply Chaikin smoothing to each loop
-    const smoothedLoops = [];
-    for (const loop of loops) {
-        let smoothed = loop;
-        for (let iter = 0; iter < 2; iter++) {
-            smoothed = this._chaikinSmooth(smoothed);
-        }
-        smoothedLoops.push(smoothed);
-    }
-    
-    return smoothedLoops;
+    // Return loops without smoothing
+    return loops;
 },
 /**
  * Draw smooth coastline stroke
@@ -2373,13 +2359,6 @@ _updateRoadSVG() {
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.setAttribute('transform', `translate(${this.viewport.x}, ${this.viewport.y}) scale(${zoom})`);
     
-    // Stroke width - 1px in world space
-    const strokeWidth = 0.7;
-    
-    // Dash pattern - smaller dashes
-    const dashLength = 1;
-    const gapLength = 2;
-    
     // Draw each road as its own path
     for (const road of this.roads) {
         const path = road.path;
@@ -2394,8 +2373,133 @@ _updateRoadSVG() {
         
         const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         pathEl.setAttribute('d', d);
+        
+        // Style based on road type
+        let strokeWidth, dashLength, gapLength;
+        
+        if (road.type === 'major' || road.type === 'trade') {
+            // Major roads and trade routes - slightly wider, smaller gaps
+            strokeWidth = 0.8;
+            dashLength = 1.5;
+            gapLength = 1.5;
+        } else if (road.type === 'pass') {
+            // Mountain pass roads - thinner, longer gaps
+            strokeWidth = 0.6;
+            dashLength = 1;
+            gapLength = 2.5;
+        } else {
+            // Minor roads
+            strokeWidth = 0.7;
+            dashLength = 1;
+            gapLength = 2;
+        }
+        
         pathEl.setAttribute('stroke-width', strokeWidth);
         pathEl.setAttribute('stroke-dasharray', `${dashLength} ${gapLength}`);
+        pathEl.setAttribute('class', `road-${road.type || 'minor'}`);
+        
+        g.appendChild(pathEl);
+    }
+    
+    svg.appendChild(g);
+},
+
+/**
+ * Update SVG overlay with sea routes
+ */
+_updateSeaRouteSVG() {
+    const svg = document.getElementById('sea-route-svg');
+    if (!svg) return;
+    
+    svg.style.opacity = '1';
+    svg.innerHTML = '';
+    
+    if (!this.seaRoutes || this.seaRoutes.length === 0) return;
+    
+    const zoom = this.viewport.zoom;
+    
+    // Set SVG viewBox to match canvas
+    svg.setAttribute('viewBox', `0 0 ${this.width} ${this.height}`);
+    
+    // Create a group with transform
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('transform', `translate(${this.viewport.x}, ${this.viewport.y}) scale(${zoom})`);
+    
+    // Draw each sea route
+    for (const route of this.seaRoutes) {
+        const path = route.path;
+        if (!path || path.length < 2) continue;
+        
+        // Build SVG path string
+        let d = `M ${path[0].x} ${path[0].y}`;
+        for (let i = 1; i < path.length; i++) {
+            d += ` L ${path[i].x} ${path[i].y}`;
+        }
+        
+        const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        pathEl.setAttribute('d', d);
+        pathEl.setAttribute('fill', 'none');
+        pathEl.setAttribute('stroke', '#7A9AAA');
+        pathEl.setAttribute('stroke-width', '0.8');
+        pathEl.setAttribute('stroke-dasharray', '3 2');
+        pathEl.setAttribute('stroke-linecap', 'round');
+        pathEl.setAttribute('class', 'sea-route');
+        
+        g.appendChild(pathEl);
+    }
+    
+    svg.appendChild(g);
+},
+
+/**
+ * Update SVG overlay with coastline paths
+ */
+_updateCoastlineSVG() {
+    const svg = document.getElementById('coastline-svg');
+    if (!svg) return;
+    
+    svg.style.opacity = '1';
+    svg.innerHTML = '';
+    
+    // Build coastline cache if needed
+    if (!this._coastlineCache) {
+        this._coastlineCache = this._buildSmoothCoastlineLoops();
+    }
+    
+    const coastLoops = this._coastlineCache;
+    if (!coastLoops || coastLoops.length === 0) return;
+    
+    const zoom = this.viewport.zoom;
+    
+    // Set SVG viewBox to match canvas
+    svg.setAttribute('viewBox', `0 0 ${this.width} ${this.height}`);
+    
+    // Create a group with transform
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('transform', `translate(${this.viewport.x}, ${this.viewport.y}) scale(${zoom})`);
+    
+    // Coastline style - faint but full opacity
+    const strokeColor = '#A89880';
+    const strokeWidth = 1; // Fixed width in world units
+    
+    // Draw each coastline loop as a path
+    for (const loop of coastLoops) {
+        if (loop.length < 3) continue;
+        
+        // Build SVG path string
+        let d = `M ${loop[0][0]} ${loop[0][1]}`;
+        for (let i = 1; i < loop.length; i++) {
+            d += ` L ${loop[i][0]} ${loop[i][1]}`;
+        }
+        d += ' Z'; // Close path
+        
+        const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        pathEl.setAttribute('d', d);
+        pathEl.setAttribute('fill', 'none');
+        pathEl.setAttribute('stroke', strokeColor);
+        pathEl.setAttribute('stroke-width', strokeWidth);
+        pathEl.setAttribute('stroke-linejoin', 'round');
+        pathEl.setAttribute('stroke-linecap', 'round');
         
         g.appendChild(pathEl);
     }
@@ -4512,7 +4616,7 @@ _updateKingdomSVG() {
     
     // 2. Second pass: Draw border lines between different kingdoms
     const borderEdges = this._collectKingdomBorderEdges();
-    const strokeWidth = Math.max(0.8, 1.2 / zoom);
+    const strokeWidth = 1.2; // Fixed width in world coordinates - scales with transform
     
     if (borderEdges.length > 0) {
         // Chain edges into continuous paths
@@ -4532,7 +4636,7 @@ _updateKingdomSVG() {
             const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
             pathEl.setAttribute('d', d);
             pathEl.setAttribute('fill', 'none');
-            pathEl.setAttribute('stroke', '#3D2F1F');
+            pathEl.setAttribute('stroke', '#9A8A7A');
             pathEl.setAttribute('stroke-width', strokeWidth);
             pathEl.setAttribute('stroke-linecap', 'round');
             pathEl.setAttribute('stroke-linejoin', 'round');

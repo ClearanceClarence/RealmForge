@@ -35,6 +35,34 @@ function hideLoading() {
     loadingScreen.classList.add('hidden');
 }
 
+// Flavor texts for loading screen
+const flavorTexts = [
+    "Here be dragons",
+    "Uncharted territories await",
+    "Beyond the edge of the world",
+    "Where mapmakers dare not tread",
+    "Terra incognita",
+    "The compass guides true",
+    "Ancient cartographer's wisdom",
+    "Legends marked in ink",
+    "Seas of endless wonder",
+    "Mountains yet unnamed"
+];
+let currentFlavorIndex = 0;
+const flavorTextEl = document.getElementById('flavor-text');
+
+// Rotate flavor text periodically
+setInterval(() => {
+    if (flavorTextEl && !loadingScreen.classList.contains('hidden')) {
+        currentFlavorIndex = (currentFlavorIndex + 1) % flavorTexts.length;
+        flavorTextEl.style.opacity = '0';
+        setTimeout(() => {
+            flavorTextEl.textContent = flavorTexts[currentFlavorIndex];
+            flavorTextEl.style.opacity = '1';
+        }, 300);
+    }
+}, 3000);
+
 function updateLoadingStatus(message) {
     loadingStatus.textContent = message;
 }

@@ -813,7 +813,7 @@ export class NameGenerator {
      * Generate a settlement/city name
      */
     generateSettlementName(options = {}) {
-        const { culture: cultureName, size = 'medium', hasPrefix = null } = options;
+        const { culture: cultureName, size = 'medium', hasPrefix = null, isCoastal = false, isHighland = false, elevation = 0 } = options;
         
         const baseName = this._generateBaseName(cultureName);
         
@@ -823,7 +823,22 @@ export class NameGenerator {
             : this._random() < (size === 'large' ? 0.3 : 0.15);
         
         if (addPrefix) {
-            const prefix = this._pick(this.settlementPrefixes);
+            let prefix;
+            
+            // Context-aware prefix selection
+            if (isCoastal && this._random() < 0.7) {
+                // Coastal cities get port-related prefixes
+                prefix = this._pick(['Port', 'Harbor', 'Bay', 'Cape', 'Cove', 'Wharf', 'Anchor', 'Tide', 'Salt', 'Sea']);
+            } else if (isHighland && this._random() < 0.7) {
+                // Highland cities get mountain-related prefixes
+                prefix = this._pick(['High', 'Upper', 'Peak', 'Summit', 'Ridge', 'Crest', 'Mount', 'Stone', 'Eagle', 'Cloud']);
+            } else if (elevation < 200 && this._random() < 0.5) {
+                // Low-lying cities
+                prefix = this._pick(['Low', 'Lower', 'Meadow', 'Green', 'Mill', 'Ford', 'Bridge', 'Market']);
+            } else {
+                // Generic prefixes (excluding coastal/highland specific ones)
+                prefix = this._pick(['Fort', 'New', 'Old', 'East', 'West', 'North', 'South', 'Greater', 'Lesser', 'Saint', 'Castle', 'Tower', 'King\'s', 'Queen\'s']);
+            }
             return `${prefix} ${baseName}`;
         }
         

@@ -1431,8 +1431,8 @@ export class VoronoiGenerator {
             }
         }
         
-        // Fast cleanup pass for any unassigned land cells
-        for (let pass = 0; pass < 5; pass++) {
+        // Fast cleanup pass for any unassigned land cells - run until all are assigned
+        for (let pass = 0; pass < 100; pass++) {
             let changed = false;
             for (let i = 0; i < this.cellCount; i++) {
                 if (!isLand[i] || this.kingdoms[i] >= 0) continue;
@@ -1446,6 +1446,32 @@ export class VoronoiGenerator {
                 }
             }
             if (!changed) break;
+        }
+        
+        // Final fallback: assign any remaining unassigned land cells to nearest kingdom by distance
+        for (let i = 0; i < this.cellCount; i++) {
+            if (!isLand[i] || this.kingdoms[i] >= 0) continue;
+            
+            // This cell is still unassigned - find nearest assigned cell
+            const x = this.points[i * 2];
+            const y = this.points[i * 2 + 1];
+            
+            let nearestKingdom = 0;
+            let nearestDist = Infinity;
+            
+            // Check all kingdom capitals first (fast)
+            for (let k = 0; k < this.kingdomCapitals.length; k++) {
+                const cap = this.kingdomCapitals[k];
+                const cx = this.points[cap * 2];
+                const cy = this.points[cap * 2 + 1];
+                const dist = (x - cx) ** 2 + (y - cy) ** 2;
+                if (dist < nearestDist) {
+                    nearestDist = dist;
+                    nearestKingdom = this.kingdoms[cap];
+                }
+            }
+            
+            this.kingdoms[i] = nearestKingdom;
         }
         
         // Update kingdom count
@@ -1743,8 +1769,34 @@ export class VoronoiGenerator {
             this.capitols.push(bestCell);
         }
         
-        // Generate capitol names (city type)
-        this.capitolNames = this.nameGenerator.generateNames(this.kingdomCount, 'city');
+        // Generate capitol names with context (coastal/highland awareness)
+        this.capitolNames = [];
+        for (let k = 0; k < this.kingdomCount; k++) {
+            const capitolCell = this.capitols[k];
+            if (capitolCell < 0) {
+                this.capitolNames.push('');
+                continue;
+            }
+            
+            // Check if coastal
+            let isCoastal = false;
+            const neighbors = this.getNeighbors(capitolCell);
+            for (const n of neighbors) {
+                if (this.heights[n] < ELEVATION.SEA_LEVEL) {
+                    isCoastal = true;
+                    break;
+                }
+            }
+            
+            const elevation = this.heights[capitolCell];
+            const name = this.nameGenerator.generateSettlementName({
+                isCoastal: isCoastal,
+                isHighland: elevation > 1200,
+                elevation: elevation,
+                size: 'large'
+            });
+            this.capitolNames.push(name);
+        }
         
         // Generate additional cities for each kingdom
         this._generateCities();
@@ -1890,10 +1942,14 @@ export class VoronoiGenerator {
                 }
                 
                 if (!tooClose) {
+                    const isCoastal = coastalCells.has(candidate.cell);
+                    const elevation = this.heights[candidate.cell];
                     selectedCities.push({
                         cell: candidate.cell,
                         kingdom: k,
-                        type: 'city'  // All non-capitals are just cities now
+                        type: 'city',
+                        isCoastal: isCoastal,
+                        elevation: elevation
                     });
                 }
             }
@@ -1901,8 +1957,16 @@ export class VoronoiGenerator {
             this.cities.push(...selectedCities);
         }
         
-        // Generate names for all cities
-        this.cityNames = this.nameGenerator.generateNames(this.cities.length, 'city');
+        // Generate names for all cities with context
+        this.cityNames = [];
+        for (const city of this.cities) {
+            const name = this.nameGenerator.generateSettlementName({
+                isCoastal: city.isCoastal,
+                isHighland: city.elevation > 1200,
+                elevation: city.elevation
+            });
+            this.cityNames.push(name);
+        }
         
         // Ensure we have enough names (fallback for any missing)
         while (this.cityNames.length < this.cities.length) {
@@ -1911,6 +1975,9 @@ export class VoronoiGenerator {
         
         // Generate roads connecting cities
         this._generateRoads();
+        
+        // Generate sea routes between coastal cities
+        this._generateSeaRoutes();
         
         // Generate population distribution
         this._generatePopulation();
@@ -2009,6 +2076,7 @@ export class VoronoiGenerator {
     /**
      * Generate roads connecting cities within kingdoms
      * Creates a realistic road network - simple tree structure radiating from capitol
+     * Plus a few key inter-kingdom trade routes
      */
     _generateRoads() {
         this.roads = [];
@@ -2016,6 +2084,33 @@ export class VoronoiGenerator {
         // Track cells that have roads to avoid overlaps
         const roadCells = new Set();
         
+        // Pre-build river cell sets once (expensive to do per-pathfind)
+        const riverCells = new Set();
+        const nearRiverCells = new Set();
+        
+        if (this.rivers) {
+            for (const river of this.rivers) {
+                if (river.path) {
+                    for (const point of river.path) {
+                        const cellIdx = point.cell !== undefined ? point.cell : point;
+                        if (cellIdx >= 0) {
+                            riverCells.add(cellIdx);
+                        }
+                    }
+                }
+            }
+            // Build near-river set after all river cells are known
+            for (const cellIdx of riverCells) {
+                const neighbors = this.getNeighbors(cellIdx);
+                for (const n of neighbors) {
+                    if (!riverCells.has(n) && this.heights[n] >= ELEVATION.SEA_LEVEL) {
+                        nearRiverCells.add(n);
+                    }
+                }
+            }
+        }
+        
+        // PHASE 1: Internal kingdom roads (capitol to cities)
         for (let k = 0; k < this.kingdomCount; k++) {
             const capitolCell = this.capitols[k];
             if (capitolCell < 0) continue;
@@ -2064,11 +2159,11 @@ export class VoronoiGenerator {
                 }
                 
                 // Try to connect to nearest
-                let road = this._findRoadPath(nearestNode.cell, city.cell, roadCells);
+                let road = this._findRoadPath(nearestNode.cell, city.cell, roadCells, riverCells, nearRiverCells);
                 
                 // If no path found, try connecting directly to capitol
                 if (!road && nearestNode.cell !== capitolCell) {
-                    road = this._findRoadPath(capitolCell, city.cell, roadCells);
+                    road = this._findRoadPath(capitolCell, city.cell, roadCells, riverCells, nearRiverCells);
                 }
                 
                 if (road && road.length >= 2) {
@@ -2088,6 +2183,219 @@ export class VoronoiGenerator {
                 }
             }
         }
+        
+        // PHASE 2: Just 2-3 inter-kingdom trade routes connecting closest capitol pairs
+        const capitolPairs = [];
+        
+        for (let k1 = 0; k1 < this.kingdomCount; k1++) {
+            const capitol1 = this.capitols[k1];
+            if (capitol1 < 0) continue;
+            
+            const cap1X = this.points[capitol1 * 2];
+            const cap1Y = this.points[capitol1 * 2 + 1];
+            
+            for (let k2 = k1 + 1; k2 < this.kingdomCount; k2++) {
+                const capitol2 = this.capitols[k2];
+                if (capitol2 < 0) continue;
+                
+                const cap2X = this.points[capitol2 * 2];
+                const cap2Y = this.points[capitol2 * 2 + 1];
+                const dist = Math.sqrt((cap1X - cap2X) ** 2 + (cap1Y - cap2Y) ** 2);
+                
+                capitolPairs.push({ k1, k2, capitol1, capitol2, dist });
+            }
+        }
+        
+        // Sort by distance and only create the 2-3 shortest connections
+        capitolPairs.sort((a, b) => a.dist - b.dist);
+        const maxTradeRoutes = Math.min(3, Math.ceil(this.kingdomCount / 3));
+        
+        for (let i = 0; i < Math.min(maxTradeRoutes, capitolPairs.length); i++) {
+            const pair = capitolPairs[i];
+            const road = this._findRoadPath(pair.capitol1, pair.capitol2, roadCells, riverCells, nearRiverCells);
+            if (road && road.length >= 2) {
+                this.roads.push({
+                    path: road,
+                    kingdom: -1,
+                    type: 'trade'
+                });
+                this._markRoadCells(road, roadCells);
+            }
+        }
+    }
+    
+    /**
+     * Generate sea routes between coastal cities and capitols
+     */
+    _generateSeaRoutes() {
+        this.seaRoutes = [];
+        
+        // Build set of lake cells to exclude from "coastal"
+        const lakeCellSet = this.lakeCells || new Set();
+        
+        // Build set of ocean cells (water that's not lake)
+        const oceanCells = new Set();
+        for (let i = 0; i < this.cellCount; i++) {
+            if (this.heights[i] < ELEVATION.SEA_LEVEL && !lakeCellSet.has(i)) {
+                oceanCells.add(i);
+            }
+        }
+        
+        // Collect all settlements that border ocean (not lakes)
+        const coastalSettlements = [];
+        
+        // Helper to check if cell borders ocean
+        const bordersOcean = (cell) => {
+            const neighbors = this.getNeighbors(cell);
+            for (const n of neighbors) {
+                if (oceanCells.has(n)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        
+        // Check capitols
+        for (let k = 0; k < this.kingdomCount; k++) {
+            const capitolCell = this.capitols[k];
+            if (capitolCell < 0) continue;
+            
+            if (bordersOcean(capitolCell)) {
+                coastalSettlements.push({
+                    cell: capitolCell,
+                    x: this.points[capitolCell * 2],
+                    y: this.points[capitolCell * 2 + 1],
+                    kingdom: k,
+                    type: 'capitol'
+                });
+            }
+        }
+        
+        // Check cities
+        for (let i = 0; i < this.cities.length; i++) {
+            const city = this.cities[i];
+            if (!city || city.cell < 0) continue;
+            
+            if (bordersOcean(city.cell)) {
+                coastalSettlements.push({
+                    cell: city.cell,
+                    x: this.points[city.cell * 2],
+                    y: this.points[city.cell * 2 + 1],
+                    kingdom: city.kingdom,
+                    type: 'city',
+                    cityIndex: i
+                });
+            }
+        }
+        
+        if (coastalSettlements.length < 2) return;
+        
+        // Find pairs of coastal settlements to connect
+        const pairs = [];
+        for (let i = 0; i < coastalSettlements.length; i++) {
+            for (let j = i + 1; j < coastalSettlements.length; j++) {
+                const s1 = coastalSettlements[i];
+                const s2 = coastalSettlements[j];
+                
+                const dist = Math.sqrt((s1.x - s2.x) ** 2 + (s1.y - s2.y) ** 2);
+                
+                // Only connect settlements within reasonable sea distance and not too close
+                if (dist < this.width * 0.35 && dist > 80) {
+                    pairs.push({ s1, s2, dist });
+                }
+            }
+        }
+        
+        // Sort by distance
+        pairs.sort((a, b) => a.dist - b.dist);
+        
+        // Create sea routes - limit to a few routes
+        const maxSeaRoutes = Math.min(4, Math.ceil(coastalSettlements.length / 3));
+        const usedSettlements = new Set();
+        
+        for (const pair of pairs) {
+            if (this.seaRoutes.length >= maxSeaRoutes) break;
+            
+            // Don't connect same settlement twice
+            if (usedSettlements.has(pair.s1.cell) || usedSettlements.has(pair.s2.cell)) {
+                continue;
+            }
+            
+            // Find nearest ocean cells for each settlement
+            const water1 = this._findNearestOceanCell(pair.s1.cell, oceanCells);
+            const water2 = this._findNearestOceanCell(pair.s2.cell, oceanCells);
+            
+            if (water1 < 0 || water2 < 0) continue;
+            
+            const w1x = this.points[water1 * 2];
+            const w1y = this.points[water1 * 2 + 1];
+            const w2x = this.points[water2 * 2];
+            const w2y = this.points[water2 * 2 + 1];
+            
+            // Check if path between water cells crosses land
+            let crossesLand = false;
+            const numChecks = 20;
+            
+            for (let t = 0.05; t <= 0.95; t += 0.05) {
+                const checkX = w1x + (w2x - w1x) * t;
+                const checkY = w1y + (w2y - w1y) * t;
+                const checkCell = this.findCellWorld(checkX, checkY);
+                
+                if (checkCell >= 0 && this.heights[checkCell] >= ELEVATION.SEA_LEVEL) {
+                    crossesLand = true;
+                    break;
+                }
+            }
+            
+            if (crossesLand) continue;
+            
+            // Create the sea path
+            const path = [
+                { x: pair.s1.x, y: pair.s1.y },
+                { x: w1x, y: w1y },
+                { x: w2x, y: w2y },
+                { x: pair.s2.x, y: pair.s2.y }
+            ];
+            
+            this.seaRoutes.push({
+                path: path,
+                from: pair.s1,
+                to: pair.s2
+            });
+            
+            usedSettlements.add(pair.s1.cell);
+            usedSettlements.add(pair.s2.cell);
+        }
+    }
+    
+    /**
+     * Find nearest ocean cell to a land cell
+     */
+    _findNearestOceanCell(landCell, oceanCells) {
+        const visited = new Set();
+        const queue = [landCell];
+        visited.add(landCell);
+        
+        while (queue.length > 0) {
+            const current = queue.shift();
+            
+            if (oceanCells.has(current)) {
+                return current;
+            }
+            
+            const neighbors = this.getNeighbors(current);
+            for (const n of neighbors) {
+                if (!visited.has(n)) {
+                    visited.add(n);
+                    queue.push(n);
+                }
+            }
+            
+            // Limit search
+            if (visited.size > 100) break;
+        }
+        
+        return -1;
     }
     
     /**
@@ -2112,36 +2420,15 @@ export class VoronoiGenerator {
      * Find a road path between two cells using A* pathfinding
      * Avoids water and rivers, prefers paths alongside rivers and existing roads
      */
-    _findRoadPath(startCell, endCell, existingRoadCells = null) {
+    _findRoadPath(startCell, endCell, existingRoadCells = null, riverCells = null, nearRiverCells = null) {
         const startX = this.points[startCell * 2];
         const startY = this.points[startCell * 2 + 1];
         const endX = this.points[endCell * 2];
         const endY = this.points[endCell * 2 + 1];
         
-        // Build set of river cells to avoid
-        const riverCells = new Set();
-        const nearRiverCells = new Set();
-        
-        if (this.rivers) {
-            for (const river of this.rivers) {
-                if (river.path) {
-                    for (const point of river.path) {
-                        // River path points have {x, y, cell, flow} format
-                        const cellIdx = point.cell !== undefined ? point.cell : point;
-                        if (cellIdx >= 0) {
-                            riverCells.add(cellIdx);
-                            // Mark neighbors as near-river (good for roads)
-                            const neighbors = this.getNeighbors(cellIdx);
-                            for (const n of neighbors) {
-                                if (!riverCells.has(n) && this.heights[n] >= ELEVATION.SEA_LEVEL) {
-                                    nearRiverCells.add(n);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Use provided river cells or empty sets
+        const rivers = riverCells || new Set();
+        const nearRivers = nearRiverCells || new Set();
         
         // A* pathfinding
         const openSet = new Map();
@@ -2170,8 +2457,8 @@ export class VoronoiGenerator {
             
             // Rivers can be crossed but with high cost (represents bridges)
             let riverCost = 1;
-            if (riverCells.has(to)) {
-                riverCost = 5; // High cost to cross river
+            if (rivers.has(to)) {
+                riverCost = 5;
             }
             
             // Elevation cost - prefer flat terrain, penalize steep climbs
@@ -2187,7 +2474,7 @@ export class VoronoiGenerator {
             
             // Bonus for being near rivers (good trade routes)
             let riverBonus = 1;
-            if (nearRiverCells.has(to)) riverBonus = 0.7;
+            if (nearRivers.has(to)) riverBonus = 0.7;
             
             // Strong bonus for existing roads (roads merge together)
             let roadBonus = 1;
@@ -2201,7 +2488,7 @@ export class VoronoiGenerator {
         openSet.set(startCell, fScore.get(startCell));
         
         let iterations = 0;
-        const maxIterations = 10000;
+        const maxIterations = 5000;
         
         while (openSet.size > 0 && iterations < maxIterations) {
             iterations++;
