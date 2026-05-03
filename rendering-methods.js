@@ -106,20 +106,16 @@ render() {
             this._updateKingdomSVG();
         }
         
-        // 3. Coastline (SVG) - above kingdoms (toggleable)
+        // 3. Coastline (SVG) - above kingdoms
+        // Always call _updateCoastlineSVG: when showCoastline is true it draws
+        // a visible dark stroke (the actual coastline). When false it draws
+        // an invisible seam-filler in the ocean color, hiding the antialiased
+        // gap between canvas land fill and SVG kingdom fills (which would
+        // otherwise show as a thin pale border).
+        this._updateCoastlineSVG();
+        // Lake borders only render when coastline is on (they're shorelines too)
         if (this.showCoastline) {
-            this._updateCoastlineSVG();
-            // Lake borders share the coastline SVG group so they zoom/pan
-            // together. Gated on the same flag so toggling coastline also
-            // toggles lake borders, matching the user's mental model that
-            // "all shorelines" are one thing.
             this._updateLakeBordersSVG();
-        } else {
-            const coastSvg = document.getElementById('coastline-svg');
-            if (coastSvg) {
-                coastSvg.innerHTML = '';
-                coastSvg.style.opacity = '0';
-            }
         }
         
         // 4. Roads (SVG)
@@ -1235,6 +1231,19 @@ _buildSmoothCoastlineLoops() {
     // Collect all coastline edges
     const coastEdges = [];
     
+    // Cells right on the map edge will have polygon edges that lie along
+    // the map boundary. These edges have no Voronoi neighbour on the other
+    // side — but the nearest-neighbour heuristic below still finds some
+    // interior neighbour (which is land). To make the coastline loop close
+    // properly when land runs off the edge of the map (e.g. isthmus preset),
+    // we explicitly treat map-boundary edges of land cells as coastline.
+    const W = this.width;
+    const H = this.height;
+    const EDGE_TOL = 0.5;  // world-space pixels; cell vertices snap to bbox
+    const isOnMapEdge = (x, y) =>
+        x <= EDGE_TOL || x >= W - EDGE_TOL ||
+        y <= EDGE_TOL || y >= H - EDGE_TOL;
+    
     for (let i = 0; i < this.cellCount; i++) {
         if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
         
@@ -1246,6 +1255,14 @@ _buildSmoothCoastlineLoops() {
         for (let j = 0; j < cell.length - 1; j++) {
             const v1 = cell[j];
             const v2 = cell[j + 1];
+            
+            // If both endpoints sit on the map boundary (top/bottom/left/right),
+            // this is a map-edge edge of a land cell — treat as coast so the
+            // loop closes by walking along the map edge.
+            if (isOnMapEdge(v1[0], v1[1]) && isOnMapEdge(v2[0], v2[1])) {
+                coastEdges.push([v1[0], v1[1], v2[0], v2[1]]);
+                continue;
+            }
             
             const edgeMidX = (v1[0] + v2[0]) / 2;
             const edgeMidY = (v1[1] + v2[1]) / 2;
@@ -2545,8 +2562,21 @@ _updateCoastlineSVG() {
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.setAttribute('transform', `translate(${this.viewport.x}, ${this.viewport.y}) scale(${zoom})`);
     
-    // Coastline style - faint but full opacity
-    const strokeColor = '#A89880';
+    // Coastline style. When showCoastline is on, draw the real visible coast
+    // (dark warm tan). When off, we still draw a stroke at the same place
+    // but in the ambient ocean color, which hides the 1-2px antialiasing seam
+    // that appears between the canvas-painted land and the SVG-painted kingdom
+    // fills. Without this seam-filler, turning coastline off reveals a thin
+    // pale border around every coast.
+    let strokeColor;
+    if (this.showCoastline) {
+        strokeColor = '#A89880';
+    } else {
+        // Match the ocean color of whatever render mode we're in so the seam
+        // blends invisibly into the surrounding water.
+        const isPolitical = this.renderMode === 'political' || this.renderMode === 'political-terrain';
+        strokeColor = isPolitical ? POLITICAL_OCEAN : OCEAN_COLORS[0];
+    }
     const strokeWidth = 1; // Fixed width in world units
     
     // Draw each coastline loop as a path

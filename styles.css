@@ -239,16 +239,137 @@ body {
 .compass-container {
     width: 160px;
     height: 160px;
-    animation: compass-float 4s ease-in-out infinite;
+    /* No animation — compass is a fixed atlas reference, not a spinner. */
     filter: drop-shadow(4px 4px 8px rgba(0,0,0,0.4));
 }
 
-@keyframes compass-float {
-    0%, 100% { transform: translateY(0) rotate(-5deg); }
-    50% { transform: translateY(-8px) rotate(5deg); }
+.compass-rose { width: 100%; height: 100%; }
+
+/* ============================================
+   COMPASS ARROWS — slow rotation with subtle wobble
+   ============================================
+   
+   The 16 arrow polygons (4 cardinals + 4 diagonals + 8 minor) are wrapped
+   in two nested <g> elements. SVG transforms compose, so layering two
+   animations gives "needle hunting for north while drifting around the
+   compass":
+   
+       outer .compass-arrows-rotate  → continuous rotation (30s/turn)
+       inner .compass-arrows-wobble  → small back-and-forth (3s cycle)
+   
+   The cardinal letters (N/S/E/W), degree marks, and outer rings stay
+   fixed because they're outside both wrappers. */
+
+.compass-arrows-rotate {
+    transform-origin: 100px 100px;
+    animation: compass-rotate 30s linear infinite;
 }
 
-.compass-rose { width: 100%; height: 100%; }
+.compass-arrows-wobble {
+    transform-origin: 100px 100px;
+    /* Combined wobble + glow on the same element */
+    animation: compass-wobble 3s ease-in-out infinite,
+               compass-glow   3.5s ease-in-out infinite;
+}
+
+/* Slow continuous rotation — full revolution every 30 seconds */
+@keyframes compass-rotate {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+/* Subtle wobble — like a magnetic needle settling. ±6° feels alive
+   without looking jittery. ease-in-out keeps the motion organic. */
+@keyframes compass-wobble {
+    0%, 100% { transform: rotate(-6deg); }
+    50%      { transform: rotate(6deg); }
+}
+
+@keyframes compass-glow {
+    0%, 100% { filter: drop-shadow(0 0 0 transparent); }
+    50%      { filter: drop-shadow(0 0 3px rgba(160, 30, 30, 0.45)); }
+}
+
+/* ============================================
+   CONSTELLATIONS — appear progressively, twinkle
+   ============================================ */
+
+.constellation-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 0;  /* behind content but above parchment */
+    opacity: 0.55;
+    mix-blend-mode: multiply;
+}
+
+/* Stars fade in one at a time. We use staggered animation-delay so each
+   constellation appears in sequence, then a subtle twinkle continues. */
+.con-star {
+    fill: #2a1a0a;
+    opacity: 0;
+    animation: star-appear 0.8s ease-out forwards, star-twinkle 4s ease-in-out infinite;
+}
+
+.con-line {
+    stroke: #6a5a4a;
+    stroke-width: 0.6;
+    stroke-dasharray: 1, 2;
+    fill: none;
+    opacity: 0;
+    animation: line-appear 1.2s ease-out forwards;
+}
+
+.amb-star {
+    fill: #4a3a2a;
+    opacity: 0;
+    animation: star-appear 0.6s ease-out forwards, star-twinkle 5s ease-in-out infinite;
+}
+
+@keyframes star-appear {
+    from { opacity: 0; transform: scale(0.3); }
+    to   { opacity: 0.85; transform: scale(1); }
+}
+
+@keyframes line-appear {
+    from { opacity: 0; }
+    to   { opacity: 0.5; }
+}
+
+@keyframes star-twinkle {
+    0%, 100% { opacity: 0.85; }
+    50%      { opacity: 0.45; }
+}
+
+/* Stagger the constellations — each appears about 1.5s after the previous */
+.constellation.c1 .con-star { animation-delay: 0.5s,  0s; }
+.constellation.c1 .con-line { animation-delay: 1.5s; }
+
+.constellation.c2 .con-star { animation-delay: 2.0s,  0s; }
+.constellation.c2 .con-line { animation-delay: 3.0s; }
+
+.constellation.c3 .con-star { animation-delay: 3.5s,  0s; }
+.constellation.c3 .con-line { animation-delay: 4.5s; }
+
+.constellation.c4 .con-star { animation-delay: 5.0s,  0s; }
+.constellation.c4 .con-line { animation-delay: 6.0s; }
+
+/* Ambient stars appear later, scattered timing */
+.amb-star:nth-child(1)  { animation-delay: 1.0s, 0s; }
+.amb-star:nth-child(2)  { animation-delay: 1.4s, 0s; }
+.amb-star:nth-child(3)  { animation-delay: 2.2s, 0s; }
+.amb-star:nth-child(4)  { animation-delay: 2.8s, 0s; }
+.amb-star:nth-child(5)  { animation-delay: 3.4s, 0s; }
+.amb-star:nth-child(6)  { animation-delay: 3.8s, 0s; }
+.amb-star:nth-child(7)  { animation-delay: 4.4s, 0s; }
+.amb-star:nth-child(8)  { animation-delay: 5.0s, 0s; }
+.amb-star:nth-child(9)  { animation-delay: 5.4s, 0s; }
+.amb-star:nth-child(10) { animation-delay: 6.0s, 0s; }
+.amb-star:nth-child(11) { animation-delay: 6.4s, 0s; }
+.amb-star:nth-child(12) { animation-delay: 6.8s, 0s; }
 
 .cardinal-letter {
     font-family: var(--font-display);
@@ -747,6 +868,28 @@ select:focus { outline: none; border-color: var(--accent); }
     padding: 0 8px;
 }
 
+/* Preset selector below the main "New World" button */
+.preset-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.preset-row .preset-label {
+    font-family: var(--font-display);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: #6a5a4a;
+    flex-shrink: 0;
+}
+
+.preset-row .ctrl-select {
+    flex: 1;
+}
+
 .generate-main-btn {
     width: 100%;
     display: flex;
@@ -841,6 +984,7 @@ select:focus { outline: none; border-color: var(--accent); }
     border-bottom: 1px solid #c4b498;
 }
 
+/* Collapsible heads — clickable, with chevron and icon */
 .ctrl-section-head {
     display: flex;
     justify-content: space-between;
@@ -854,6 +998,111 @@ select:focus { outline: none; border-color: var(--accent); }
     text-transform: uppercase;
     letter-spacing: 2px;
     color: #5a4a3a;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s ease;
+}
+
+.ctrl-section-head:hover {
+    background: linear-gradient(180deg, #e8dcc8 0%, #dccbb0 100%);
+}
+
+/* Section icon — leading symbol that visually flags each section. We use
+   Unicode symbols rather than icon fonts to avoid extra HTTP requests. */
+.ctrl-section-head .sec-icon {
+    display: inline-block;
+    width: 14px;
+    margin-right: 6px;
+    text-align: center;
+    color: #7a6a5a;
+    font-size: 12px;
+}
+
+/* Chevron on the right indicates expand/collapse state */
+.ctrl-section-head .sec-chevron {
+    display: inline-block;
+    width: 10px;
+    margin-left: 6px;
+    color: #8a7a6a;
+    font-size: 10px;
+    transform: rotate(0deg);
+    transition: transform 0.2s ease;
+}
+
+.ctrl-section.collapsed .ctrl-section-head .sec-chevron {
+    transform: rotate(-90deg);
+}
+
+/* Hide everything in a collapsed section except the head */
+.ctrl-section.collapsed > *:not(.ctrl-section-head) {
+    display: none;
+}
+
+/* Slight visual indication that the head is "different" when collapsed */
+.ctrl-section.collapsed .ctrl-section-head {
+    border-bottom-color: #c4b498;
+    opacity: 0.85;
+}
+
+/* ============================================
+   TOOLTIPS — pure-CSS via [data-tooltip] attribute
+   ============================================ */
+
+/* Any element with data-tooltip="..." gets a tooltip on hover */
+[data-tooltip] {
+    position: relative;
+}
+
+[data-tooltip]:hover::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(40, 28, 18, 0.95);
+    color: #f0e6d6;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-family: var(--font-body, sans-serif);
+    font-size: 11px;
+    font-weight: normal;
+    text-transform: none;
+    letter-spacing: normal;
+    white-space: nowrap;
+    max-width: 240px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    pointer-events: none;
+    z-index: 1000;
+    animation: tooltip-fade 0.15s ease-out;
+}
+
+[data-tooltip]:hover::before {
+    content: '';
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 4px solid transparent;
+    border-top-color: rgba(40, 28, 18, 0.95);
+    pointer-events: none;
+    z-index: 1000;
+    animation: tooltip-fade 0.15s ease-out;
+}
+
+@keyframes tooltip-fade {
+    from { opacity: 0; transform: translateX(-50%) translateY(2px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* For sliders that wrap in .ctrl-slider, position tooltip on the row not the slider thumb */
+.ctrl-slider[data-tooltip]:hover::after {
+    bottom: calc(100% - 4px);
+}
+
+/* Don't show tooltips inside collapsed sections (they'd overflow) */
+.ctrl-section.collapsed [data-tooltip]:hover::after,
+.ctrl-section.collapsed [data-tooltip]:hover::before {
+    display: none;
 }
 
 .ctrl-section-head + .ctrl-row,

@@ -2577,19 +2577,41 @@ export class VoronoiGenerator {
             }
         }
         
+        // Pre-compute lake-adjacent cells once for the whole _generateCities call.
+        // A "lakefront" cell is one that touches a lake — these get a strong
+        // bonus the same way coastal cells do (real settlements cluster around
+        // freshwater).
+        const lakeShoreCells = new Set();
+        if (this.lakeCells && this.lakeCells.size > 0) {
+            for (const lakeCell of this.lakeCells) {
+                for (const n of this.voronoi.neighbors(lakeCell)) {
+                    if (this.heights[n] >= ELEVATION.SEA_LEVEL && !this.lakeCells.has(n)) {
+                        lakeShoreCells.add(n);
+                    }
+                }
+            }
+        }
+        
         for (let k = 0; k < this.kingdomCount; k++) {
             const cells = this.kingdomCells[k];
             if (!cells || cells.length === 0) continue;
             
             const capitolCell = this.capitols[k];
             
-            // Calculate number of cities based on kingdom size and road density
+            // Calculate number of cities based on kingdom size and road density.
+            // Old cap of 20 cities per kingdom made high-cell-count maps look
+            // empty: a 5000-cell kingdom needs more like 50+ cities for proper
+            // coverage. The base ratio (1 city per 40 cells) is unchanged so
+            // existing low-cell-count maps still feel right; only the cap is
+            // raised so big kingdoms aren't artificially starved.
             const density = this.roadDensity !== undefined ? this.roadDensity : 5;
             if (density === 0) continue;
             
             const densityFactor = 0.5 + (density / 5);
             const baseNumCities = Math.floor(cells.length / 40);
-            const numCities = Math.min(20, Math.max(1, Math.floor(baseNumCities * densityFactor)));
+            // Cap at 100 — very large kingdoms get many cities. Min-spacing
+            // (minCityDistance) still ensures we don't over-pack.
+            const numCities = Math.min(100, Math.max(1, Math.floor(baseNumCities * densityFactor)));
             
             // Score all cells for city placement
             const cellScores = [];
@@ -2600,6 +2622,8 @@ export class VoronoiGenerator {
                 // Skip water and very high mountains
                 if (height < ELEVATION.SEA_LEVEL) continue;
                 if (height > 3500) continue;
+                // Cities can't be on lake cells either (they're water)
+                if (this.lakeCells && this.lakeCells.has(cellIdx)) continue;
                 
                 // Skip if too close to capitol
                 if (capitolCell >= 0) {
@@ -2611,34 +2635,85 @@ export class VoronoiGenerator {
                     if (distToCapitol < 40) continue;
                 }
                 
-                let score = 0;
                 const isCoastal = coastalCells.has(cellIdx);
                 const isOnRiver = riverCells.has(cellIdx);
                 const isNearRiver = nearRiverCells.has(cellIdx);
+                const isLakefront = lakeShoreCells.has(cellIdx);
                 
-                // Skip cells directly on rivers
+                // Skip cells directly on rivers (cities sit beside, not in)
                 if (isOnRiver) continue;
                 
-                // Score based on location (all are just "city" type now)
-                if (isCoastal) {
-                    score += 30;
-                } else if (isNearRiver) {
-                    score += 40;
-                }
+                // ---- Score from scratch with much wider spread ----
+                // We want a clear gradient between "great site" and "terrible
+                // site" so the min-distance picker forms organic clusters
+                // (around fertile/coastal/river areas) and leaves dead zones
+                // where settlement is implausible (mountains, deserts).
+                let score = 0;
                 
-                // Elevation scoring
-                if (height > 1200) {
-                    score += 5;
-                } else if (height > 500) {
-                    score += 20;
-                } else if (height > 100) {
-                    score += 15;
+                // Water access — the dominant factor for real settlements.
+                // Coastal: ports, fisheries, trade. Lakefront: fresh water + fish.
+                // Near-river: irrigation + transport. These compound: a coastal
+                // river-mouth (delta) is the best of all.
+                if (isCoastal)   score += 50;
+                if (isLakefront) score += 45;
+                if (isNearRiver) score += 35;
+                
+                // Elevation: lowlands and gentle hills are best. Mountains are
+                // genuinely uninhabitable — heavily penalize them rather than
+                // mildly preferring lowlands.
+                if (height > 2500) {
+                    score -= 60;     // alpine: nobody lives here
+                } else if (height > 1500) {
+                    score -= 25;     // highlands: harsh, sparse
+                } else if (height > 800) {
+                    score -= 5;      // hills: viable but not preferred
+                } else if (height > 200) {
+                    score += 25;     // ideal lowlands and gentle slopes
+                } else if (height > 30) {
+                    score += 30;     // coastal plain — best terrain
                 } else {
-                    score += 10;
+                    score += 10;     // very flat near-sea ground (marshy)
                 }
                 
-                // Randomness to spread cities
-                score += Math.random() * 25;
+                // Precipitation — settlements cluster in fertile regions. A
+                // desert site (precip ~0.1) is wildly less attractive than a
+                // temperate one (precip ~0.5-0.7). The very-wet end (>0.85)
+                // gets a slight penalty (swampy/diseased — think Amazon basin).
+                if (this.precipitation) {
+                    const precip = this.precipitation[cellIdx];
+                    if (precip < 0.10) {
+                        score -= 50;        // arid desert — almost no settlement
+                    } else if (precip < 0.20) {
+                        score -= 25;        // semi-arid steppe
+                    } else if (precip < 0.35) {
+                        score += 10;        // dry — viable
+                    } else if (precip < 0.65) {
+                        score += 35;        // temperate — ideal
+                    } else if (precip < 0.85) {
+                        score += 25;        // wet — fertile but humid
+                    } else {
+                        score += 5;         // very wet — swampy, fewer cities
+                    }
+                }
+                
+                // Slope: cells in steep terrain are bad sites even at moderate
+                // elevation. Use heights of neighbours to estimate.
+                let maxNeighbourDelta = 0;
+                for (const n of this.voronoi.neighbors(cellIdx)) {
+                    const d = Math.abs(this.heights[n] - height);
+                    if (d > maxNeighbourDelta) maxNeighbourDelta = d;
+                }
+                if (maxNeighbourDelta > 600) score -= 25;
+                else if (maxNeighbourDelta > 300) score -= 8;
+                
+                // River-mouth bonus: coastal AND near a river → river delta site
+                // (Cairo, New Orleans, Shanghai). Apply on top of the existing
+                // coastal + near-river bonuses so deltas are exceptional.
+                if (isCoastal && isNearRiver) score += 25;
+                
+                // Small randomness to break ties without overwhelming the signal.
+                // Reduced from ±25 (which dominated all other factors) to ±8.
+                score += (Math.random() - 0.5) * 16;
                 
                 cellScores.push({ cell: cellIdx, score });
             }
@@ -2652,6 +2727,11 @@ export class VoronoiGenerator {
             
             for (const candidate of cellScores) {
                 if (selectedCities.length >= numCities) break;
+                
+                // Hard floor: don't place a city at a cell with terrible score.
+                // This is what produces the asymmetric distribution: if a kingdom
+                // is half-desert, only the fertile half ends up with cities.
+                if (candidate.score < 5) break;  // sorted descending, so we can break
                 
                 const x = this.points[candidate.cell * 2];
                 const y = this.points[candidate.cell * 2 + 1];
@@ -2684,7 +2764,128 @@ export class VoronoiGenerator {
             this.cities.push(...selectedCities);
         }
         
-        // Generate names for all cities with context
+        // ---- MOUNTAIN CITIES (highland outposts) ----
+        // Some kingdoms get a small number of high-elevation cities — mining
+        // outposts, monasteries, fortress-cities, refuges. The regular scoring
+        // above explicitly penalizes mountain placement, so these wouldn't
+        // appear naturally. We add them as a separate pass.
+        //
+        // Rules:
+        //   - Each kingdom has a 50% chance to get 0 mountain cities, 35% for 1,
+        //     and 15% for 2. So most kingdoms have at most one.
+        //   - Must be on a true mountain cell (height > 1200m) but not too
+        //     extreme (< 2800m so we don't put a city on a peak).
+        //   - Must respect minCityDistance from existing cities (no clustering
+        //     a mountain city right next to a regular city).
+        //   - Must be inside the kingdom's cells, not on a lake or ocean.
+        //   - Will be validated AFTER road generation: if no road can reach
+        //     them, they're dropped before naming.
+        const mountainCityCandidates = [];
+        for (let k = 0; k < this.kingdomCount; k++) {
+            const cells = this.kingdomCells[k];
+            if (!cells || cells.length === 0) continue;
+            
+            const r = Math.random();
+            let mountainCount;
+            if      (r < 0.50) mountainCount = 0;
+            else if (r < 0.85) mountainCount = 1;
+            else               mountainCount = 2;
+            if (mountainCount === 0) continue;
+            
+            // Find candidate mountain cells in this kingdom
+            const candidates = [];
+            for (const cellIdx of cells) {
+                const h = this.heights[cellIdx];
+                if (h < 1200 || h > 2800) continue;
+                if (this.lakeCells && this.lakeCells.has(cellIdx)) continue;
+                
+                // Score by elevation (higher = more dramatic) plus a small
+                // bonus for being near existing roads/rivers (fortress at a
+                // chokepoint feels right) but penalty for being right on a
+                // river (mountain rivers are rapids — don't build a city in one)
+                if (riverCells.has(cellIdx)) continue;
+                
+                let score = h / 100;  // 12-28 base score from elevation
+                if (nearRiverCells.has(cellIdx)) score += 8;
+                score += Math.random() * 5;
+                candidates.push({ cell: cellIdx, score, kingdom: k });
+            }
+            
+            if (candidates.length === 0) continue;
+            candidates.sort((a, b) => b.score - a.score);
+            
+            // Take top mountainCount, respecting min-distance to existing cities
+            const minSpacing = 35;  // a bit looser than regular cities
+            const myKingdomCities = this.cities.filter(c => c.kingdom === k);
+            
+            let added = 0;
+            for (const c of candidates) {
+                if (added >= mountainCount) break;
+                const x = this.points[c.cell * 2];
+                const y = this.points[c.cell * 2 + 1];
+                
+                let tooClose = false;
+                for (const existing of myKingdomCities) {
+                    const ex = this.points[existing.cell * 2];
+                    const ey = this.points[existing.cell * 2 + 1];
+                    if (Math.hypot(x - ex, y - ey) < minSpacing) {
+                        tooClose = true;
+                        break;
+                    }
+                }
+                // Also check against other mountain candidates already chosen
+                for (const existing of mountainCityCandidates) {
+                    const ex = this.points[existing.cell * 2];
+                    const ey = this.points[existing.cell * 2 + 1];
+                    if (Math.hypot(x - ex, y - ey) < minSpacing) {
+                        tooClose = true;
+                        break;
+                    }
+                }
+                if (tooClose) continue;
+                
+                mountainCityCandidates.push({
+                    cell: c.cell,
+                    kingdom: k,
+                    type: 'city',
+                    isCoastal: false,
+                    elevation: this.heights[c.cell],
+                    isMountain: true   // flagged so road validation knows
+                });
+                added++;
+            }
+        }
+        
+        // Add mountain candidates to cities list. They'll be road-validated below.
+        this.cities.push(...mountainCityCandidates);
+        
+        // Generate roads connecting cities
+        this._generateRoads();
+        
+        // ---- VALIDATE MOUNTAIN CITIES ----
+        // Mountain cities are only valid if a road actually reached them.
+        // Build the set of cells that any road's endpoint lands on (last cell
+        // of any road path), then check each mountain city against it. Drop
+        // any that didn't get connected — better no city than a stranded one.
+        const cityCellsWithRoads = new Set();
+        if (this.roads && this.roads.length > 0) {
+            for (const road of this.roads) {
+                const path = road.path;
+                if (!path || path.length === 0) continue;
+                for (const pt of path) {
+                    const c = (pt.cell !== undefined) ? pt.cell : pt;
+                    cityCellsWithRoads.add(c);
+                }
+            }
+        }
+        
+        this.cities = this.cities.filter(c => {
+            if (!c.isMountain) return true;        // regular cities always kept
+            return cityCellsWithRoads.has(c.cell); // mountain ones only if road reached
+        });
+        
+        // Generate names AFTER mountain-city validation so cityNames stays in
+        // sync with the final cities array.
         this.cityNames = [];
         for (const city of this.cities) {
             const name = this.nameGenerator.generateSettlementName({
@@ -2699,9 +2900,6 @@ export class VoronoiGenerator {
         while (this.cityNames.length < this.cities.length) {
             this.cityNames.push(`City ${this.cityNames.length + 1}`);
         }
-        
-        // Generate roads connecting cities
-        this._generateRoads();
         
         // Generate sea routes between coastal cities
         this._generateSeaRoutes();
@@ -3048,7 +3246,14 @@ export class VoronoiGenerator {
         
         if (coastalSettlements.length < 2) return;
         
-        // Find pairs of coastal settlements to connect
+        // Find pairs of coastal settlements to connect.
+        // Distance cap is generous — coastal trade historically spans entire
+        // seas (Mediterranean, Baltic). Setting this too tight means even
+        // major-port-to-major-port routes don't form. 70% of map width allows
+        // transoceanic routes while still excluding unrealistic round-the-world
+        // shipping lanes.
+        const maxSeaDist = this.width * 0.70;
+        const minSeaDist = 80;
         const pairs = [];
         for (let i = 0; i < coastalSettlements.length; i++) {
             for (let j = i + 1; j < coastalSettlements.length; j++) {
@@ -3057,8 +3262,7 @@ export class VoronoiGenerator {
                 
                 const dist = Math.sqrt((s1.x - s2.x) ** 2 + (s1.y - s2.y) ** 2);
                 
-                // Only connect settlements within reasonable sea distance and not too close
-                if (dist < this.width * 0.35 && dist > 80) {
+                if (dist < maxSeaDist && dist > minSeaDist) {
                     pairs.push({ s1, s2, dist });
                 }
             }
@@ -3067,15 +3271,27 @@ export class VoronoiGenerator {
         // Sort by distance
         pairs.sort((a, b) => a.dist - b.dist);
         
-        // Create sea routes - limit to a few routes
-        const maxSeaRoutes = Math.min(4, Math.ceil(coastalSettlements.length / 3));
-        const usedSettlements = new Set();
+        // Create sea routes — allow more total routes for large coastlines.
+        // Each settlement may participate in up to maxRoutesPerSettlement
+        // routes (so a busy port can have both a northbound and southbound
+        // shipping lane). Tied to settlement count so small maps don't get
+        // visually overcrowded.
+        const maxSeaRoutes = Math.min(20, Math.max(4, Math.ceil(coastalSettlements.length / 2)));
+        const maxRoutesPerSettlement = 2;
+        const settlementRouteCount = new Map();
+        
+        const settlementUsed = (cell) => {
+            return (settlementRouteCount.get(cell) || 0) >= maxRoutesPerSettlement;
+        };
+        const markSettlementUsed = (cell) => {
+            settlementRouteCount.set(cell, (settlementRouteCount.get(cell) || 0) + 1);
+        };
         
         for (const pair of pairs) {
             if (this.seaRoutes.length >= maxSeaRoutes) break;
             
-            // Don't connect same settlement twice
-            if (usedSettlements.has(pair.s1.cell) || usedSettlements.has(pair.s2.cell)) {
+            // Skip if either settlement has hit its route cap
+            if (settlementUsed(pair.s1.cell) || settlementUsed(pair.s2.cell)) {
                 continue;
             }
             
@@ -3121,8 +3337,8 @@ export class VoronoiGenerator {
                 to: pair.s2
             });
             
-            usedSettlements.add(pair.s1.cell);
-            usedSettlements.add(pair.s2.cell);
+            markSettlementUsed(pair.s1.cell);
+            markSettlementUsed(pair.s2.cell);
         }
     }
     
@@ -3249,7 +3465,10 @@ export class VoronoiGenerator {
         openSet.set(startCell, fScore.get(startCell));
         
         let iterations = 0;
-        const maxIterations = 5000;
+        // Bumped from 5000 — mountain cities can require longer winding paths
+        // through valleys, especially on high-cell-count maps where each cell
+        // is smaller. 12000 still terminates failed paths quickly.
+        const maxIterations = 12000;
         
         while (openSet.size > 0 && iterations < maxIterations) {
             iterations++;
@@ -4823,6 +5042,59 @@ export class VoronoiGenerator {
                 if (seaMask > 0.5) {
                     const continentBias = (seaMask - 0.5) * 0.15 * strength;
                     add = continentBias * edge;
+                }
+                break;
+            }
+            
+            // ---- Isthmus: horizontal strip of land between two seas ----
+            // Geographic definition: a strip of land bounded by water on
+            // both sides. Visually: ocean to the north, ocean to the south,
+            // a wide continent stretching east-west between them. The land
+            // continues off both east and west edges of the map (so the
+            // isthmus implicitly extends to bigger continents off-screen).
+            //
+            // The centerline of the land band wanders north/south across the
+            // map (low-frequency noise) and the band thickness also varies
+            // (medium-frequency noise). This gives the land character —
+            // wider here, narrower there, drifting like a real coastline —
+            // rather than a flat ribbon parallel to the equator.
+            case 'isthmus': {
+                // Centerline of the land band — a slow, shared wander up/down
+                // as we move east/west. Range ~±0.20 (band shifts by up to
+                // 20% of map height as you traverse).
+                const centerY = Noise.simplex2(nx * 1.5, 8.3) * 0.20;
+                
+                // Half-width of the band — varies along x so the isthmus
+                // pinches and bulges. Base 0.40 ± up to 0.12.
+                const halfWidth = 0.40 + Noise.simplex2(nx * 2.3, 41.7) * 0.12;
+                
+                // Coastline noise — independent wobble for each coast on top
+                // of the shared centerline + halfwidth, so the two coasts
+                // don't move in perfect lockstep. Smaller amplitude (0.06)
+                // since centerline is already doing most of the work.
+                const northWobble = Noise.simplex2(nx * 4.0, 11.7) * 0.06;
+                const southWobble = Noise.simplex2(nx * 4.3, 53.1) * 0.06;
+                
+                const northCoastY = centerY - halfWidth + northWobble;  // ocean above
+                const southCoastY = centerY + halfWidth + southWobble;  // ocean below
+                
+                // landBandMask: 1 inside band, 0 in the seas. Smoothstep on
+                // each coastline for a soft transition (0.10 of map height).
+                const distFromNorthCoast = dy - northCoastY;
+                const distFromSouthCoast = southCoastY - dy;
+                const northMask = this._smoothstep(0, 0.10, distFromNorthCoast);
+                const southMask = this._smoothstep(0, 0.10, distFromSouthCoast);
+                const landBandMask = Math.min(northMask, southMask);
+                
+                // No east/west edge taper — land continues off both edges,
+                // suggesting the isthmus extends to bigger landmasses beyond.
+                
+                mult = 1 - (1 - landBandMask) * strength;
+                
+                // Solid bias inside the continent so the heightmap noise
+                // doesn't drop random patches below sea level mid-isthmus.
+                if (landBandMask > 0.5) {
+                    add = (landBandMask - 0.5) * 0.18 * strength;
                 }
                 break;
             }

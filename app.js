@@ -3,7 +3,7 @@
  * UI controller and event handling
  */
 
-import { VoronoiGenerator } from './voronoi-generator.js?v=215';
+import { VoronoiGenerator } from './voronoi-generator.js?v=222';
 import { WorkerBridge } from './worker-bridge.js';
 
 // Worker bridge for background generation
@@ -35,18 +35,23 @@ function hideLoading() {
     loadingScreen.classList.add('hidden');
 }
 
-// Flavor texts for loading screen
+// Lore-flavor messages cycled while the loading screen is open. These read
+// like fragments from a creation myth — the world being shaped beneath the
+// reader's gaze. Order is intentional: starts mysterious, builds to civilizations.
 const flavorTexts = [
-    "Here be dragons",
-    "Uncharted territories await",
-    "Beyond the edge of the world",
-    "Where mapmakers dare not tread",
-    "Terra incognita",
-    "The compass guides true",
-    "Ancient cartographer's wisdom",
-    "Legends marked in ink",
-    "Seas of endless wonder",
-    "Mountains yet unnamed"
+    "The world stirs awake...",
+    "Mountains rise from the depths...",
+    "Rivers carve their ancient paths...",
+    "Forests spread across the lowlands...",
+    "Storms gather over uncharted seas...",
+    "The first travelers walk the wilderness...",
+    "Hearths kindle in distant valleys...",
+    "Fortresses are raised against the dark...",
+    "Borders are drawn in blood and ink...",
+    "Names are whispered into being...",
+    "Crowns find their first heads...",
+    "Roads stretch between rising kingdoms...",
+    "The cartographer takes up the quill..."
 ];
 let currentFlavorIndex = 0;
 const flavorTextEl = document.getElementById('flavor-text');
@@ -1469,3 +1474,243 @@ setTimeout(() => {
 }, 100);
 
 console.log('Shortcuts: G=Generate, H=Heightmap, P=Precipitation, V=Rivers, F=Toggle Rivers, E=Edges, C=Centers, D=Delaunay, +/-=Zoom, 0=Reset');
+
+// ============================================================
+// COLLAPSIBLE SIDEBAR SECTIONS
+// ============================================================
+// Each .ctrl-section can be collapsed by clicking its head. State is saved
+// to localStorage under 'realmforge.collapsed.<section-id>' so the user's
+// preference survives reloads.
+
+(function setupCollapsibleSections() {
+    const sections = document.querySelectorAll('.ctrl-section');
+    sections.forEach(sec => {
+        const head = sec.querySelector('.ctrl-section-head');
+        if (!head) return;
+        
+        const id = sec.dataset.sectionId
+                || head.querySelector('span')?.textContent?.trim().toLowerCase()
+                || '';
+        const storageKey = `realmforge.collapsed.${id}`;
+        
+        // Restore previous state
+        if (localStorage.getItem(storageKey) === '1') {
+            sec.classList.add('collapsed');
+        }
+        
+        head.addEventListener('click', (e) => {
+            // Don't toggle when clicking buttons inside the head
+            if (e.target.closest('.ctrl-action-btn, button')) return;
+            sec.classList.toggle('collapsed');
+            localStorage.setItem(storageKey, sec.classList.contains('collapsed') ? '1' : '0');
+        });
+    });
+})();
+
+// ============================================================
+// STYLE PRESETS
+// ============================================================
+// Each preset is a bundle of slider/select values. Selecting a preset
+// applies them to the controls and triggers any necessary recomputation.
+// "Custom" means the user is hand-tuning — selecting it does nothing.
+// If the user touches any control after applying a preset, the dropdown
+// auto-flips back to Custom (so it's clear the settings have diverged).
+
+const STYLE_PRESETS = {
+    tolkien: {
+        label: 'Middle-earth',
+        // Big single continent, eroded mountainous, prominent rivers, several
+        // kingdoms with varying sizes — Westmarch / Gondor / Mordor feel
+        'noise-algorithm': 'eroded',
+        'noise-frequency': 2.5,
+        'noise-octaves': 6,
+        'sea-level': 0.42,
+        'falloff-type': 'continental',
+        'falloff-strength': 0.75,
+        'smoothing': 1,
+        'coast-jaggedness': 0.6,
+        'island-density': 0.2,
+        'erosion-iterations': 200000,
+        'erosion-strength': 1.0,
+        'deposition-rate': 0.6,
+        'wind-strength': 0.7,
+        'num-rivers': 35,
+        'lake-density': 0.4,
+        'lake-size': 0.5,
+        'num-kingdoms': 10,
+        'road-density': 7
+    },
+    westeros: {
+        label: 'Westeros',
+        // Long N-S continent with many kingdoms (the Seven Kingdoms!),
+        // moderate jaggedness, lots of rivers
+        'noise-algorithm': 'continental',
+        'noise-frequency': 3.0,
+        'noise-octaves': 6,
+        'sea-level': 0.45,
+        'falloff-type': 'continental',
+        'falloff-strength': 0.7,
+        'smoothing': 0,
+        'coast-jaggedness': 0.7,
+        'island-density': 0.35,
+        'erosion-iterations': 150000,
+        'erosion-strength': 0.9,
+        'deposition-rate': 0.5,
+        'wind-strength': 0.8,
+        'num-rivers': 50,
+        'lake-density': 0.3,
+        'lake-size': 0.3,
+        'num-kingdoms': 14,
+        'road-density': 8
+    },
+    earthlike: {
+        label: 'Earth-like',
+        // Two-continent configuration with realistic erosion and lots of variety
+        'noise-algorithm': 'fbm',
+        'noise-frequency': 3.5,
+        'noise-octaves': 7,
+        'sea-level': 0.5,
+        'falloff-type': 'two-continents',
+        'falloff-strength': 0.6,
+        'smoothing': 1,
+        'coast-jaggedness': 0.55,
+        'island-density': 0.4,
+        'erosion-iterations': 200000,
+        'erosion-strength': 0.95,
+        'deposition-rate': 0.6,
+        'wind-strength': 0.85,
+        'num-rivers': 40,
+        'lake-density': 0.4,
+        'lake-size': 0.4,
+        'num-kingdoms': 16,
+        'road-density': 7
+    },
+    alien: {
+        label: 'Alien World',
+        // Strange noise + warped terrain + extreme jaggedness
+        'noise-algorithm': 'multiwarp',
+        'noise-frequency': 5.0,
+        'noise-octaves': 8,
+        'sea-level': 0.35,
+        'falloff-type': 'none',
+        'falloff-strength': 0.3,
+        'smoothing': 0,
+        'coast-jaggedness': 0.95,
+        'island-density': 0.7,
+        'erosion-iterations': 50000,
+        'erosion-strength': 0.5,
+        'deposition-rate': 0.3,
+        'wind-strength': 0.5,
+        'num-rivers': 25,
+        'lake-density': 0.7,
+        'lake-size': 0.2,
+        'num-kingdoms': 8,
+        'road-density': 4
+    },
+    archipelago: {
+        label: 'Archipelago Realms',
+        // Tons of islands, smaller kingdoms each on their own
+        'noise-algorithm': 'fbm',
+        'noise-frequency': 4.0,
+        'noise-octaves': 6,
+        'sea-level': 0.55,
+        'falloff-type': 'archipelago',
+        'falloff-strength': 0.5,
+        'smoothing': 1,
+        'coast-jaggedness': 0.7,
+        'island-density': 0.8,
+        'erosion-iterations': 100000,
+        'erosion-strength': 0.7,
+        'deposition-rate': 0.5,
+        'wind-strength': 0.9,
+        'num-rivers': 20,
+        'lake-density': 0.2,
+        'lake-size': 0.2,
+        'num-kingdoms': 18,
+        'road-density': 5
+    },
+    frozen: {
+        label: 'Frozen North',
+        // Lake-world preset, jagged coastline, fewer kingdoms (harsh land)
+        'noise-algorithm': 'ridged',
+        'noise-frequency': 3.0,
+        'noise-octaves': 7,
+        'sea-level': 0.4,
+        'falloff-type': 'lake-world',
+        'falloff-strength': 0.6,
+        'smoothing': 0,
+        'coast-jaggedness': 0.85,
+        'island-density': 0.5,
+        'erosion-iterations': 80000,
+        'erosion-strength': 0.6,
+        'deposition-rate': 0.4,
+        'wind-strength': 0.5,
+        'num-rivers': 30,
+        'lake-density': 0.85,
+        'lake-size': 0.4,
+        'num-kingdoms': 6,
+        'road-density': 4
+    }
+};
+
+(function setupStylePresets() {
+    const presetSelect = document.getElementById('style-preset');
+    if (!presetSelect) return;
+    
+    let isApplyingPreset = false;
+    
+    function applyPreset(name) {
+        const preset = STYLE_PRESETS[name];
+        if (!preset) return;
+        
+        isApplyingPreset = true;
+        try {
+            for (const [id, value] of Object.entries(preset)) {
+                if (id === 'label') continue;
+                const el = document.getElementById(id);
+                if (!el) continue;
+                
+                el.value = value;
+                
+                // Update value display if present (e.g. for sliders)
+                const valDisplay = document.getElementById(id + '-value');
+                if (valDisplay) {
+                    if (typeof value === 'number' && !Number.isInteger(value)) {
+                        valDisplay.textContent = value.toFixed(2);
+                    } else {
+                        valDisplay.textContent = value;
+                    }
+                }
+                
+                // Fire input event so listeners react
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                // Also fire change for select/checkbox
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        } finally {
+            // Allow a tick for any reactive listeners before clearing flag
+            setTimeout(() => { isApplyingPreset = false; }, 50);
+        }
+    }
+    
+    presetSelect.addEventListener('change', () => {
+        const v = presetSelect.value;
+        if (v && v !== 'custom') {
+            applyPreset(v);
+        }
+    });
+    
+    // If user touches any slider/select after a preset is applied,
+    // flip the preset selector back to "Custom" (so it's clear the
+    // values no longer match the named preset).
+    document.querySelectorAll('.sidebar input, .sidebar select').forEach(el => {
+        if (el.id === 'style-preset') return;
+        el.addEventListener('input', () => {
+            if (isApplyingPreset) return;
+            if (presetSelect.value !== 'custom') {
+                presetSelect.value = 'custom';
+            }
+        });
+    });
+})();
+

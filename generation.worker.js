@@ -165,6 +165,26 @@ function applyWorldMask(h, x, y, width, height, preset, strength) {
             }
             break;
         }
+        case 'isthmus': {
+            // Mirror of voronoi-generator.js isthmus case. See comments there.
+            // Wandering centerline + varying width, no east/west edge taper.
+            const centerY = Noise.simplex2(nx * 1.5, 8.3) * 0.20;
+            const halfWidth = 0.40 + Noise.simplex2(nx * 2.3, 41.7) * 0.12;
+            const northWobble = Noise.simplex2(nx * 4.0, 11.7) * 0.06;
+            const southWobble = Noise.simplex2(nx * 4.3, 53.1) * 0.06;
+            const northCoastY = centerY - halfWidth + northWobble;
+            const southCoastY = centerY + halfWidth + southWobble;
+            const distFromNorthCoast = dy - northCoastY;
+            const distFromSouthCoast = southCoastY - dy;
+            const northMask = smoothstep(0, 0.10, distFromNorthCoast);
+            const southMask = smoothstep(0, 0.10, distFromSouthCoast);
+            const landBandMask = Math.min(northMask, southMask);
+            mult = 1 - (1 - landBandMask) * strength;
+            if (landBandMask > 0.5) {
+                add = (landBandMask - 0.5) * 0.18 * strength;
+            }
+            break;
+        }
         case 'pangaea': {
             const dist = Math.sqrt(dx * dx + dy * dy);
             const edge = smoothstep(0.7, 1.1, dist);
