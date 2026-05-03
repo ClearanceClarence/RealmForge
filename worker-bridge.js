@@ -182,7 +182,8 @@ export class WorkerBridge {
                 octaves: heightmapOptions.octaves || 6,
                 seaLevel: heightmapOptions.seaLevel || 0.4,
                 falloff: heightmapOptions.falloff || 'radial',
-                falloffStrength: heightmapOptions.falloffStrength || 0.7
+                falloffStrength: heightmapOptions.falloffStrength || 0.7,
+                islandDensity: heightmapOptions.islandDensity ?? 0
             }
         });
     }

@@ -105,6 +105,135 @@ function smoothstep(e0, e1, x) {
     return t * t * (3 - 2 * t);
 }
 
+/**
+ * World-shape mask. Mirrors VoronoiGenerator._applyWorldMask().
+ * Keep this in sync with the main-thread implementation.
+ */
+function applyWorldMask(h, x, y, width, height, preset, strength) {
+    if (preset === 'none' || strength <= 0) return h;
+    
+    const cx = width / 2, cy = height / 2;
+    const dx = (x - cx) / cx;
+    const dy = (y - cy) / cy;
+    const nx = x / width;
+    const ny = y / height;
+    
+    let mult = 1, add = 0;
+    
+    switch (preset) {
+        case 'radial': {
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            mult = 1 - smoothstep(0.3, 1.0, dist) * strength;
+            break;
+        }
+        case 'square': {
+            const f = smoothstep(0.4, 1.0, Math.max(Math.abs(dx), Math.abs(dy)));
+            mult = 1 - f * strength;
+            break;
+        }
+        case 'continental': {
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const f = smoothstep(0.55, 1.05, dist);
+            mult = 1 - f * strength;
+            add  = (1 - smoothstep(0.0, 0.6, dist)) * 0.10 * strength;
+            break;
+        }
+        case 'archipelago': {
+            const a = Noise.simplex2(nx * 2.5 + 17.3, ny * 2.5 + 31.7);
+            const b = Noise.simplex2(nx * 5.0 - 11.1, ny * 5.0 + 7.9) * 0.4;
+            const islandField = (a + b) * 0.7;
+            const threshold = 0.15;
+            let m = smoothstep(threshold - 0.25, threshold + 0.25, islandField);
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const edge = 1 - smoothstep(0.7, 1.05, dist);
+            m *= edge;
+            mult = 1 - (1 - m) * strength * 0.95;
+            break;
+        }
+        case 'two-continents': {
+            const seam = Noise.simplex2(ny * 3.0, 5.7) * 0.12;
+            const seaCenterX = 0 + seam;
+            const distFromSeam = Math.abs(dx - seaCenterX);
+            const verticalBias = 1 - Math.abs(dy) * 0.4;
+            const seaWidth = 0.22 * verticalBias;
+            const seaMask = smoothstep(seaWidth, seaWidth + 0.18, distFromSeam);
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const edge = 1 - smoothstep(0.65, 1.05, dist);
+            mult = 1 - (1 - seaMask * edge) * strength;
+            if (seaMask > 0.5) {
+                add = (seaMask - 0.5) * 0.15 * strength * edge;
+            }
+            break;
+        }
+        case 'pangaea': {
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const edge = smoothstep(0.7, 1.1, dist);
+            add = (1 - edge) * 0.18 * strength;
+            const seaNoise = Noise.simplex2(nx * 3.5 + 42.1, ny * 3.5 - 13.6);
+            const seaMask = smoothstep(0.45, 0.7, seaNoise);
+            add -= seaMask * 0.25 * strength * (1 - edge);
+            mult = 1 - edge * strength * 0.9;
+            break;
+        }
+        case 'coastal': {
+            const angle = Math.PI * 0.25;
+            const ax = Math.cos(angle), ay = Math.sin(angle);
+            let coastDist = dx * ax + dy * ay;
+            coastDist += Noise.simplex2(nx * 4.0, ny * 4.0) * 0.20;
+            const landMask = smoothstep(-0.15, 0.15, coastDist);
+            mult = 1 - (1 - landMask) * strength;
+            add  = landMask * 0.12 * strength;
+            break;
+        }
+        case 'inland-sea': {
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const centerDip = smoothstep(0.15, 0.55, dist);
+            const outerFade = 1 - smoothstep(0.65, 1.05, dist);
+            const ring = centerDip * outerFade;
+            const wobble = Noise.simplex2(nx * 4.5, ny * 4.5) * 0.08;
+            mult = (1 - strength) + ring * strength;
+            add  = (ring * 0.18 + wobble * ring) * strength;
+            break;
+        }
+        case 'lake-world': {
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const edge = smoothstep(0.85, 1.1, dist);
+            add = (1 - edge) * 0.20 * strength;
+            const lakeNoise = Noise.simplex2(nx * 8.0 + 99.1, ny * 8.0 + 23.5);
+            const lakeMask = smoothstep(0.55, 0.78, lakeNoise);
+            add -= lakeMask * 0.30 * strength * (1 - edge);
+            mult = 1 - edge * strength;
+            break;
+        }
+        case 'peninsula': {
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const baseFalloff = smoothstep(0.5, 1.0, dist);
+            const fjordNoise = (Noise.simplex2(nx * 12.0, ny * 12.0) +
+                                Noise.simplex2(nx * 24.0 + 5.3, ny * 24.0 + 7.7) * 0.5) / 1.5;
+            const coastWeight = 4 * baseFalloff * (1 - baseFalloff);
+            const carve = fjordNoise * coastWeight * 0.35;
+            mult = 1 - (baseFalloff + carve) * strength;
+            add  = (1 - smoothstep(0.0, 0.4, dist)) * 0.08 * strength;
+            break;
+        }
+        case 'atoll': {
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const ringRadius = 0.5;
+            const ringWidth  = 0.18;
+            const ringDist = Math.abs(dist - ringRadius);
+            const wobble = Noise.simplex2(Math.atan2(dy, dx) * 1.5, dist * 4) * 0.05;
+            const ring = 1 - smoothstep(0, ringWidth + wobble, ringDist);
+            const outer = 1 - smoothstep(ringRadius + ringWidth, 1.0, dist);
+            const mask = ring * outer;
+            mult = (1 - strength) + mask * strength * 1.2;
+            add  = mask * 0.15 * strength;
+            break;
+        }
+    }
+    
+    return Math.max(0, Math.min(1, h * mult + add));
+}
+
 // Point generation
 function generateJitteredGrid(cellCount, width, height, margin = 1) {
     const points = new Float64Array(cellCount * 2);
@@ -217,7 +346,7 @@ function relaxPoints(points, cellCount, width, height, iterations) {
 }
 
 function generateHeightmap(points, cellCount, width, height, options) {
-    const { seed = 12345, algorithm = 'fbm', frequency = 3, octaves = 6, seaLevel = 0.4, falloff = 'radial', falloffStrength = 0.7 } = options;
+    const { seed = 12345, algorithm = 'fbm', frequency = 3, octaves = 6, seaLevel = 0.4, falloff = 'radial', falloffStrength = 0.7, islandDensity = 0 } = options;
     Noise.init(seed);
     
     const heights = new Float32Array(cellCount);
@@ -238,13 +367,7 @@ function generateHeightmap(points, cellCount, width, height, options) {
         
         h = (h + 1) / 2;
         
-        if (falloff !== 'none' && falloffStrength > 0) {
-            const dx = (x - cx) / cx, dy = (y - cy) / cy;
-            const falloffValue = falloff === 'radial' 
-                ? smoothstep(0.3, 1.0, Math.sqrt(dx * dx + dy * dy))
-                : smoothstep(0.4, 1.0, Math.max(Math.abs(dx), Math.abs(dy)));
-            h *= (1 - falloffValue * falloffStrength);
-        }
+        h = applyWorldMask(h, x, y, width, height, falloff, falloffStrength);
         
         h = Math.max(0, Math.min(1, h));
         
@@ -259,6 +382,31 @@ function generateHeightmap(points, cellCount, width, height, options) {
             self.postMessage({ type: 'progress', data: { stage: 'heightmap', percent: (i / cellCount) * 100, message: `Sculpting terrain... ${Math.floor(i / cellCount * 100)}%` } });
         }
     }
+    
+    // Sprinkle small islands using a separate noise channel.
+    // The "broaden coastlines" step needs neighbour info, so it runs on the
+    // main thread after the worker returns. This pass only needs per-cell
+    // positions, so it works fine here.
+    if (islandDensity > 0) {
+        Noise.init(seed + 90210);
+        const islandChance = islandDensity * 0.06;
+        const threshold = 1 - islandChance * 14;
+        for (let i = 0; i < cellCount; i++) {
+            const h = heights[i];
+            if (h < -800 || h > -50) continue;
+            const x = points[i * 2], y = points[i * 2 + 1];
+            const nx = x / width, ny = y / height;
+            const n1 = Noise.simplex2(nx * 18.0, ny * 18.0);
+            const n2 = Noise.simplex2(nx * 42.0 + 11.3, ny * 42.0 + 7.7) * 0.5;
+            const sample = (n1 + n2) * 0.7;
+            if (sample > threshold) {
+                const lift = (sample - threshold) / (1 - threshold);
+                heights[i] = Math.max(50, lift * 200);
+                terrain[i] = 1;
+            }
+        }
+    }
+    
     return { heights, terrain };
 }
 

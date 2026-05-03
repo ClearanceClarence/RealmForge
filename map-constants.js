@@ -65,50 +65,52 @@ export const PRECIP_COLORS = [
     "#66d3ff","#58cdff","#4ac6ff","#3cbfff","#2fb8fe","#23b0fc","#18a8fa","#0e9ff7"
 ];
 
-// Political map kingdom colors - antique/aged map style
-// Muted, earthy tones reminiscent of historical cartography
+// Political map kingdom colors — classic atlas palette
+// Distinct saturated hues (red, orange, yellow, green, teal, blue, purple, pink)
+// at 0.5 alpha so neighbours read as obviously different even after compositing
+// over the parchment ocean. Ordered so the graph-coloring step naturally picks
+// wildly different hues for adjacent kingdoms.
 export const POLITICAL_COLORS = [
-    "rgba(230, 218, 188, 0.5)", // Aged parchment
-    "rgba(212, 196, 160, 0.5)", // Old vellum
-    "rgba(201, 203, 171, 0.5)", // Faded olive
-    "rgba(218, 204, 180, 0.5)", // Weathered tan
-    "rgba(196, 189, 168, 0.5)", // Dusty khaki
-    "rgba(216, 208, 184, 0.5)", // Antique cream
-    "rgba(203, 191, 164, 0.5)", // Worn leather
-    "rgba(208, 202, 174, 0.5)", // Pale umber
-    "rgba(200, 196, 166, 0.5)", // Sage parchment
-    "rgba(221, 212, 188, 0.5)", // Ivory
-    "rgba(198, 188, 162, 0.5)", // Chamois
-    "rgba(212, 204, 176, 0.5)", // Old paper
-    "rgba(204, 202, 170, 0.5)", // Faded moss
-    "rgba(217, 210, 186, 0.5)", // Bleached linen
-    "rgba(194, 186, 160, 0.5)", // Driftwood
-    "rgba(214, 206, 173, 0.5)", // Bone
-    "rgba(200, 194, 164, 0.5)", // Lichen
-    "rgba(220, 214, 190, 0.5)", // Pale straw
-    "rgba(196, 190, 170, 0.5)", // Stone
-    "rgba(210, 200, 172, 0.5)", // Sand
-    "rgba(202, 198, 168, 0.5)", // Dried herb
-    "rgba(216, 210, 182, 0.5)", // Wheat
-    "rgba(192, 188, 164, 0.5)", // Pewter
-    "rgba(212, 206, 178, 0.5)", // Oatmeal
-    "rgba(198, 194, 166, 0.5)", // Sage gray
-    "rgba(218, 212, 184, 0.5)", // Ecru
-    "rgba(194, 190, 162, 0.5)", // Clay
-    "rgba(208, 204, 176, 0.5)", // Mushroom
-    "rgba(200, 196, 170, 0.5)", // Ash
-    "rgba(220, 216, 188, 0.5)", // Canvas
-    // Additional colors for more variety
-    "rgba(225, 210, 175, 0.5)", // Golden parchment
-    "rgba(190, 200, 175, 0.5)", // Sage green
-    "rgba(205, 195, 180, 0.5)", // Warm gray
-    "rgba(215, 200, 165, 0.5)", // Honey
-    "rgba(185, 195, 170, 0.5)", // Moss
-    "rgba(210, 205, 190, 0.5)", // Pearl
-    "rgba(195, 185, 165, 0.5)", // Taupe
-    "rgba(220, 205, 175, 0.5)", // Cream
-    "rgba(188, 198, 178, 0.5)", // Celadon
-    "rgba(208, 198, 168, 0.5)"  // Buff
+    "rgba(217, 107, 92, 0.5)",   // Brick red
+    "rgba(106, 145, 199, 0.5)",  // Cornflower blue
+    "rgba(232, 200, 117, 0.5)",  // Saffron yellow
+    "rgba(107, 163, 122, 0.5)",  // Forest green
+    "rgba(138, 118, 179, 0.5)",  // Lavender purple
+    "rgba(224, 169, 109, 0.5)",  // Burnt orange
+    "rgba(95, 169, 168, 0.5)",   // Teal
+    "rgba(185, 122, 168, 0.5)",  // Mauve pink
+    "rgba(163, 179, 101, 0.5)",  // Olive green
+    "rgba(201, 138, 93, 0.5)",   // Terracotta
+    "rgba(120, 156, 178, 0.5)",  // Steel blue
+    "rgba(218, 138, 138, 0.5)",  // Coral pink
+    "rgba(156, 129, 87, 0.5)",   // Bronze
+    "rgba(140, 168, 140, 0.5)",  // Sage green
+    "rgba(168, 138, 178, 0.5)",  // Dusty purple
+    "rgba(207, 158, 102, 0.5)",  // Amber
+    "rgba(115, 145, 130, 0.5)",  // Sea green
+    "rgba(195, 110, 130, 0.5)",  // Rose
+    "rgba(155, 175, 185, 0.5)",  // Slate blue
+    "rgba(180, 155, 95, 0.5)",   // Mustard
+    "rgba(140, 110, 165, 0.5)",  // Iris
+    "rgba(195, 145, 115, 0.5)",  // Salmon
+    "rgba(120, 180, 165, 0.5)",  // Mint
+    "rgba(170, 95, 110, 0.5)",   // Wine
+    "rgba(100, 130, 165, 0.5)",  // Indigo
+    "rgba(195, 175, 95, 0.5)",   // Goldenrod
+    "rgba(135, 165, 115, 0.5)",  // Moss
+    "rgba(180, 120, 145, 0.5)",  // Rosewood
+    "rgba(110, 155, 145, 0.5)",  // Verdigris
+    "rgba(190, 130, 95, 0.5)",   // Sienna
+    "rgba(150, 140, 175, 0.5)",  // Heather
+    "rgba(170, 165, 105, 0.5)",  // Citron
+    "rgba(125, 165, 175, 0.5)",  // Aqua
+    "rgba(200, 145, 175, 0.5)",  // Thistle
+    "rgba(165, 130, 105, 0.5)",  // Tawny
+    "rgba(100, 145, 110, 0.5)",  // Pine
+    "rgba(185, 110, 95, 0.5)",   // Vermilion
+    "rgba(135, 125, 165, 0.5)",  // Periwinkle
+    "rgba(155, 175, 130, 0.5)",  // Pistachio
+    "rgba(170, 145, 130, 0.5)"   // Taupe rose
 ];
 
 // Ocean color for political map - aged parchment blue-gray

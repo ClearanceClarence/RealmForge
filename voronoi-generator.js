@@ -76,7 +76,20 @@ export class VoronoiGenerator {
         this.showDelaunay = false;
         this.showWindrose = false;  // Show compass/wind rose on map
         this.showRivers = true;  // Show rivers on terrain
+        this.showCoastline = true;  // Show coastline stroke on political map
         this.showGrid = true;    // Show coordinate grid
+        
+        // Coastline / island detail controls
+        // coastJaggedness: 0 = smooth Voronoi-edge coastline; 1 = heavy fractal subdivision
+        // islandDensity:   0 = no extra islands; 1 = many small islands sprinkled
+        this.coastJaggedness = 0.5;
+        this.islandDensity   = 0.3;
+        
+        // Lake controls
+        // lakeDensity:  0 = no lakes; 1 = lots
+        // lakeMinDepth: 0 = many small shallow lakes; 1 = few large deep lakes
+        this.lakeDensity  = 0.5;
+        this.lakeMinDepth = 0.3;
         this.showScale = true;   // Show scale bar
         this.worldSizeKm = 1000; // World size in kilometers (map width)
         this.renderMode = 'political'; // 'heightmap', 'terrain', 'precipitation', 'political'
@@ -610,22 +623,8 @@ export class VoronoiGenerator {
             // Convert from [-1, 1] to [0, 1]
             h = (h + 1) / 2;
             
-            // Apply falloff for island effect
-            if (falloff !== 'none' && falloffStrength > 0) {
-                const dx = (x - cx) / cx;
-                const dy = (y - cy) / cy;
-                let falloffValue;
-                
-                if (falloff === 'radial') {
-                    const dist = Math.sqrt(dx * dx + dy * dy);
-                    falloffValue = this._smoothstep(0.3, 1.0, dist);
-                } else { // square
-                    falloffValue = Math.max(Math.abs(dx), Math.abs(dy));
-                    falloffValue = this._smoothstep(0.4, 1.0, falloffValue);
-                }
-                
-                h = h * (1 - falloffValue * falloffStrength);
-            }
+            // Apply world-shape mask (continental, archipelago, two-continents, etc.)
+            h = this._applyWorldMask(h, x, y, falloff, falloffStrength);
             
             // Clamp to 0-1
             h = Math.max(0, Math.min(1, h));
@@ -647,6 +646,23 @@ export class VoronoiGenerator {
             
             this.heights[i] = elevation;
             this.terrain[i] = elevation >= ELEVATION.SEA_LEVEL ? 1 : 0;
+        }
+        
+        // Sprinkle small islands + broaden coastlines based on islandDensity.
+        // We do this BEFORE smoothing so smoothing rounds the new islands a bit;
+        // and BEFORE erosion (which runs in a separate step) so the new
+        // islands participate in drainage and erosion naturally.
+        const islandDensity = this.islandDensity ?? 0;
+        if (islandDensity > 0) {
+            this._sprinkleIslands(seed, islandDensity);
+            this._broadenCoastlines(seed, islandDensity);
+        }
+        
+        // Apply per-cell coastal noise (the "real" jaggedness fix).
+        // Runs after islands/broaden so newly-created islands also get jagged.
+        const jagged = this.coastJaggedness ?? 0;
+        if (jagged > 0) {
+            this._applyCoastalNoise(seed, jagged);
         }
         
         // Apply smoothing passes if requested
@@ -719,6 +735,218 @@ export class VoronoiGenerator {
         for (let i = 0; i < this.cellCount; i++) {
             this.terrain[i] = this.heights[i] >= ELEVATION.SEA_LEVEL ? 1 : 0;
         }
+    }
+    
+    /**
+     * Sprinkle small islands across shallow ocean using high-frequency noise.
+     *
+     * Looks at every shallow-ocean cell (within ~800m of sea level) and rolls
+     * a noise-based "should this be a tiny island?" check. Cells that pass
+     * become small islands at low elevation. Most cells fail the check, so
+     * we only get a few specks per region.
+     *
+     * @param {number} seed - world seed (used for an offset noise field)
+     * @param {number} density - 0..1, fraction of mid-shallow cells that may become islands
+     */
+    _sprinkleIslands(seed, density) {
+        if (!this.heights || density <= 0) return;
+        
+        // Use a separate noise channel offset from main terrain noise so islands
+        // aren't correlated with the underlying continental noise (otherwise
+        // they'd cluster in the same spots every time).
+        Noise.init(seed + 90210);
+        
+        // How aggressive to be. density=1.0 means up to ~6% of shallow cells
+        // become islands, which is already a LOT scattered across a large map.
+        const islandChance = density * 0.06;
+        
+        // Only consider cells that are reasonably shallow — between -800m and
+        // -50m. Deeper than that and an island would be implausible; shallower
+        // than that and we'd be eating into the existing continent's coast.
+        const minDepth = -800;
+        const maxDepth = -50;
+        
+        for (let i = 0; i < this.cellCount; i++) {
+            const h = this.heights[i];
+            if (h < minDepth || h > maxDepth) continue;
+            
+            const x = this.points[i * 2];
+            const y = this.points[i * 2 + 1];
+            const nx = x / this.width;
+            const ny = y / this.height;
+            
+            // High-frequency noise = small clusters of islands rather than
+            // perfectly uniform sprinkling. This gives archipelago feel.
+            const n1 = Noise.simplex2(nx * 18.0, ny * 18.0);
+            const n2 = Noise.simplex2(nx * 42.0 + 11.3, ny * 42.0 + 7.7) * 0.5;
+            const sample = (n1 + n2) * 0.7;  // -1..1
+            
+            // Island wherever noise crosses a high threshold. The threshold
+            // depends on density — denser = lower threshold = more islands.
+            const threshold = 1 - islandChance * 14;  // density 0.5 -> 0.58, density 1.0 -> 0.16
+            if (sample > threshold) {
+                // Lift this cell to a low-elevation island. Elevation depends
+                // on how far above the threshold we landed (so peaks form).
+                const lift = (sample - threshold) / (1 - threshold);  // 0..1
+                this.heights[i] = Math.max(50, lift * 200);  // 50-200m islands
+                this.terrain[i] = 1;
+            }
+        }
+    }
+    
+    /**
+     * Broaden coastlines: cells that are just barely below sea level near
+     * existing land have a chance to be lifted just barely above sea level.
+     *
+     * This produces barrier islands, peninsulas, and offshore reefs along
+     * existing continental shores — the irregularity you see on real maps.
+     *
+     * @param {number} seed - world seed
+     * @param {number} density - 0..1, how aggressively to broaden
+     */
+    _broadenCoastlines(seed, density) {
+        if (!this.heights || density <= 0) return;
+        
+        Noise.init(seed + 12345);
+        
+        // Find shallow ocean cells adjacent to land
+        const candidates = [];
+        for (let i = 0; i < this.cellCount; i++) {
+            // Must be shallow ocean, not deep
+            if (this.heights[i] >= 0 || this.heights[i] < -200) continue;
+            
+            // Must touch land
+            let touchesLand = false;
+            for (const n of this.voronoi.neighbors(i)) {
+                if (this.heights[n] >= ELEVATION.SEA_LEVEL) {
+                    touchesLand = true;
+                    break;
+                }
+            }
+            if (!touchesLand) continue;
+            
+            candidates.push(i);
+        }
+        
+        // Lift a noise-controlled fraction of them to land.
+        // density=1.0 promotes ~50% of coastal-shallow cells; density=0.3 ~15%.
+        const promoteChance = 0.5 * density;
+        
+        for (const i of candidates) {
+            const x = this.points[i * 2];
+            const y = this.points[i * 2 + 1];
+            const nx = x / this.width;
+            const ny = y / this.height;
+            
+            // Mid-frequency noise so promoted cells form contiguous strips
+            // (barrier islands, headlands) rather than isolated specks.
+            const sample = Noise.simplex2(nx * 8.0, ny * 8.0);   // -1..1
+            // Map to 0..1 and compare to threshold derived from density
+            const normalized = (sample + 1) / 2;
+            const threshold = 1 - promoteChance;
+            
+            if (normalized > threshold) {
+                // Promote to just-above-sea-level land
+                const lift = (normalized - threshold) / (1 - threshold);
+                this.heights[i] = Math.max(20, lift * 150);
+                this.terrain[i] = 1;
+            }
+        }
+    }
+    
+    /**
+     * Apply per-cell noise to coastal cells to make the actual cell graph jagged.
+     *
+     * This is the "real" jaggedness: instead of post-processing the rendered
+     * coastline (which causes fill/coastline mismatch), we modify the underlying
+     * heightmap so cells flip back and forth across sea level near the coast.
+     * The result is that the Voronoi cells themselves form an irregular shore.
+     *
+     * Strategy: identify cells within ~3 cells of the land/water boundary,
+     * sample high-frequency noise at each, and shift their elevations enough
+     * to potentially flip them across sea level. Cells far from any coast
+     * are untouched.
+     *
+     * @param {number} seed - world seed (offset for independent noise channel)
+     * @param {number} jaggedness - 0..1, how strongly to displace coastal cells
+     */
+    _applyCoastalNoise(seed, jaggedness) {
+        if (!this.heights || !this.voronoi || jaggedness <= 0) return;
+        
+        // Independent noise channel so coastline noise doesn't correlate with
+        // terrain features (otherwise the same seed would always produce the
+        // same coast pattern as terrain — looks artificial)
+        Noise.init(seed + 54321);
+        
+        // 1) Find coastal cells via BFS up to N rings from any land/water boundary
+        const ringDepth = 3;  // how many cell-rings deep to apply noise
+        const ring = new Int8Array(this.cellCount);  // 0 = far from coast, 1..N = ring distance
+        ring.fill(0);
+        
+        // Seed ring 1: cells that have a neighbour of opposite terrain type
+        const queue = [];
+        let qHead = 0;
+        for (let i = 0; i < this.cellCount; i++) {
+            const isLand = this.heights[i] >= ELEVATION.SEA_LEVEL;
+            for (const n of this.voronoi.neighbors(i)) {
+                const nIsLand = this.heights[n] >= ELEVATION.SEA_LEVEL;
+                if (isLand !== nIsLand) {
+                    ring[i] = 1;
+                    queue.push(i);
+                    break;
+                }
+            }
+        }
+        
+        // BFS expand to ringDepth
+        while (qHead < queue.length) {
+            const cur = queue[qHead++];
+            const r = ring[cur];
+            if (r >= ringDepth) continue;
+            for (const n of this.voronoi.neighbors(cur)) {
+                if (ring[n] === 0) {
+                    ring[n] = r + 1;
+                    queue.push(n);
+                }
+            }
+        }
+        
+        // 2) For each coastal cell, sample noise and shift its height.
+        // Strength tapers with ring distance so the effect is concentrated at
+        // the actual coastline and fades inland/seaward.
+        // Magnitude is in METERS — 400m at jaggedness=1.0 is enough to flip
+        // any cell within ~400m of sea level, which is the typical coastal range.
+        const baseMagnitude = 400 * jaggedness;
+        
+        for (let i = 0; i < this.cellCount; i++) {
+            const r = ring[i];
+            if (r === 0) continue;
+            
+            const x = this.points[i * 2];
+            const y = this.points[i * 2 + 1];
+            const nx = x / this.width;
+            const ny = y / this.height;
+            
+            // Multi-octave high-freq noise. Higher freq = smaller-scale jaggedness.
+            const n1 = Noise.simplex2(nx * 22.0,        ny * 22.0);
+            const n2 = Noise.simplex2(nx * 55.0 + 17.3, ny * 55.0 + 7.7) * 0.5;
+            const sample = (n1 + n2) / 1.5;  // -1..1
+            
+            // Taper by ring distance: ring 1 = full strength, ring N = falls off
+            const taper = 1 - (r - 1) / ringDepth;  // 1.0, 0.66, 0.33 for depth=3
+            
+            const shift = sample * baseMagnitude * taper;
+            this.heights[i] += shift;
+        }
+        
+        // 3) Reclassify terrain
+        for (let i = 0; i < this.cellCount; i++) {
+            this.terrain[i] = this.heights[i] >= ELEVATION.SEA_LEVEL ? 1 : 0;
+        }
+        
+        // 4) Invalidate caches that depend on coastline geometry
+        this._coastlineCache = null;
+        this._contourCache = null;
     }
     
     /**
@@ -914,48 +1142,93 @@ export class VoronoiGenerator {
     /**
      * Fill all depressions using priority-flood algorithm
      * Creates filledHeights where all water flows to ocean
+     *
+     * Implementation note: uses a binary min-heap for the priority queue.
+     * The previous implementation used Array + .shift() + .sort() per
+     * operation which was O(N^2 log N) and produced multi-second hangs at
+     * 50k+ cells. This is ~O(N log N).
      */
     _fillAllDepressions() {
         this.filledHeights = new Float32Array(this.heights);
         
-        // Priority queue: [height, cellIndex]
-        const pq = [];
-        const processed = new Uint8Array(this.cellCount);
+        // Binary min-heap. Each node is [height, cellIndex] but we store
+        // them flat for speed: parallel arrays.
+        const heapH = new Float32Array(this.cellCount * 2);  // height
+        const heapI = new Int32Array(this.cellCount * 2);    // cell index
+        let heapSize = 0;
         
-        // Start from ocean cells and edge cells
+        const heapPush = (h, idx) => {
+            let i = heapSize++;
+            heapH[i] = h;
+            heapI[i] = idx;
+            // Sift up
+            while (i > 0) {
+                const parent = (i - 1) >> 1;
+                if (heapH[parent] <= heapH[i]) break;
+                // swap
+                const th = heapH[parent], ti = heapI[parent];
+                heapH[parent] = heapH[i]; heapI[parent] = heapI[i];
+                heapH[i] = th; heapI[i] = ti;
+                i = parent;
+            }
+        };
+        
+        const heapPop = () => {
+            const rootH = heapH[0], rootI = heapI[0];
+            heapSize--;
+            if (heapSize > 0) {
+                heapH[0] = heapH[heapSize];
+                heapI[0] = heapI[heapSize];
+                // Sift down
+                let i = 0;
+                const n = heapSize;
+                while (true) {
+                    const l = 2 * i + 1;
+                    const r = 2 * i + 2;
+                    let smallest = i;
+                    if (l < n && heapH[l] < heapH[smallest]) smallest = l;
+                    if (r < n && heapH[r] < heapH[smallest]) smallest = r;
+                    if (smallest === i) break;
+                    const th = heapH[smallest], ti = heapI[smallest];
+                    heapH[smallest] = heapH[i]; heapI[smallest] = heapI[i];
+                    heapH[i] = th; heapI[i] = ti;
+                    i = smallest;
+                }
+            }
+            return [rootH, rootI];
+        };
+        
+        const processed = new Uint8Array(this.cellCount);
         const margin = 5;
+        
+        // Seed the queue with ocean cells and edge cells
         for (let i = 0; i < this.cellCount; i++) {
             const x = this.points[i * 2];
             const y = this.points[i * 2 + 1];
             
-            // Ocean or edge
-            if (this.heights[i] < ELEVATION.SEA_LEVEL || 
+            if (this.heights[i] < ELEVATION.SEA_LEVEL ||
                 x < margin || x > this.width - margin ||
                 y < margin || y > this.height - margin) {
-                pq.push([this.filledHeights[i], i]);
+                heapPush(this.filledHeights[i], i);
                 processed[i] = 1;
             }
         }
         
-        // Sort by height (lowest first)
-        pq.sort((a, b) => a[0] - b[0]);
-        
-        // Process cells in height order
-        while (pq.length > 0) {
-            const [height, current] = pq.shift();
+        // Process cells in height order, lowest first
+        while (heapSize > 0) {
+            const [, current] = heapPop();
+            const currentH = this.filledHeights[current];
             
             for (const neighbor of this.voronoi.neighbors(current)) {
                 if (processed[neighbor]) continue;
                 processed[neighbor] = 1;
                 
                 // If neighbor is lower than current, raise it (fill depression)
-                if (this.filledHeights[neighbor] <= this.filledHeights[current]) {
-                    this.filledHeights[neighbor] = this.filledHeights[current] + 0.01;
+                if (this.filledHeights[neighbor] <= currentH) {
+                    this.filledHeights[neighbor] = currentH + 0.01;
                 }
                 
-                pq.push([this.filledHeights[neighbor], neighbor]);
-                // Keep sorted (simple insertion for now)
-                pq.sort((a, b) => a[0] - b[0]);
+                heapPush(this.filledHeights[neighbor], neighbor);
             }
         }
     }
@@ -1206,24 +1479,91 @@ export class VoronoiGenerator {
         
         const {
             fillInlandSeas = true,
-            numberOfRivers = 30
+            numberOfRivers = 30,
+            lakeDensity = this.lakeDensity ?? 0,
+            lakeMinDepth = this.lakeMinDepth ?? 0.3
         } = options;
+        
+        // Step 0: Initialize drainage array. _createLake writes to this.drainage
+        // when it forms a lake (to route lake cells to the lake outlet), so we
+        // need it allocated before lake detection runs. Default value is -1
+        // ("doesn't drain anywhere yet"). Proper steepest-descent drainage is
+        // computed below after _fillDepressions.
+        this.drainage = new Int32Array(this.cellCount).fill(-1);
         
         // Step 1: Fill inland seas (ocean cells not connected to map edge)
         if (fillInlandSeas) {
             this._fillInlandSeas();
         }
         
-        // Step 2: Fill depressions so rivers flow straight to ocean
-        this._fillDepressions();
-        
-        // Clear all previous data - NO LAKES
-        this.rivers = [];
+        // Step 2: Detect endorheic basins (real depressions). Must happen
+        // BEFORE _fillDepressions, which would otherwise erase the pits.
         this.lakes = [];
         this.lakeCells = new Set();
         this.lakeDepths = new Map();
         
-        // Find all land cells
+        let endorheic = [];
+        if (lakeDensity > 0) {
+            // Map sliders to actual params
+            const minDepthMeters = 15 + lakeMinDepth * 105;
+            const maxSizeCells = Math.round(30 + lakeMinDepth * 170);
+            
+            endorheic = this.detectEndorheicLakes({
+                density: lakeDensity,
+                minDepth: minDepthMeters,
+                maxSize: maxSizeCells
+            });
+            
+            for (const lake of endorheic) {
+                lake.type = 'endorheic';
+                for (const c of lake.cells) {
+                    this.lakeCells.add(c);
+                    this.lakeDepths.set(c, lake.surfaceElevation - this.heights[c]);
+                }
+            }
+        }
+        
+        // Step 3: Fill remaining depressions so non-lake water can flow to ocean.
+        // Lake cells already have drainage routed to their outlet via _createLake,
+        // so the fill below should leave them alone.
+        this._fillDepressions();
+        
+        // Step 3b: Compute proper steepest-descent drainage for every land cell.
+        // Each land cell drains to its lowest neighbour (using filledHeights so
+        // there are no closed pits). Lake cells already have drainage[lake] = outlet
+        // from _createLake; we preserve those by skipping them here.
+        const filledH = this.filledHeights || this.heights;
+        for (let i = 0; i < this.cellCount; i++) {
+            if (this.lakeCells.has(i)) continue;     // lake outlets already set
+            if (this.heights[i] < ELEVATION.SEA_LEVEL) {
+                this.drainage[i] = -1;               // ocean: drains to nowhere
+                continue;
+            }
+            
+            let lowestN = -1;
+            let lowestH = filledH[i];
+            for (const n of this.voronoi.neighbors(i)) {
+                if (filledH[n] < lowestH) {
+                    lowestH = filledH[n];
+                    lowestN = n;
+                }
+            }
+            this.drainage[i] = lowestN;
+        }
+        
+        // Re-apply lake outlets in case Step 3b overwrote them
+        // (it shouldn't because we skipped lake cells, but be defensive)
+        for (const lake of endorheic) {
+            for (const cell of lake.cells) {
+                this.drainage[cell] = lake.outlet;
+            }
+        }
+        
+        // Clear river state but keep the lake state we built above
+        this.rivers = [];
+        
+        // Find all land cells (lake cells count as land for river-tracing purposes
+        // — water flows into a lake and out the spill point)
         const landCells = [];
         for (let i = 0; i < this.cellCount; i++) {
             if (this.heights[i] >= ELEVATION.SEA_LEVEL) {
@@ -1236,8 +1576,7 @@ export class VoronoiGenerator {
         // Place river start points randomly across high elevation areas
         const startCells = this._selectRiverStartPoints(landCells, numberOfRivers);
         
-        
-        // Trace each river to ocean
+        // Trace each river to ocean (or into a lake — _traceRiverToOcean follows drainage)
         let reachedOcean = 0;
         for (const startCell of startCells) {
             const river = this._traceRiverToOcean(startCell);
@@ -1247,9 +1586,71 @@ export class VoronoiGenerator {
             }
         }
         
+        // Step 4: Detect river-fed lakes now that rivers exist
+        if (lakeDensity > 0 && this.rivers.length > 0) {
+            // Need flow accumulation for river-fed detection
+            if (!this.riverFlow) {
+                this.riverFlow = new Float32Array(this.cellCount);
+                for (let i = 0; i < this.cellCount; i++) {
+                    this.riverFlow[i] = (this.precipitation ? this.precipitation[i] : 0.5) * 0.1;
+                }
+                // Accumulate
+                const sorted = [];
+                for (let i = 0; i < this.cellCount; i++) {
+                    if (this.heights[i] >= ELEVATION.SEA_LEVEL) {
+                        sorted.push(i);
+                    }
+                }
+                sorted.sort((a, b) => this.heights[b] - this.heights[a]);
+                for (const i of sorted) {
+                    const drainTo = this.drainage[i];
+                    if (drainTo >= 0 && drainTo < this.cellCount) {
+                        this.riverFlow[drainTo] += this.riverFlow[i];
+                    }
+                }
+            }
+            
+            const riverFed = this.detectRiverFedLakes({
+                density: lakeDensity * 0.6,
+                minDepth: (15 + lakeMinDepth * 105) * 0.8,
+                maxSize: Math.round((30 + lakeMinDepth * 170) * 0.8)
+            });
+            
+            for (const lake of riverFed) {
+                lake.type = 'river-fed';
+                for (const c of lake.cells) {
+                    this.lakeCells.add(c);
+                    this.lakeDepths.set(c, lake.surfaceElevation - this.heights[c]);
+                }
+                this.lakes.push(lake);
+            }
+            
+            // Add endorheic to this.lakes too (they were tracked separately above)
+            for (const lake of endorheic) {
+                this.lakes.push(lake);
+            }
+        } else {
+            // No river-fed phase, but still need endorheic in this.lakes
+            for (const lake of endorheic) {
+                this.lakes.push(lake);
+            }
+        }
+        
+        // Step 5: Name lakes
+        if (this.lakes.length > 0 && this.nameGenerator
+            && typeof this.nameGenerator.generateLakeName === 'function') {
+            for (const lake of this.lakes) {
+                if (!lake.name) lake.name = this.nameGenerator.generateLakeName();
+            }
+        }
+        
         // Generate names for rivers
         this._generateRiverNames();
         
+        // Invalidate render caches that depend on water layout
+        this._coastlineCache = null;
+        this._contourCache = null;
+        if (this.tileCache) this.tileCache.invalidate();
     }
     
     /**
@@ -1344,6 +1745,18 @@ export class VoronoiGenerator {
         
         let kingdomIdx = 0;
         
+        // Pre-build river cell set ONCE for terrain costs (reused for all landmasses)
+        const riverCellSet = new Set();
+        if (this.rivers) {
+            for (const river of this.rivers) {
+                if (!river.path) continue;
+                for (const point of river.path) {
+                    const ci = point.cell !== undefined ? point.cell : point;
+                    if (ci >= 0) riverCellSet.add(ci);
+                }
+            }
+        }
+        
         // Process each significant landmass
         for (const landmass of significantLandmasses) {
             const proportion = landmass.size / totalLand;
@@ -1351,49 +1764,16 @@ export class VoronoiGenerator {
             kingdomsForThis = Math.min(kingdomsForThis, Math.floor(landmass.size / 100));
             kingdomsForThis = Math.max(1, kingdomsForThis);
             
-            // Select capitals using k-means style spacing
-            const capitals = this._selectCapitalsFast(landmass.cells, kingdomsForThis);
+            const startK = kingdomIdx;
+            const result = this._growKingdomsOnLandmass(
+                landmass, kingdomsForThis, startK, isLand, landmassId, riverCellSet
+            );
             
-            // Fast flood fill - simple BFS round-robin without sorting
-            const queues = capitals.map(c => [c]);
-            const startKingdomIdx = kingdomIdx;
-            
-            for (let i = 0; i < capitals.length; i++) {
-                this.kingdoms[capitals[i]] = kingdomIdx + i;
-                this.kingdomCapitals.push(capitals[i]);
+            // Record capitals (in the kingdomCapitals array, at index = kingdom id)
+            for (let i = 0; i < result.capitals.length; i++) {
+                this.kingdomCapitals.push(result.capitals[i]);
             }
-            kingdomIdx += capitals.length;
-            
-            // Simple round-robin BFS - much faster than weighted
-            let totalAssigned = capitals.length;
-            const targetSize = landmass.cells.length;
-            let queueHeads = new Int32Array(queues.length);
-            
-            while (totalAssigned < targetSize) {
-                let anyExpanded = false;
-                
-                for (let q = 0; q < queues.length; q++) {
-                    const queue = queues[q];
-                    const head = queueHeads[q];
-                    if (head >= queue.length) continue;
-                    
-                    const current = queue[head];
-                    queueHeads[q]++;
-                    const myKingdom = this.kingdoms[current];
-                    
-                    for (const neighbor of this.voronoi.neighbors(current)) {
-                        if (landmassId[neighbor] !== landmass.id) continue;
-                        if (this.kingdoms[neighbor] >= 0) continue;
-                        
-                        this.kingdoms[neighbor] = myKingdom;
-                        queue.push(neighbor);
-                        totalAssigned++;
-                        anyExpanded = true;
-                    }
-                }
-                
-                if (!anyExpanded) break;
-            }
+            kingdomIdx += result.capitals.length;
         }
         
         // Handle tiny landmasses - sample capitals to find nearest
@@ -1592,6 +1972,353 @@ export class VoronoiGenerator {
         }
         
         return capitals;
+    }
+    
+    /**
+     * Score a cell for capital suitability.
+     *
+     * Real-world capitals tend to be on coasts, river mouths, or major
+     * river bends, on flat-but-defensible terrain, and not in deserts/peaks.
+     * Higher score = better capital site.
+     *
+     * @param {number} cell  - cell index
+     * @param {Set<number>} riverCellSet - precomputed set of river cells
+     * @returns {number} score in roughly [0, 100+]
+     */
+    _scoreCapitalSite(cell, riverCellSet) {
+        const elev = this.heights[cell];
+        if (elev < ELEVATION.SEA_LEVEL) return -Infinity;  // ocean
+        if (this.lakeCells && this.lakeCells.has(cell)) return -Infinity;  // can't be on a lake
+        
+        let score = 10;  // base score for any land cell
+        
+        // ---- Elevation: prefer lowlands but not flat featureless terrain ----
+        // Sweet spot is 50-400m. Penalize mountains.
+        if (elev > 2500)      score -= 40;       // alpine, miserable
+        else if (elev > 1500) score -= 15;       // highlands, harsh
+        else if (elev > 800)  score -= 5;        // hills
+        else if (elev < 50)   score += 5;        // coastal plain
+        else                  score += 10;       // ideal lowlands
+        
+        // ---- Coastal/lake access: huge bonus ----
+        // Cell is coastal if any neighbor is ocean OR lake
+        let isCoastal = false;
+        let isLakefront = false;
+        let isRiver = riverCellSet.has(cell);
+        let nearRiver = false;
+        let nearMountain = false;
+        const lakeCells = this.lakeCells;
+        for (const n of this.voronoi.neighbors(cell)) {
+            if (this.heights[n] < ELEVATION.SEA_LEVEL) isCoastal = true;
+            if (lakeCells && lakeCells.has(n)) isLakefront = true;
+            if (riverCellSet.has(n)) nearRiver = true;
+            if (this.heights[n] > 2000) nearMountain = true;
+        }
+        if (isCoastal)   score += 25;            // ports, harbors
+        if (isLakefront) score += 18;            // lakefront capitals (Geneva, Chicago)
+        
+        // ---- River access: bonus ----
+        if (isRiver)   score += 15;
+        else if (nearRiver) score += 10;
+        
+        // ---- Defensive bonus: near mountains is good (defensible) ----
+        if (nearMountain && elev < 1500) score += 5;
+        
+        // ---- River mouth bonus: cell is BOTH coastal AND on/near a river ----
+        if (isCoastal && (isRiver || nearRiver)) score += 15;
+        
+        return score;
+    }
+    
+    /**
+     * Pick capital seed cells for one landmass using terrain scoring.
+     *
+     * Uses a "score then space out" approach:
+     *   1. Score every land cell on the landmass
+     *   2. Pick the highest-scoring cell as the first capital
+     *   3. For each remaining slot, pick the cell that maximizes
+     *      (score) * (min distance to existing capitals)^0.6
+     *      so we get terrain-appropriate sites that are also spread out
+     *
+     * @returns {{capitals: number[], scores: number[]}}
+     */
+    _selectCapitalsTerrainAware(landCells, count, riverCellSet) {
+        if (count <= 0 || landCells.length === 0) return { capitals: [], scores: [] };
+        
+        // Score every cell on the landmass (sample if huge for speed)
+        const sampleStride = landCells.length > 5000 ? Math.floor(landCells.length / 5000) : 1;
+        const scored = [];
+        for (let i = 0; i < landCells.length; i += sampleStride) {
+            const cell = landCells[i];
+            const score = this._scoreCapitalSite(cell, riverCellSet);
+            if (score > -Infinity) scored.push({ cell, score });
+        }
+        
+        if (scored.length === 0) return { capitals: [], scores: [] };
+        
+        // Sort by score descending — best sites first
+        scored.sort((a, b) => b.score - a.score);
+        
+        const capitals = [];
+        const capitalScores = [];
+        
+        // First capital: take the top-scoring site directly
+        capitals.push(scored[0].cell);
+        capitalScores.push(scored[0].score);
+        
+        if (count === 1) return { capitals, scores: capitalScores };
+        
+        // Subsequent capitals: trade off score vs. distance from existing capitals.
+        // We don't want all 12 capitals piled on the best coastline.
+        const candidatePool = scored.slice(0, Math.min(scored.length, 1000));
+        const minSpacing2 = (Math.min(this.width, this.height) / Math.max(2, count)) ** 2 * 0.4;
+        
+        while (capitals.length < count) {
+            let bestCell = -1;
+            let bestScore = -Infinity;
+            let bestSiteScore = 0;
+            
+            for (const { cell, score } of candidatePool) {
+                if (capitals.includes(cell)) continue;
+                
+                const x = this.points[cell * 2];
+                const y = this.points[cell * 2 + 1];
+                
+                // Distance to nearest existing capital (squared)
+                let minD2 = Infinity;
+                for (const cap of capitals) {
+                    const dx = this.points[cap * 2] - x;
+                    const dy = this.points[cap * 2 + 1] - y;
+                    const d2 = dx * dx + dy * dy;
+                    if (d2 < minD2) minD2 = d2;
+                }
+                
+                // Reject if too close to an existing capital
+                if (minD2 < minSpacing2) continue;
+                
+                // Combined: site score weighted by spacing.
+                // Use sqrt of distance so it doesn't dominate; +20 to score so
+                // negative-score sites still rank meaningfully.
+                const combined = (score + 30) * Math.pow(minD2, 0.3);
+                
+                if (combined > bestScore) {
+                    bestScore = combined;
+                    bestCell = cell;
+                    bestSiteScore = score;
+                }
+            }
+            
+            if (bestCell < 0) {
+                // Couldn't find any cell satisfying minSpacing — relax it
+                // and try again with whatever's left
+                for (const { cell, score } of candidatePool) {
+                    if (capitals.includes(cell)) continue;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestCell = cell;
+                        bestSiteScore = score;
+                    }
+                }
+            }
+            
+            if (bestCell < 0) break;
+            capitals.push(bestCell);
+            capitalScores.push(bestSiteScore);
+        }
+        
+        return { capitals, scores: capitalScores };
+    }
+    
+    /**
+     * Compute the cost of expanding kingdom territory ACROSS the edge from
+     * cell `from` into cell `to`. Higher cost = stronger barrier.
+     *
+     * The big idea: kingdoms that have to cross a river or a mountain pay
+     * more "expansion budget" than kingdoms expanding across flat plains.
+     * This naturally produces borders that hug rivers and ridges.
+     *
+     * @returns {number} cost in arbitrary units (~1.0 for normal terrain)
+     */
+    _kingdomEdgeCost(from, to, riverCellSet) {
+        const hFrom = this.heights[from];
+        const hTo   = this.heights[to];
+        
+        // Base cost: roughly the geographic distance (cells aren't uniform sized)
+        const dx = this.points[to * 2]     - this.points[from * 2];
+        const dy = this.points[to * 2 + 1] - this.points[from * 2 + 1];
+        let cost = Math.sqrt(dx * dx + dy * dy);
+        
+        // Lake cells are forbidden — kingdoms can't claim a lake. The Dijkstra
+        // expander won't be able to grow through lakes, which is exactly what
+        // we want: borders naturally route around lake shores.
+        if (this.lakeCells && this.lakeCells.has(to)) return Infinity;
+        
+        // Mountains: very expensive to expand into
+        // (kingdoms historically stop at mountain ranges)
+        if (hTo > 2000) cost *= 4.0 + (hTo - 2000) / 1000;
+        else if (hTo > 1200) cost *= 2.0;
+        else if (hTo > 600)  cost *= 1.3;
+        
+        // Crossing a river edge: significant barrier
+        // We say "we crossed a river" if BOTH endpoints are river cells, OR
+        // if one is a river cell and the other is on the opposite side.
+        // Cheap heuristic: if `to` is a river cell and `from` is not (or
+        // vice versa), we paid the river-crossing cost.
+        const fromRiver = riverCellSet.has(from);
+        const toRiver   = riverCellSet.has(to);
+        if (fromRiver !== toRiver) cost *= 2.5;
+        
+        // Lake-shore bonus: borders prefer to follow lake shores. If the
+        // 'to' cell touches a lake, give a small extra incentive (lower cost
+        // here would actually attract borders TOWARD lakes; we want them to
+        // be willing to expand right up to the shore but no further).
+        // Implementation: do nothing extra here; the impassability check
+        // above already does the right thing — kingdoms grow up to the lake
+        // edge then stop, so the lake itself becomes the border.
+        
+        // Steep slope: hard to expand uphill quickly
+        const slope = Math.abs(hTo - hFrom);
+        if (slope > 400) cost *= 1.5;
+        else if (slope > 200) cost *= 1.2;
+        
+        // Crossing into ocean: forbidden in this method (caller should also check)
+        if (hTo < ELEVATION.SEA_LEVEL) cost = Infinity;
+        
+        return cost;
+    }
+    
+    /**
+     * Grow kingdoms across one landmass using cost-weighted Dijkstra.
+     *
+     * Each capital seeds a Dijkstra frontier. Cells go to whichever kingdom
+     * can reach them most cheaply. Cost reflects terrain barriers (rivers,
+     * mountains) so borders naturally settle on those features.
+     *
+     * Per-kingdom "power" multiplier means strong kingdoms expand farther
+     * for the same terrain — this is how we get variable kingdom sizes.
+     *
+     * @returns {{capitals: number[]}} the chosen capital cells (caller assigns IDs)
+     */
+    _growKingdomsOnLandmass(landmass, kingdomCount, startKingdomId, isLand, landmassId, riverCellSet) {
+        // 1) Pick capital seed cells based on terrain
+        const { capitals } = this._selectCapitalsTerrainAware(
+            landmass.cells, kingdomCount, riverCellSet
+        );
+        
+        if (capitals.length === 0) return { capitals };
+        
+        const numK = capitals.length;
+        
+        // 2) Assign each kingdom a "power" multiplier (variable kingdom sizes).
+        // Pareto-ish: most are around 1.0, a few are big (2-3x), one or two are tiny (0.3x).
+        // We use a deterministic mix based on capital index so seed reproducibility is preserved.
+        const kingdomPower = new Float32Array(numK);
+        for (let k = 0; k < numK; k++) {
+            // PRNG.random is the seeded one, used elsewhere in this module
+            const r = PRNG.random();
+            // Map uniform [0,1) to a power-law-ish range:
+            //   ~10% become big empires (1.8 - 3.0x)
+            //   ~25% are large (1.2 - 1.8x)
+            //   ~40% are normal  (0.7 - 1.2x)
+            //   ~25% are small / city-states (0.3 - 0.7x)
+            let power;
+            if      (r < 0.10) power = 1.8 + PRNG.random() * 1.2;
+            else if (r < 0.35) power = 1.2 + PRNG.random() * 0.6;
+            else if (r < 0.75) power = 0.7 + PRNG.random() * 0.5;
+            else               power = 0.3 + PRNG.random() * 0.4;
+            kingdomPower[k] = power;
+        }
+        
+        // 3) Dijkstra expansion. cost[i] = cheapest kingdom-cost to reach cell i.
+        // We use one global cost array indexed by cell to keep things simple.
+        const N = this.cellCount;
+        const cost = new Float32Array(N);
+        cost.fill(Infinity);
+        
+        // Min-heap for the frontier: parallel arrays, [costValue, cellIndex].
+        // A landmass can have at most landmass.cells.length entries pushed.
+        // To allow re-pushes (same cell with lower cost), oversize 4x.
+        const heapCap = landmass.cells.length * 4 + 16;
+        const heapC = new Float32Array(heapCap);
+        const heapI = new Int32Array(heapCap);
+        let heapSize = 0;
+        
+        const heapPush = (c, idx) => {
+            let i = heapSize++;
+            heapC[i] = c;
+            heapI[i] = idx;
+            while (i > 0) {
+                const p = (i - 1) >> 1;
+                if (heapC[p] <= heapC[i]) break;
+                const tc = heapC[p], ti = heapI[p];
+                heapC[p] = heapC[i]; heapI[p] = heapI[i];
+                heapC[i] = tc; heapI[i] = ti;
+                i = p;
+            }
+        };
+        const heapPop = () => {
+            const ri = heapI[0], rc = heapC[0];
+            heapSize--;
+            if (heapSize > 0) {
+                heapC[0] = heapC[heapSize];
+                heapI[0] = heapI[heapSize];
+                let i = 0, n = heapSize;
+                while (true) {
+                    const l = 2 * i + 1, r = 2 * i + 2;
+                    let smallest = i;
+                    if (l < n && heapC[l] < heapC[smallest]) smallest = l;
+                    if (r < n && heapC[r] < heapC[smallest]) smallest = r;
+                    if (smallest === i) break;
+                    const tc = heapC[smallest], ti = heapI[smallest];
+                    heapC[smallest] = heapC[i]; heapI[smallest] = heapI[i];
+                    heapC[i] = tc; heapI[i] = ti;
+                    i = smallest;
+                }
+            }
+            return [rc, ri];
+        };
+        
+        // Seed: each capital starts at cost 0 with its kingdom assigned.
+        for (let k = 0; k < numK; k++) {
+            const cap = capitals[k];
+            this.kingdoms[cap] = startKingdomId + k;
+            cost[cap] = 0;
+            heapPush(0, cap);
+        }
+        
+        const targetLandmassId = landmass.id;
+        
+        // 4) Dijkstra. Each cell, when popped at its final cost, has its
+        // kingdom set by whichever capital reached it cheapest.
+        while (heapSize > 0) {
+            const [c, current] = heapPop();
+            if (c > cost[current]) continue;  // stale heap entry
+            
+            const myKingdom = this.kingdoms[current];
+            if (myKingdom < startKingdomId || myKingdom >= startKingdomId + numK) continue;
+            
+            const myPower = kingdomPower[myKingdom - startKingdomId];
+            
+            for (const neighbor of this.voronoi.neighbors(current)) {
+                // Only expand within this landmass (skip ocean + other landmasses)
+                if (landmassId[neighbor] !== targetLandmassId) continue;
+                if (!isLand[neighbor]) continue;
+                
+                const edgeCost = this._kingdomEdgeCost(current, neighbor, riverCellSet);
+                if (!isFinite(edgeCost)) continue;
+                
+                // Powerful kingdoms expand more cheaply (so they get bigger territory)
+                const newCost = c + edgeCost / myPower;
+                
+                if (newCost < cost[neighbor]) {
+                    cost[neighbor] = newCost;
+                    this.kingdoms[neighbor] = myKingdom;
+                    heapPush(newCost, neighbor);
+                }
+            }
+        }
+        
+        return { capitals };
     }
 
     /**
@@ -2081,8 +2808,12 @@ export class VoronoiGenerator {
     _generateRoads() {
         this.roads = [];
         
-        // Track cells that have roads to avoid overlaps
+        // Track cells that have roads to avoid overlaps and a separate set of
+        // cells that are 1-2 hops from an existing road. New paths get a
+        // bonus for being on OR near existing roads, which strongly encourages
+        // them to merge instead of running parallel.
         const roadCells = new Set();
+        const nearRoadCells = new Set();
         
         // Pre-build river cell sets once (expensive to do per-pathfind)
         const riverCells = new Set();
@@ -2222,6 +2953,33 @@ export class VoronoiGenerator {
                 this._markRoadCells(road, roadCells);
             }
         }
+    }
+    
+    /**
+     * Remove any road that crosses through a lake cell.
+     *
+     * Called after the user changes lake parameters (slider) so the existing
+     * road network — which was generated with the previous lake set — gets
+     * cleaned up. We delete entire roads rather than truncating them because
+     * a road that ends mid-wilderness looks wrong.
+     *
+     * Cheap operation: just walks each road's path once.
+     */
+    pruneRoadsAcrossLakes() {
+        if (!this.roads || this.roads.length === 0) return;
+        if (!this.lakeCells || this.lakeCells.size === 0) return;
+        
+        const lake = this.lakeCells;
+        this.roads = this.roads.filter(road => {
+            // road.path is an array of {x, y, cell} objects
+            const path = road.path;
+            if (!path) return true;
+            for (const pt of path) {
+                const c = (pt.cell !== undefined) ? pt.cell : pt;
+                if (c >= 0 && lake.has(c)) return false;  // crosses lake — drop
+            }
+            return true;
+        });
     }
     
     /**
@@ -2446,8 +3204,11 @@ export class VoronoiGenerator {
         const getCost = (from, to) => {
             const toHeight = this.heights[to];
             
-            // Water is completely impassable
+            // Water is completely impassable. Both ocean (below sea level)
+            // and lakes (above sea level but flagged as water in this.lakeCells)
+            // count as water for road purposes.
             if (toHeight < ELEVATION.SEA_LEVEL) return Infinity;
+            if (this.lakeCells && this.lakeCells.has(to)) return Infinity;
             
             const x1 = this.points[from * 2];
             const y1 = this.points[from * 2 + 1];
@@ -2575,63 +3336,111 @@ export class VoronoiGenerator {
             }
         }
         
-        // Sort kingdoms by number of neighbors (most constrained first)
+        // Sort kingdoms by number of neighbors (most constrained first - DSATUR-like)
         const sortedKingdoms = Array.from({ length: this.kingdomCount }, (_, i) => i)
             .sort((a, b) => adjacency.get(b).size - adjacency.get(a).size);
         
-        // Assign colors using greedy graph coloring
+        // Build the color palette to choose from. We start with POLITICAL_COLORS,
+        // and if we somehow have more kingdoms than palette entries, we extend
+        // with additional procedurally-generated hues so global uniqueness holds.
+        const palette = POLITICAL_COLORS.slice();
+        if (this.kingdomCount > palette.length) {
+            // Extend palette with HSL hues filling gaps. We use the golden-ratio
+            // hue offset (~137.5°) so successive new hues are maximally different.
+            const extraNeeded = this.kingdomCount - palette.length;
+            const goldenAngle = 137.508;
+            // Start at a hue offset that doesn't collide with the existing palette
+            let hue = 17;
+            for (let i = 0; i < extraNeeded; i++) {
+                hue = (hue + goldenAngle) % 360;
+                // mid-saturation, mid-lightness so it sits with the existing palette
+                const sat = 45 + ((i * 17) % 20);   // 45-65%
+                const light = 55 + ((i * 11) % 15); // 55-70%
+                const { r, g, b } = this._hslToRgb(hue / 360, sat / 100, light / 100);
+                palette.push(`rgba(${r}, ${g}, ${b}, 0.5)`);
+            }
+        }
+        
+        const numColors = palette.length;
+        
+        // Track colors used globally — this is the change that guarantees
+        // no two kingdoms share a color, ever.
+        const globallyUsed = new Set();
+        
         this.kingdomColors = new Array(this.kingdomCount).fill(-1);
-        const numColors = POLITICAL_COLORS.length;
         
         for (const k of sortedKingdoms) {
-            // Find colors used by neighbors
-            const usedColors = new Set();
+            // Build the set of forbidden colors for this kingdom:
+            //   1. Every color already used by any other kingdom (uniqueness)
+            //   2. Palette-adjacent colors of NEIGHBOURS (visual separation - softer constraint)
+            const neighborAdjacentColors = new Set();
             for (const neighbor of adjacency.get(k)) {
-                if (this.kingdomColors[neighbor] >= 0) {
-                    usedColors.add(this.kingdomColors[neighbor]);
-                    
-                    // Also mark similar colors as "used" (adjacent in the palette)
-                    // This prevents visually similar colors from being adjacent
-                    const neighborColor = this.kingdomColors[neighbor];
-                    usedColors.add((neighborColor + 1) % numColors);
-                    usedColors.add((neighborColor - 1 + numColors) % numColors);
+                const nc = this.kingdomColors[neighbor];
+                if (nc >= 0) {
+                    neighborAdjacentColors.add((nc + 1) % numColors);
+                    neighborAdjacentColors.add((nc - 1 + numColors) % numColors);
                 }
             }
             
-            // Find the first available color not used by neighbors
-            let assignedColor = -1;
+            // Pass 1: try to satisfy BOTH global uniqueness AND palette-adjacency
+            let assigned = -1;
             for (let c = 0; c < numColors; c++) {
-                if (!usedColors.has(c)) {
-                    assignedColor = c;
-                    break;
-                }
+                if (globallyUsed.has(c)) continue;
+                if (neighborAdjacentColors.has(c)) continue;
+                assigned = c;
+                break;
             }
             
-            // If all colors are "used", find least conflicting color
-            if (assignedColor === -1) {
-                // Just find one not directly used (ignore similarity constraint)
-                const directlyUsed = new Set();
-                for (const neighbor of adjacency.get(k)) {
-                    if (this.kingdomColors[neighbor] >= 0) {
-                        directlyUsed.add(this.kingdomColors[neighbor]);
-                    }
-                }
-                
+            // Pass 2: relax the palette-adjacency rule, keep uniqueness.
+            // Triggers when palette is mostly used up and we can't satisfy both.
+            if (assigned === -1) {
                 for (let c = 0; c < numColors; c++) {
-                    if (!directlyUsed.has(c)) {
-                        assignedColor = c;
+                    if (!globallyUsed.has(c)) {
+                        assigned = c;
                         break;
                     }
                 }
-                
-                // Absolute fallback
-                if (assignedColor === -1) {
-                    assignedColor = k % numColors;
-                }
             }
             
-            this.kingdomColors[k] = assignedColor;
+            // This should be impossible: palette was extended to >= kingdomCount.
+            // But just in case, fall back to a unique-per-index value.
+            if (assigned === -1) assigned = k;
+            
+            this.kingdomColors[k] = assigned;
+            globallyUsed.add(assigned);
         }
+        
+        // Make the extended palette available to the renderer
+        this._kingdomPalette = palette;
+    }
+    
+    /**
+     * HSL -> RGB conversion. h, s, l in [0, 1]. Returns ints 0-255.
+     */
+    _hslToRgb(h, s, l) {
+        let r, g, b;
+        if (s === 0) {
+            r = g = b = l;
+        } else {
+            const hue2rgb = (p, q, t) => {
+                if (t < 0) t += 1;
+                if (t > 1) t -= 1;
+                if (t < 1/6) return p + (q - p) * 6 * t;
+                if (t < 1/2) return q;
+                if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                return p;
+            };
+            const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+            const p = 2 * l - q;
+            r = hue2rgb(p, q, h + 1/3);
+            g = hue2rgb(p, q, h);
+            b = hue2rgb(p, q, h - 1/3);
+        }
+        return {
+            r: Math.round(r * 255),
+            g: Math.round(g * 255),
+            b: Math.round(b * 255)
+        };
     }
     
     /**
@@ -2768,12 +3577,14 @@ export class VoronoiGenerator {
                 if (capital < 0 || this.kingdoms[capital] !== k) continue;
                 
                 // BFS from capital to find main body
+                // Uses head pointer instead of .shift() (which is O(N) per call)
                 const mainBody = new Set();
                 const queue = [capital];
+                let qHead = 0;
                 mainBody.add(capital);
                 
-                while (queue.length > 0) {
-                    const current = queue.shift();
+                while (qHead < queue.length) {
+                    const current = queue[qHead++];
                     
                     for (const neighbor of this.voronoi.neighbors(current)) {
                         if (this.kingdoms[neighbor] === k && !mainBody.has(neighbor)) {
@@ -2903,50 +3714,78 @@ export class VoronoiGenerator {
      * This ensures every land cell can drain to ocean
      */
     _fillDepressions() {
-        
-        // Create filled heights array
+        // Priority-flood with binary heap (see _fillAllDepressions for notes
+        // on why this needs to be a heap and not Array+sort).
         this.filledHeights = new Float32Array(this.heights);
         
-        // Priority queue - array of [elevation, cellIndex], sorted by elevation
-        const pq = [];
+        const heapH = new Float32Array(this.cellCount * 2);
+        const heapI = new Int32Array(this.cellCount * 2);
+        let heapSize = 0;
+        
+        const heapPush = (h, idx) => {
+            let i = heapSize++;
+            heapH[i] = h;
+            heapI[i] = idx;
+            while (i > 0) {
+                const parent = (i - 1) >> 1;
+                if (heapH[parent] <= heapH[i]) break;
+                const th = heapH[parent], ti = heapI[parent];
+                heapH[parent] = heapH[i]; heapI[parent] = heapI[i];
+                heapH[i] = th; heapI[i] = ti;
+                i = parent;
+            }
+        };
+        
+        const heapPop = () => {
+            const rootI = heapI[0];
+            heapSize--;
+            if (heapSize > 0) {
+                heapH[0] = heapH[heapSize];
+                heapI[0] = heapI[heapSize];
+                let i = 0;
+                const n = heapSize;
+                while (true) {
+                    const l = 2 * i + 1;
+                    const r = 2 * i + 2;
+                    let smallest = i;
+                    if (l < n && heapH[l] < heapH[smallest]) smallest = l;
+                    if (r < n && heapH[r] < heapH[smallest]) smallest = r;
+                    if (smallest === i) break;
+                    const th = heapH[smallest], ti = heapI[smallest];
+                    heapH[smallest] = heapH[i]; heapI[smallest] = heapI[i];
+                    heapH[i] = th; heapI[i] = ti;
+                    i = smallest;
+                }
+            }
+            return rootI;
+        };
+        
         const inQueue = new Uint8Array(this.cellCount);
         
-        // Add all ocean cells to queue
+        // Seed with all ocean cells
         for (let i = 0; i < this.cellCount; i++) {
             if (this.heights[i] < ELEVATION.SEA_LEVEL) {
-                pq.push([this.heights[i], i]);
+                heapPush(this.heights[i], i);
                 inQueue[i] = 1;
             }
         }
         
-        // Sort by elevation (lowest first)
-        pq.sort((a, b) => a[0] - b[0]);
-        
-        let fillCount = 0;
-        
         // Process cells in elevation order
-        while (pq.length > 0) {
-            const [elev, current] = pq.shift();
+        while (heapSize > 0) {
+            const current = heapPop();
+            const currentH = this.filledHeights[current];
             
-            // Process all neighbors
             for (const neighbor of this.voronoi.neighbors(current)) {
                 if (inQueue[neighbor]) continue;
                 inQueue[neighbor] = 1;
                 
-                // If neighbor is lower than current cell's filled height, raise it
-                if (this.filledHeights[neighbor] <= this.filledHeights[current]) {
-                    this.filledHeights[neighbor] = this.filledHeights[current] + 0.1;
-                    fillCount++;
+                if (this.filledHeights[neighbor] <= currentH) {
+                    this.filledHeights[neighbor] = currentH + 0.1;
                 }
                 
-                // Add to queue with its new elevation
-                pq.push([this.filledHeights[neighbor], neighbor]);
-                
-                // Re-sort (inefficient but correct - could use proper heap)
-                pq.sort((a, b) => a[0] - b[0]);
+                heapPush(this.filledHeights[neighbor], neighbor);
             }
         }
-        
     }
     
     /**
@@ -3007,13 +3846,33 @@ export class VoronoiGenerator {
         let oceanCellsAdded = 0;
         const maxOceanCells = 3; // Extend into ocean
         
+        // Lake awareness: rivers should terminate at the lake shore, not flow
+        // through the water surface. We treat the first lake cell encountered
+        // as the terminator — we add it to the path so the rendered river
+        // visually touches the shore, then stop.
+        const lakeSet = this.lakeCells || new Set();
+        
+        // If the river somehow started inside a lake (shouldn't happen because
+        // start points are upper-15% elevation), don't bother tracing.
+        if (lakeSet.has(startCell)) {
+            return { path: [] };
+        }
+        
         while (path.length < 3000) {
             const x = this.points[current * 2];
             const y = this.points[current * 2 + 1];
             const elevation = this.heights[current];
             
             const isOcean = this.heights[current] < ELEVATION.SEA_LEVEL;
+            const isLake = lakeSet.has(current);
             path.push({ cell: current, x, y, elevation, isOcean });
+            
+            // If we just entered a lake cell, stop here. The path now has
+            // exactly one lake cell at its tip, which gives the renderer a
+            // clean termination point right at the shore (the lake cell
+            // centroid is inside the water but the curve renderer will draw
+            // up to it, visually terminating at the shoreline).
+            if (isLake) break;
             
             // Track ocean cells and stop after a few
             if (isOcean) {
@@ -3127,12 +3986,12 @@ export class VoronoiGenerator {
             }
         }
         
-        // BFS to find all ocean connected to edge
-        while (queue.length > 0) {
-            const current = queue.shift();
-            const neighbors = Array.from(this.voronoi.neighbors(current));
+        // BFS to find all ocean connected to edge (head pointer, no .shift())
+        let qHead = 0;
+        while (qHead < queue.length) {
+            const current = queue[qHead++];
             
-            for (const n of neighbors) {
+            for (const n of this.voronoi.neighbors(current)) {
                 if (edgeConnected.has(n)) continue;
                 if (this.heights[n] >= ELEVATION.SEA_LEVEL) continue;
                 
@@ -3350,7 +4209,63 @@ export class VoronoiGenerator {
             lakeCells.length = maxLakeSize;
         }
         
-        if (lakeCells.length === 0) return null;
+        // Reject lakes that are too small to read as proper lakes — single-cell
+        // and 2-cell "lakes" produce visual noise (hundreds of tiny patches).
+        // A real lake should be at least 3 cells.
+        if (lakeCells.length < 3) return null;
+        
+        // Reject "wetland" lakes — basins that look like a swarm of disconnected
+        // patches rather than a coherent body of water. This happens in shallow
+        // valleys where the basin is large but only some cells dip below the
+        // spill level, producing a fragmented multi-blob shape (the famous
+        // swamp-pattern bug).
+        //
+        // Two checks:
+        //   (1) Connectivity: the lake cells should form ONE connected component
+        //       (allowing minor fragmentation up to 20% of cells in side-blobs).
+        //   (2) Density: the bounding box of the lake cells should be at least
+        //       50% lake — otherwise the lake is a sparse string through a
+        //       larger area.
+        const lakeSet = new Set(lakeCells);
+        
+        // BFS from the lowest cell to find the largest connected component
+        let lowest = lakeCells[0];
+        for (const c of lakeCells) {
+            if (this.heights[c] < this.heights[lowest]) lowest = c;
+        }
+        const visited = new Set([lowest]);
+        const ccQueue = [lowest];
+        let ccHead = 0;
+        while (ccHead < ccQueue.length) {
+            const cur = ccQueue[ccHead++];
+            for (const n of this.voronoi.neighbors(cur)) {
+                if (lakeSet.has(n) && !visited.has(n)) {
+                    visited.add(n);
+                    ccQueue.push(n);
+                }
+            }
+        }
+        // If the largest connected component is less than 80% of the lake,
+        // this is a fragmented mess — reject.
+        if (visited.size < lakeCells.length * 0.8) return null;
+        
+        // Density check: bounding box of lake cells, count what fraction is lake.
+        // Sparse strings of cells through a large bbox = swamp pattern.
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const c of lakeCells) {
+            const x = this.points[c * 2], y = this.points[c * 2 + 1];
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+        const bboxArea = Math.max(1, (maxX - minX) * (maxY - minY));
+        // Each cell occupies roughly (mapArea / cellCount) of area
+        const cellArea = (this.width * this.height) / this.cellCount;
+        const lakeArea = lakeCells.length * cellArea;
+        const density = lakeArea / bboxArea;
+        // If lake takes up less than 35% of its bbox, it's spread too thin.
+        if (density < 0.35) return null;
         
         // Check not adjacent to ocean
         for (const cell of lakeCells) {
@@ -3362,7 +4277,7 @@ export class VoronoiGenerator {
         }
         
         // Check for internal islands - reject lakes with too many
-        const lakeSet = new Set(lakeCells);
+        // (lakeSet was already declared above for the connectivity check; reuse it)
         let islandCells = 0;
         for (const cell of lakeCells) {
             for (const n of this.voronoi.neighbors(cell)) {
@@ -3386,6 +4301,34 @@ export class VoronoiGenerator {
         if (islandCells > 2 || (islandCells > 0 && islandCells / lakeCells.length > 0.1)) {
             return null;
         }
+        
+        // Perimeter-complexity check: count how many border edges the lake has.
+        // A clean round lake has ~2-3 border edges per cell. A jagged lake with
+        // many peninsulas has 4+. High ratio = the lake silhouette is messy
+        // and will look like a swamp when rendered, with confusing inner outlines
+        // around every peninsula reaching into the water.
+        let borderEdgeCount = 0;
+        for (const cell of lakeCells) {
+            const cellPoly = this.voronoi.cellPolygon(cell);
+            if (!cellPoly) continue;
+            const neighbors = Array.from(this.voronoi.neighbors(cell));
+            for (let e = 0; e < cellPoly.length - 1; e++) {
+                const v1 = cellPoly[e], v2 = cellPoly[e + 1];
+                const midX = (v1[0] + v2[0]) / 2, midY = (v1[1] + v2[1]) / 2;
+                let nearest = -1, nearestD = Infinity;
+                for (const n of neighbors) {
+                    const nx = this.points[n * 2], ny = this.points[n * 2 + 1];
+                    const d2 = (nx - midX) ** 2 + (ny - midY) ** 2;
+                    if (d2 < nearestD) { nearestD = d2; nearest = n; }
+                }
+                if (nearest < 0 || !lakeSet.has(nearest)) borderEdgeCount++;
+            }
+        }
+        const edgesPerCell = borderEdgeCount / lakeCells.length;
+        // A "round" lake has ~2.5 edges per cell. We allow up to 3.5 before
+        // rejecting — anything higher is a fingered/jagged silhouette that
+        // will look bad in render.
+        if (edgesPerCell > 3.5) return null;
         
         // Update drainage for lake cells to point to spillCell
         for (const cell of lakeCells) {
@@ -3416,6 +4359,303 @@ export class VoronoiGenerator {
             depth: depth,
             outlet: spillCell
         };
+    }
+    
+    /**
+     * Detect endorheic basins and river-fed lakes, populate them as lakes,
+     * and update drainage so rivers flow into them.
+     *
+     * Must run BEFORE the river tracing (in calculateDrainage). Strategy:
+     *
+     *   1. Pre-fill: don't. We *want* depressions for endorheic detection.
+     *   2. Find every land cell that's lower than ALL its neighbours — those
+     *      are pit candidates. Each pit may seed a lake basin.
+     *   3. For each pit, run _createLake. It returns a lake or null.
+     *   4. ALSO scan rivers (after they're computed) and look for cells where
+     *      flow accumulates but the slope is near-flat — those become river-fed
+     *      lakes.
+     *
+     * Settings come from this.lakeOptions (set by the caller):
+     *   density:   0..1   how many candidate basins to convert (1 = all)
+     *   minDepth:  meters lake basin must drop this much below spill
+     *   maxSize:   cells  cap on lake size
+     *
+     * Populates: this.lakes, this.lakeCells, this.lakeDepths
+     */
+    detectEndorheicLakes(options = {}) {
+        if (!this.heights || !this.voronoi) return [];
+        
+        const {
+            density = 0.6,
+            minDepth = 30,
+            maxSize = 80
+        } = options;
+        
+        // Find all pit cells: land cells that are significantly below their
+        // lowest neighbour (otherwise micro-pits from coastal noise create
+        // hundreds of tiny "lakes"). Lowest-neighbour drop must exceed pitDrop
+        // for the cell to qualify.
+        const pitDrop = 25;  // meters; pit must be at least this much below lowest neighbour
+        const pitCandidates = [];
+        for (let i = 0; i < this.cellCount; i++) {
+            if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+            
+            const myH = this.heights[i];
+            let lowestNeighbourH = Infinity;
+            let touchesOcean = false;
+            
+            for (const n of this.voronoi.neighbors(i)) {
+                if (this.heights[n] < ELEVATION.SEA_LEVEL) {
+                    touchesOcean = true;
+                    break;
+                }
+                if (this.heights[n] < lowestNeighbourH) {
+                    lowestNeighbourH = this.heights[n];
+                }
+            }
+            
+            if (touchesOcean) continue;          // coastal — not a basin
+            if (lowestNeighbourH === Infinity) continue;  // weird (no neighbours?)
+            if (lowestNeighbourH - myH < pitDrop) continue;  // not deep enough
+            
+            pitCandidates.push({ cell: i, elevation: myH });
+        }
+        
+        // Sort pits by elevation, deepest first — these become the most
+        // dramatic lakes (e.g. Caspian Sea is at -28m, lower than ocean)
+        pitCandidates.sort((a, b) => a.elevation - b.elevation);
+        
+        // Convert a fraction based on density slider
+        const targetCount = Math.ceil(pitCandidates.length * density);
+        const selected = pitCandidates.slice(0, targetCount);
+        
+        // Build lakes
+        const processed = new Set();
+        const generated = [];
+        
+        // Spatial exclusion zone: after we successfully form a lake, mark all
+        // cells within `exclusionRadius` BFS hops as "processed" so no other
+        // pit nearby can form a *separate* lake. Without this, a continuous
+        // marshy depression with many local pits gets fragmented into dozens
+        // of tiny disconnected "lakes" because each pit's basin-fill terminates
+        // when it bumps into a neighbouring lake's already-processed cells.
+        // 4 cells is enough to suppress the swamp-pattern seen in low river
+        // valleys without killing legitimate lakes that just happen to be
+        // close to each other.
+        const exclusionRadius = 4;
+        const expandExclusion = (lake) => {
+            // BFS outward from lake cells, marking cells as processed up to
+            // exclusionRadius hops away.
+            let frontier = Array.from(lake.cells);
+            for (const c of frontier) processed.add(c);
+            
+            for (let r = 0; r < exclusionRadius; r++) {
+                const next = [];
+                for (const c of frontier) {
+                    for (const n of this.voronoi.neighbors(c)) {
+                        if (processed.has(n)) continue;
+                        // Don't expand exclusion across ocean — only across land
+                        if (this.heights[n] < ELEVATION.SEA_LEVEL) continue;
+                        processed.add(n);
+                        next.push(n);
+                    }
+                }
+                frontier = next;
+                if (frontier.length === 0) break;
+            }
+        };
+        
+        for (const { cell } of selected) {
+            if (processed.has(cell)) continue;
+            const lake = this._createLake(cell, processed, minDepth, maxSize);
+            if (lake) {
+                generated.push(lake);
+                expandExclusion(lake);
+            }
+        }
+        
+        return generated;
+    }
+    
+    /**
+     * Detect river-fed lakes: along major river paths, find segments where
+     * flow accumulates but the local terrain is unusually flat. Convert those
+     * into lakes (the river fills a basin and overflows downstream).
+     *
+     * Must run AFTER river tracing has populated this.rivers and this.riverFlow.
+     */
+    detectRiverFedLakes(options = {}) {
+        if (!this.rivers || !this.riverFlow) return [];
+        
+        const {
+            density = 0.4,
+            minDepth = 25,
+            maxSize = 60,
+            flowThresholdRel = 0.10   // only consider rivers in top 10% of flow
+        } = options;
+        
+        if (this.rivers.length === 0) return [];
+        
+        // Determine flow threshold from highest river
+        let maxFlow = 0;
+        for (const r of this.rivers) {
+            if (r.flow > maxFlow) maxFlow = r.flow;
+        }
+        const flowMin = maxFlow * flowThresholdRel;
+        
+        // Pick candidate cells along major rivers where the slope is shallow
+        const processed = new Set();
+        // Mark already-existing lake cells as processed so we don't overlap
+        if (this.lakeCells) {
+            for (const c of this.lakeCells) processed.add(c);
+        }
+        
+        const candidates = [];
+        for (const river of this.rivers) {
+            if (river.flow < flowMin) continue;
+            const path = river.path;
+            if (!path || path.length < 5) continue;
+            
+            // Walk path looking for flat segments
+            for (let i = 1; i < path.length - 1; i++) {
+                const cell = (path[i].cell !== undefined) ? path[i].cell : path[i];
+                if (cell < 0) continue;
+                if (processed.has(cell)) continue;
+                
+                const prevCell = (path[i-1].cell !== undefined) ? path[i-1].cell : path[i-1];
+                const nextCell = (path[i+1].cell !== undefined) ? path[i+1].cell : path[i+1];
+                
+                const slope = Math.abs(this.heights[prevCell] - this.heights[nextCell]);
+                
+                // Flat enough that water would pool (less than 15m drop over 2 cells)
+                if (slope < 15 && this.heights[cell] >= ELEVATION.SEA_LEVEL + 20) {
+                    candidates.push({ cell, flow: this.riverFlow[cell] || 1 });
+                }
+            }
+        }
+        
+        // Sort by flow descending — biggest rivers get priority for lake-formation
+        candidates.sort((a, b) => b.flow - a.flow);
+        
+        // Subsample by density
+        const targetCount = Math.ceil(candidates.length * density);
+        const selected = candidates.slice(0, targetCount);
+        
+        // Same spatial exclusion as endorheic: don't let a continuous flat
+        // river valley spawn a chain of fragmented "lakes". After we form
+        // one lake along a river, suppress new ones within a few cells.
+        const exclusionRadius = 5;  // bigger for rivers because valleys are linear
+        const expandExclusion = (lake) => {
+            let frontier = Array.from(lake.cells);
+            for (const c of frontier) processed.add(c);
+            for (let r = 0; r < exclusionRadius; r++) {
+                const next = [];
+                for (const c of frontier) {
+                    for (const n of this.voronoi.neighbors(c)) {
+                        if (processed.has(n)) continue;
+                        if (this.heights[n] < ELEVATION.SEA_LEVEL) continue;
+                        processed.add(n);
+                        next.push(n);
+                    }
+                }
+                frontier = next;
+                if (frontier.length === 0) break;
+            }
+        };
+        
+        const generated = [];
+        for (const { cell } of selected) {
+            if (processed.has(cell)) continue;
+            // For river-fed lakes we accept smaller depth requirements
+            const lake = this._createLake(cell, processed, minDepth, maxSize);
+            if (lake) {
+                generated.push(lake);
+                expandExclusion(lake);
+            }
+        }
+        
+        return generated;
+    }
+    
+    /**
+     * High-level entry point: generate ALL lakes and integrate them with the
+     * world state.
+     *
+     * Call AFTER drainage but BEFORE kingdoms (so kingdoms see lake cells in
+     * their edge-cost calculations).
+     *
+     * @param {Object} options
+     *   density       - 0..1 lake count multiplier
+     *   minDepth      - 0..1 normalized; small (more lakes) to large (fewer, deeper)
+     *   maxSize       - cells per lake (caps individual lake size)
+     */
+    generateLakes(options = {}) {
+        if (!this.heights || !this.voronoi) return;
+        
+        // Reset lake state
+        this.lakes = [];
+        this.lakeCells = new Set();
+        this.lakeDepths = new Map();
+        
+        const density = Math.max(0, Math.min(1, options.density ?? 0.5));
+        if (density === 0) return;
+        
+        // minDepth slider value 0..1 maps to actual depth threshold in meters.
+        // Low slider = lots of small shallow lakes (15m). High slider = few
+        // big deep lakes (120m).
+        const sliderDepth = Math.max(0, Math.min(1, options.minDepth ?? 0.3));
+        const minDepthMeters = 15 + sliderDepth * 105;
+        
+        // maxSize: similar mapping. Slider 0 -> 30 cells, slider 1 -> 200 cells.
+        const sliderSize = Math.max(0, Math.min(1, options.minDepth ?? 0.3));
+        const maxSizeCells = Math.round(30 + sliderSize * 170);
+        
+        // Phase A: endorheic basins
+        const endorheic = this.detectEndorheicLakes({
+            density,
+            minDepth: minDepthMeters,
+            maxSize: maxSizeCells
+        });
+        for (const lake of endorheic) lake.type = 'endorheic';
+        
+        // Phase B: river-fed lakes
+        // Need to populate this.lakeCells before river-fed pass so it doesn't
+        // overlap with endorheic ones already created
+        for (const lake of endorheic) {
+            for (const c of lake.cells) this.lakeCells.add(c);
+        }
+        
+        const riverFed = this.detectRiverFedLakes({
+            density: density * 0.7,   // a bit fewer river-fed than endorheic
+            minDepth: minDepthMeters * 0.8,
+            maxSize: Math.round(maxSizeCells * 0.8)
+        });
+        for (const lake of riverFed) lake.type = 'river-fed';
+        
+        // Combine
+        const allLakes = [...endorheic, ...riverFed];
+        
+        // Name each lake
+        if (this.nameGenerator && typeof this.nameGenerator.generateLakeName === 'function') {
+            for (const lake of allLakes) {
+                lake.name = this.nameGenerator.generateLakeName();
+            }
+        }
+        
+        // Populate generator state
+        this.lakes = allLakes;
+        for (const lake of allLakes) {
+            for (const cell of lake.cells) {
+                this.lakeCells.add(cell);
+                // Store water depth at this cell
+                this.lakeDepths.set(cell, lake.surfaceElevation - this.heights[cell]);
+            }
+        }
+        
+        // Invalidate caches that depend on lake/water layout
+        this._coastlineCache = null;
+        this._contourCache = null;
+        if (this.tileCache) this.tileCache.invalidate();
     }
     
     /**
@@ -3471,6 +4711,252 @@ export class VoronoiGenerator {
     _smoothstep(edge0, edge1, x) {
         const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
         return t * t * (3 - 2 * t);
+    }
+    
+    /**
+     * Apply a world-shape mask to the noise height value.
+     *
+     * Returns the modified height. The mask is applied via a
+     * (multiplier, additive bias) pair so that some presets can SUPPRESS
+     * land (oceans/falloff) while others RAISE it (continents, peninsulas).
+     *
+     * Coordinates: nx, ny are normalized in [0, 1] across the map.
+     * h is the current noise value in [0, 1].
+     *
+     * @param {number} h        - current height in [0,1]
+     * @param {number} x        - cell world x
+     * @param {number} y        - cell world y
+     * @param {string} preset   - mask preset name
+     * @param {number} strength - 0..1, how strongly the mask applies
+     * @returns {number} new height in [0,1]
+     */
+    _applyWorldMask(h, x, y, preset, strength) {
+        if (preset === 'none' || strength <= 0) return h;
+        
+        const cx = this.width / 2;
+        const cy = this.height / 2;
+        const dx = (x - cx) / cx;        // normalized -1..1 from center
+        const dy = (y - cy) / cy;
+        const nx = x / this.width;       // 0..1
+        const ny = y / this.height;
+        
+        // Each branch computes (mult, add).
+        //   final = h * mult + add, then clamped to [0,1]
+        // strength=0 should be a no-op, strength=1 = preset's natural strength.
+        let mult = 1;
+        let add  = 0;
+        
+        switch (preset) {
+            // ---- Basic edge falloffs (kept for compatibility) ----
+            case 'radial': {
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const f = this._smoothstep(0.3, 1.0, dist);
+                mult = 1 - f * strength;
+                break;
+            }
+            case 'square': {
+                const f = this._smoothstep(0.4, 1.0, Math.max(Math.abs(dx), Math.abs(dy)));
+                mult = 1 - f * strength;
+                break;
+            }
+            
+            // ---- Continental: one big landmass with ocean on the edges ----
+            // Soft radial falloff that only kicks in near the very edge,
+            // plus a small additive bias toward center so the middle reliably
+            // becomes land regardless of seaLevel.
+            case 'continental': {
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const f = this._smoothstep(0.55, 1.05, dist);
+                mult = 1 - f * strength;
+                add  = (1 - this._smoothstep(0.0, 0.6, dist)) * 0.10 * strength;
+                break;
+            }
+            
+            // ---- Archipelago: noise-driven scattered islands ----
+            // Use a low-frequency noise field as a "land probability" mask.
+            // Noise above threshold -> island cluster; below -> ocean. Adds a
+            // gentle global edge falloff so islands don't bleed off the map.
+            case 'archipelago': {
+                // 2 layers of low-freq noise to break up the pattern
+                const a = Noise.simplex2(nx * 2.5 + 17.3, ny * 2.5 + 31.7);
+                const b = Noise.simplex2(nx * 5.0 - 11.1, ny * 5.0 + 7.9) * 0.4;
+                const islandField = (a + b) * 0.7;     // -1..1ish
+                
+                // Map noise to a mask: only the highest peaks become land
+                // Lower this threshold to get more/larger islands
+                const threshold = 0.15;
+                let m = this._smoothstep(threshold - 0.25, threshold + 0.25, islandField);
+                
+                // Soft global edge so islands fade near borders
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const edge = 1 - this._smoothstep(0.7, 1.05, dist);
+                m *= edge;
+                
+                // Suppress everything not inside an island (m near 0)
+                // Strong suppression so we get clear sea between islands
+                mult = 1 - (1 - m) * strength * 0.95;
+                break;
+            }
+            
+            // ---- Two continents separated by a sea ----
+            // Suppress land in a vertical band running through the middle
+            // (with noisy edges for natural-looking coastlines on both sides).
+            case 'two-continents': {
+                // Noisy seam around x=0
+                const seam = Noise.simplex2(ny * 3.0, 5.7) * 0.12;
+                const seaCenterX = 0 + seam;
+                const distFromSeam = Math.abs(dx - seaCenterX);
+                
+                // Sea is widest near vertical center (lozenge-shaped)
+                const verticalBias = 1 - Math.abs(dy) * 0.4;
+                const seaWidth = 0.22 * verticalBias;
+                
+                // Mask: 0 inside sea, 1 outside
+                const seaMask = this._smoothstep(seaWidth, seaWidth + 0.18, distFromSeam);
+                
+                // Plus a soft global edge falloff so continents don't run off
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const edge = 1 - this._smoothstep(0.65, 1.05, dist);
+                
+                mult = 1 - (1 - seaMask * edge) * strength;
+                // Add bias to centers of each continent so they're solidly land
+                if (seaMask > 0.5) {
+                    const continentBias = (seaMask - 0.5) * 0.15 * strength;
+                    add = continentBias * edge;
+                }
+                break;
+            }
+            
+            // ---- Pangaea: huge continent, inland seas carved out ----
+            // Big continental mass via additive bias, plus low-freq noise that
+            // carves out a few inland seas inside it.
+            case 'pangaea': {
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const edge = this._smoothstep(0.7, 1.1, dist);
+                
+                // Strong upward push everywhere except near the rim
+                add = (1 - edge) * 0.18 * strength;
+                
+                // Carve inland seas with low-freq noise (only inside the continent)
+                const seaNoise = Noise.simplex2(nx * 3.5 + 42.1, ny * 3.5 - 13.6);
+                const seaMask = this._smoothstep(0.45, 0.7, seaNoise);  // 0..1, 1 = sea
+                add -= seaMask * 0.25 * strength * (1 - edge);
+                
+                // Edge taper to ocean
+                mult = 1 - edge * strength * 0.9;
+                break;
+            }
+            
+            // ---- Coastal: land on one side, ocean on the other ----
+            // Diagonal coastline with noisy edge.
+            case 'coastal': {
+                // Direction vector for the coast (top-left to bottom-right)
+                // Pick angle from seed-derived noise so coastlines vary
+                const angle = Math.PI * 0.25;  // 45deg, NW->SE
+                const ax = Math.cos(angle), ay = Math.sin(angle);
+                
+                // Signed distance along coastal axis: -1 (deep sea) .. +1 (deep land)
+                let coastDist = dx * ax + dy * ay;
+                
+                // Add a noisy wobble to break up the straight line
+                coastDist += Noise.simplex2(nx * 4.0, ny * 4.0) * 0.20;
+                
+                // Smoothly transition: -0.1 -> ocean, +0.1 -> land
+                const landMask = this._smoothstep(-0.15, 0.15, coastDist);
+                
+                mult = 1 - (1 - landMask) * strength;
+                add  = landMask * 0.12 * strength;  // bias inland
+                break;
+            }
+            
+            // ---- Inland sea: ring of land around central ocean ----
+            // Inverted radial: low in center (sea), high on a mid-radius ring,
+            // tapering back down at the outer edge.
+            case 'inland-sea': {
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                
+                // Central depression: 0 at center, 1 by mid-radius
+                const centerDip = this._smoothstep(0.15, 0.55, dist);
+                
+                // Outer falloff: 1 at mid-radius, 0 at edge
+                const outerFade = 1 - this._smoothstep(0.65, 1.05, dist);
+                
+                // Ring mask: high on the donut, low at center & edge
+                const ring = centerDip * outerFade;
+                
+                // Wobble the inner coast a bit
+                const wobble = Noise.simplex2(nx * 4.5, ny * 4.5) * 0.08;
+                
+                mult = (1 - strength) + ring * strength;
+                add  = (ring * 0.18 + wobble * ring) * strength;
+                break;
+            }
+            
+            // ---- Lake world: lots of land, scattered inland lakes/seas ----
+            // Like Pangaea but bigger landmass and many small "lake holes".
+            case 'lake-world': {
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const edge = this._smoothstep(0.85, 1.1, dist);   // very soft edge
+                
+                // Strong land bias almost everywhere
+                add = (1 - edge) * 0.20 * strength;
+                
+                // High-frequency carve-outs for lakes (smaller features than pangaea)
+                const lakeNoise = Noise.simplex2(nx * 8.0 + 99.1, ny * 8.0 + 23.5);
+                const lakeMask = this._smoothstep(0.55, 0.78, lakeNoise);
+                add -= lakeMask * 0.30 * strength * (1 - edge);
+                
+                mult = 1 - edge * strength;
+                break;
+            }
+            
+            // ---- Peninsulas & Fjords: heavily eroded coastline ----
+            // Continental base, but multiplied by high-freq directional noise
+            // to create lots of fingers and bays along the coast.
+            case 'peninsula': {
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const baseFalloff = this._smoothstep(0.5, 1.0, dist);
+                
+                // High-freq noise to break up the coastline into fingers
+                const fjordNoise = (Noise.simplex2(nx * 12.0, ny * 12.0) +
+                                    Noise.simplex2(nx * 24.0 + 5.3, ny * 24.0 + 7.7) * 0.5) / 1.5;
+                
+                // Only apply fjord noise where we're near the coast (not deep inland or far at sea)
+                const coastWeight = 4 * baseFalloff * (1 - baseFalloff);  // peaks at 0.5
+                const carve = fjordNoise * coastWeight * 0.35;
+                
+                mult = 1 - (baseFalloff + carve) * strength;
+                add  = (1 - this._smoothstep(0.0, 0.4, dist)) * 0.08 * strength;
+                break;
+            }
+            
+            // ---- Atoll / Ring island: thin ring with central lagoon ----
+            case 'atoll': {
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                
+                // Ring centered at radius 0.5, narrow
+                const ringRadius = 0.5;
+                const ringWidth  = 0.18;
+                const ringDist = Math.abs(dist - ringRadius);
+                
+                // Noisy ring edge so the atoll isn't a perfect circle
+                const wobble = Noise.simplex2(Math.atan2(dy, dx) * 1.5, dist * 4) * 0.05;
+                const ring = 1 - this._smoothstep(0, ringWidth + wobble, ringDist);
+                
+                // Outer falloff to deep ocean
+                const outer = 1 - this._smoothstep(ringRadius + ringWidth, 1.0, dist);
+                
+                // Inner lagoon: shallow water, not deep ocean. Suppress but not to 0.
+                // (handled by leaving mult low and not adding)
+                
+                const mask = ring * outer;
+                mult = (1 - strength) + mask * strength * 1.2;
+                add  = mask * 0.15 * strength;
+                break;
+            }
+        }
+        
+        return Math.max(0, Math.min(1, h * mult + add));
     }
     
     /**
@@ -3576,12 +5062,20 @@ export class VoronoiGenerator {
     }
     
     /**
-     * Generate land probability map for biased distribution
+     * Generate land probability map for biased distribution.
+     *
+     * Builds a 32x32 grid that approximates the heightmap. Cells with
+     * higher probability get more sample points, so an archipelago preset
+     * actually places points in clusters (not uniformly across empty sea).
+     *
+     * Mirrors the same noise + world-mask pipeline used by generateHeightmap()
+     * so the bias matches what the user will eventually see.
      */
     _generateLandProbabilityMap(seed, heightmapOptions) {
         const {
             algorithm = 'continental',
             frequency = 3,
+            octaves = 6,
             seaLevel = 0.4,
             falloff = 'radial',
             falloffStrength = 0.7
@@ -3589,9 +5083,6 @@ export class VoronoiGenerator {
         
         Noise.init(seed);
         
-        const cx = this.width / 2;
-        const cy = this.height / 2;
-        const maxDist = Math.sqrt(cx * cx + cy * cy);
         const margin = 1;
         const w = this.width - margin * 2;
         const h = this.height - margin * 2;
@@ -3607,32 +5098,45 @@ export class VoronoiGenerator {
                 const nx = x / this.width;
                 const ny = y / this.height;
                 
+                // Get base noise value matching the heightmap algorithm
                 let noiseVal;
                 switch (algorithm) {
                     case 'continental':
-                        noiseVal = Noise.continental(nx, ny, { frequency, octaves: 6 });
+                        noiseVal = Noise.continental(nx, ny, { frequency, octaves });
                         break;
                     case 'ridged':
-                        noiseVal = Noise.ridged(nx, ny, { frequency, octaves: 6 }) * 0.5;
+                        noiseVal = Noise.ridged(nx, ny, { frequency, octaves }) * 0.5;
+                        break;
+                    case 'warped':
+                        noiseVal = Noise.warped(nx, ny, { frequency, octaves, warpStrength: 0.4 });
+                        break;
+                    case 'eroded':
+                        noiseVal = Noise.eroded(nx, ny, { frequency, octaves, erosionStrength: 0.5 });
+                        break;
+                    case 'multiwarp':
+                        noiseVal = Noise.multiWarp(nx, ny, { frequency, octaves, warpIterations: 3, warpStrength: 0.5 });
+                        break;
+                    case 'swiss':
+                        noiseVal = Noise.swiss(nx, ny, { frequency, octaves, warpStrength: 0.35 });
+                        break;
+                    case 'valleys':
+                        noiseVal = Noise.valleys(nx, ny, { frequency, octaves, sharpness: 1.5, depth: 0.7 });
+                        break;
+                    case 'terraced':
+                        noiseVal = Noise.terraced(nx, ny, { frequency, octaves, levels: 10, sharpness: 0.6 });
                         break;
                     default:
-                        noiseVal = Noise.fbm(nx, ny, { frequency, octaves: 6 });
+                        noiseVal = Noise.fbm(nx, ny, { frequency, octaves });
                 }
                 
-                if (falloff === 'radial') {
-                    const dx = x - cx;
-                    const dy = y - cy;
-                    const dist = Math.sqrt(dx * dx + dy * dy) / maxDist;
-                    noiseVal -= dist * falloffStrength * 2;
-                } else if (falloff === 'square') {
-                    const edgeDistX = Math.min(x - margin, margin + w - x) / (w / 2);
-                    const edgeDistY = Math.min(y - margin, margin + h - y) / (h / 2);
-                    const edgeDist = Math.min(edgeDistX, edgeDistY);
-                    noiseVal -= (1 - edgeDist) * falloffStrength;
-                }
+                // Mirror the heightmap pipeline: -1..1 -> 0..1, then apply world mask
+                let hVal = (noiseVal + 1) / 2;
+                hVal = this._applyWorldMask(hVal, x, y, falloff, falloffStrength);
                 
-                const threshold = (seaLevel - 0.5) * 2;
-                landProb[gy * gridSize + gx] = Math.max(0, Math.min(1, (noiseVal - threshold + 1) / 2));
+                // Probability of being land = how far above sea level this cell is
+                // Above seaLevel -> high prob, below -> low prob (with smooth transition)
+                const prob = this._smoothstep(seaLevel - 0.08, seaLevel + 0.08, hVal);
+                landProb[gy * gridSize + gx] = prob;
             }
         }
         

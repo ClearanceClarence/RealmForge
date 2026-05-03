@@ -106,8 +106,21 @@ render() {
             this._updateKingdomSVG();
         }
         
-        // 3. Coastline (SVG) - above kingdoms
-        this._updateCoastlineSVG();
+        // 3. Coastline (SVG) - above kingdoms (toggleable)
+        if (this.showCoastline) {
+            this._updateCoastlineSVG();
+            // Lake borders share the coastline SVG group so they zoom/pan
+            // together. Gated on the same flag so toggling coastline also
+            // toggles lake borders, matching the user's mental model that
+            // "all shorelines" are one thing.
+            this._updateLakeBordersSVG();
+        } else {
+            const coastSvg = document.getElementById('coastline-svg');
+            if (coastSvg) {
+                coastSvg.innerHTML = '';
+                coastSvg.style.opacity = '0';
+            }
+        }
         
         // 4. Roads (SVG)
         if (this.roads && this.roads.length > 0) {
@@ -326,10 +339,11 @@ _renderPoliticalCellsLowRes(ctx, bounds) {
     // Draw each kingdom
     for (const [kingdomId, cells] of kingdomBatches) {
         // Get color index - kingdomColors stores indices into POLITICAL_COLORS
+        const palette = this._kingdomPalette || POLITICAL_COLORS;
         const colorIndex = (this.kingdomColors && this.kingdomColors[kingdomId] >= 0) 
             ? this.kingdomColors[kingdomId] 
-            : kingdomId % POLITICAL_COLORS.length;
-        const color = POLITICAL_COLORS[colorIndex];
+            : kingdomId % palette.length;
+        const color = palette[colorIndex];
         
         ctx.fillStyle = color;
         ctx.beginPath();
@@ -579,16 +593,45 @@ _renderTerrainCells(ctx, bounds) {
 /**
  * Render lakes as filled cells
  */
+/**
+ * Compute the lake fill color: ocean color with a very slight cyan/lighter tint
+ * so lakes are distinguishable from ocean but clearly belong to the same family.
+ * Mode-aware: terrain mode uses OCEAN_COLORS gradient, political modes use POLITICAL_OCEAN.
+ *
+ * @returns {string} CSS hex color, fully opaque
+ */
+_lakeFillColor() {
+    // Tint helper: shift a hex color slightly lighter and toward cyan. This
+    // is the small visual difference between lakes and ocean — barely visible
+    // but enough to read as "freshwater" rather than "sea".
+    const tint = (hex) => {
+        // Parse #RRGGBB
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        // Tiny adjustments: +8 green, +12 blue, -4 red. Just enough to shift hue.
+        const tr = Math.max(0, Math.min(255, r - 4));
+        const tg = Math.max(0, Math.min(255, g + 8));
+        const tb = Math.max(0, Math.min(255, b + 12));
+        return `#${tr.toString(16).padStart(2,'0')}${tg.toString(16).padStart(2,'0')}${tb.toString(16).padStart(2,'0')}`;
+    };
+    
+    if (this.renderMode === 'political' || this.renderMode === 'political-terrain') {
+        return tint(POLITICAL_OCEAN);
+    }
+    // Terrain modes: use shallowest ocean color (matches what would appear at the coast)
+    return tint(OCEAN_COLORS[0]);
+},
+
 _renderSmoothLakes(ctx, bounds) {
     if (!this.lakes || this.lakes.length === 0) return;
     
-    // Use shallow ocean color to match ocean
-    const lakeColor = OCEAN_COLORS[0];  // Shallow ocean blue
+    const lakeColor = this._lakeFillColor();
     
     for (const lake of this.lakes) {
         if (!lake.cells || lake.cells.length === 0) continue;
         
-        // Draw all lake cells as filled polygons
+        // Draw all lake cells as filled polygons (solid, opaque)
         ctx.fillStyle = lakeColor;
         for (const cellIndex of lake.cells) {
             const cell = this.voronoi.cellPolygon(cellIndex);
@@ -638,9 +681,9 @@ _renderPoliticalBase(ctx, bounds) {
     }
     ctx.fill();
     
-    // 3. Draw lakes
+    // 3. Draw lakes (solid fill, ocean color with slight tint)
     if (this.lakeCells && this.lakeCells.size > 0) {
-        ctx.fillStyle = POLITICAL_OCEAN;
+        ctx.fillStyle = this._lakeFillColor();
         for (const cellIndex of this.lakeCells) {
             const cell = this.voronoi.cellPolygon(cellIndex);
             if (!cell || cell.length < 3) continue;
@@ -671,9 +714,9 @@ _renderPoliticalMap(ctx, bounds) {
         // Draw cached tiles for kingdom colors
         this.tileCache.render(ctx, this.viewport, bounds, 'political');
         
-        // Draw lakes on top (semi-dynamic)
+        // Draw lakes on top (semi-dynamic). Solid fill, ocean color + slight tint.
         if (this.lakeCells && this.lakeCells.size > 0) {
-            ctx.fillStyle = POLITICAL_OCEAN;
+            ctx.fillStyle = this._lakeFillColor();
             for (const cellIndex of this.lakeCells) {
                 const cell = this.voronoi.cellPolygon(cellIndex);
                 if (!cell || cell.length < 3) continue;
@@ -754,10 +797,11 @@ _renderPoliticalMap(ctx, bounds) {
     
     // 4. Draw each kingdom - batch all cells into single path per kingdom
     for (const [kingdomId, indices] of kingdomBatches) {
+        const palette = this._kingdomPalette || POLITICAL_COLORS;
         const colorIndex = (this.kingdomColors && this.kingdomColors[kingdomId] >= 0) 
             ? this.kingdomColors[kingdomId] 
-            : kingdomId % POLITICAL_COLORS.length;
-        const color = hasKingdoms ? POLITICAL_COLORS[colorIndex] : POLITICAL_COLORS[0];
+            : kingdomId % palette.length;
+        const color = hasKingdoms ? palette[colorIndex] : palette[0];
         
         ctx.fillStyle = color;
         ctx.strokeStyle = color;
@@ -780,9 +824,9 @@ _renderPoliticalMap(ctx, bounds) {
         ctx.stroke();
     }
     
-    // 5. Draw lakes on top
+    // 5. Draw lakes on top (solid fill, ocean color + slight tint)
     if (this.lakeCells && this.lakeCells.size > 0) {
-        ctx.fillStyle = POLITICAL_OCEAN;
+        ctx.fillStyle = this._lakeFillColor();
         for (const cellIndex of this.lakeCells) {
             const cell = this.voronoi.cellPolygon(cellIndex);
             if (!cell || cell.length < 3) continue;
@@ -800,17 +844,22 @@ _renderPoliticalMap(ctx, bounds) {
     // 6. Draw kingdom borders between neighboring cells of different kingdoms
     if (hasKingdoms) {
         const zoom = this.viewport.zoom;
-        ctx.strokeStyle = 'rgba(90, 74, 58, 0.5)';
-        ctx.lineWidth = Math.max(0.5, 1.2 / zoom);
+        ctx.strokeStyle = 'rgba(90, 74, 58, 0.6)';
+        ctx.lineWidth = Math.max(0.4, 0.6 / zoom);   // thinner than before
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
-        ctx.setLineDash([]);
+        // Dashed pattern matching the SVG render. Scale dash with zoom so the
+        // pattern reads consistently.
+        const dashUnit = Math.max(1, 2 / zoom);
+        ctx.setLineDash([dashUnit, dashUnit * 0.75]);
         
         ctx.beginPath();
         
         // For each pair of neighboring cells in different kingdoms
         for (let i = 0; i < this.cellCount; i++) {
             if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+            // Skip lake cells — they may have stale kingdom assignments
+            if (this.lakeCells && this.lakeCells.has(i)) continue;
             
             const myKingdom = this.kingdoms[i];
             if (myKingdom < 0) continue;
@@ -823,6 +872,7 @@ _renderPoliticalMap(ctx, bounds) {
             for (const j of neighbors) {
                 if (j < 0 || j >= this.cellCount) continue;
                 if (this.heights[j] < ELEVATION.SEA_LEVEL) continue;
+                if (this.lakeCells && this.lakeCells.has(j)) continue;
                 
                 const neighborKingdom = this.kingdoms[j];
                 if (neighborKingdom < 0 || neighborKingdom === myKingdom) continue;
@@ -857,6 +907,7 @@ _renderPoliticalMap(ctx, bounds) {
         }
         
         ctx.stroke();
+        ctx.setLineDash([]);  // reset for subsequent draws on this context
     }
     
     // Release clip
@@ -875,17 +926,19 @@ _renderKingdomBorders(ctx, bounds) {
     if (!this.kingdoms || this.kingdomCount <= 0) return;
     
     const zoom = this.viewport.zoom;
-    ctx.strokeStyle = 'rgba(90, 74, 58, 0.5)';
-    ctx.lineWidth = Math.max(0.5, 1.2 / zoom);
+    ctx.strokeStyle = 'rgba(90, 74, 58, 0.6)';
+    ctx.lineWidth = Math.max(0.4, 0.6 / zoom);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.setLineDash([]);
+    const dashUnit = Math.max(1, 2 / zoom);
+    ctx.setLineDash([dashUnit, dashUnit * 0.75]);
     
     ctx.beginPath();
     
     // For each pair of neighboring cells in different kingdoms
     for (let i = 0; i < this.cellCount; i++) {
         if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+        if (this.lakeCells && this.lakeCells.has(i)) continue;  // skip lakes
         
         const myKingdom = this.kingdoms[i];
         if (myKingdom < 0) continue;
@@ -905,6 +958,7 @@ _renderKingdomBorders(ctx, bounds) {
         for (const j of neighbors) {
             if (j < 0 || j >= this.cellCount) continue;
             if (this.heights[j] < ELEVATION.SEA_LEVEL) continue;
+            if (this.lakeCells && this.lakeCells.has(j)) continue;
             
             const neighborKingdom = this.kingdoms[j];
             if (neighborKingdom < 0 || neighborKingdom === myKingdom) continue;
@@ -939,6 +993,7 @@ _renderKingdomBorders(ctx, bounds) {
     }
     
     ctx.stroke();
+    ctx.setLineDash([]);
 },
 
 /**
@@ -1110,6 +1165,12 @@ _collectKingdomBorderEdges() {
     
     for (let i = 0; i < this.cellCount; i++) {
         if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+        // Skip lake cells: they may have stale kingdom assignments from
+        // before the lake was formed (e.g. user changed the lake slider
+        // after kingdoms were generated). Drawing a border edge between
+        // two lake-adjacent kingdom cells via the lake interior produces
+        // visible strokes inside the water.
+        if (this.lakeCells && this.lakeCells.has(i)) continue;
         
         const myKingdom = this.kingdoms[i];
         if (myKingdom < 0) continue;
@@ -1143,9 +1204,11 @@ _collectKingdomBorderEdges() {
             
             if (closestNeighbor < 0) continue;
             
-            // Check if this is a border with a different kingdom (not ocean)
+            // Check if this is a border with a different kingdom (not ocean, not lake)
             const neighborHeight = this.heights[closestNeighbor];
             if (neighborHeight < ELEVATION.SEA_LEVEL) continue; // Skip ocean borders
+            // Skip lake-bordering edges too — same rationale as above
+            if (this.lakeCells && this.lakeCells.has(closestNeighbor)) continue;
             
             const neighborKingdom = this.kingdoms[closestNeighbor];
             if (neighborKingdom < 0 || neighborKingdom === myKingdom) continue;
@@ -1312,9 +1375,12 @@ _buildSmoothCoastlineLoops() {
         }
     }
     
-    // Return loops without smoothing
+    // Coastline is now naturally jagged via cell-level coastal noise applied
+    // during heightmap generation (see _applyCoastalNoise in voronoi-generator.js).
+    // No render-time subdivision — what you see is what's actually in the cell graph.
     return loops;
 },
+
 /**
  * Draw smooth coastline stroke
  */
@@ -1348,13 +1414,14 @@ _identifyLandmasses() {
         if (visited[i]) continue;
         if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
         
-        // BFS to find all connected land cells
+        // BFS to find all connected land cells (head pointer, no .shift())
         const cells = [];
         const queue = [i];
+        let qHead = 0;
         visited[i] = 1;
         
-        while (queue.length > 0) {
-            const current = queue.shift();
+        while (qHead < queue.length) {
+            const current = queue[qHead++];
             cells.push(current);
             
             for (const neighbor of this.voronoi.neighbors(current)) {
@@ -2508,6 +2575,87 @@ _updateCoastlineSVG() {
 },
 
 /**
+ * Render thin border strokes around each lake, into the coastline SVG layer.
+ *
+ * Mirrors _updateCoastlineSVG but for lake-cell boundaries. Each edge between
+ * a lake cell and a non-lake neighbour gets a line drawn. The result is a
+ * crisp shoreline matching the coastline style.
+ *
+ * Gate this on `this.showCoastline` — when the user toggles coastline off,
+ * lake borders should also disappear.
+ *
+ * Designed to be called RIGHT AFTER _updateCoastlineSVG so both render into
+ * the same SVG group, sharing transform / zoom.
+ */
+_updateLakeBordersSVG() {
+    if (!this.lakeCells || this.lakeCells.size === 0) return;
+    
+    const svg = document.getElementById('coastline-svg');
+    if (!svg) return;
+    
+    // Find the existing transform group inside the SVG (created by
+    // _updateCoastlineSVG). If the user has coastline disabled, the group
+    // won't exist; we'd need to create our own. But we gate this whole
+    // function on `this.showCoastline` from the caller, so by the time we
+    // get here the group is guaranteed to exist.
+    const g = svg.querySelector('g');
+    if (!g) return;
+    
+    // Same style as coastline so they read as a unified shoreline language
+    const strokeColor = '#A89880';
+    const strokeWidth = 1;
+    
+    // Walk every lake cell, emit segments where neighbour is not also a lake cell.
+    // Build a single SVG <path> with all border segments — much faster than
+    // creating one path element per edge.
+    let d = '';
+    
+    for (const cellIdx of this.lakeCells) {
+        const cell = this.voronoi.cellPolygon(cellIdx);
+        if (!cell || cell.length < 3) continue;
+        
+        const neighbors = Array.from(this.voronoi.neighbors(cellIdx));
+        
+        for (let e = 0; e < cell.length - 1; e++) {
+            const v1 = cell[e];
+            const v2 = cell[e + 1];
+            const midX = (v1[0] + v2[0]) / 2;
+            const midY = (v1[1] + v2[1]) / 2;
+            
+            // Find which neighbour cell this edge faces (cheapest: nearest centroid)
+            let nearestN = -1;
+            let nearestD = Infinity;
+            for (const n of neighbors) {
+                const nx = this.points[n * 2];
+                const ny = this.points[n * 2 + 1];
+                const d2 = (nx - midX) ** 2 + (ny - midY) ** 2;
+                if (d2 < nearestD) {
+                    nearestD = d2;
+                    nearestN = n;
+                }
+            }
+            
+            // If neighbour exists AND is also a lake cell, this is interior — skip
+            if (nearestN >= 0 && this.lakeCells.has(nearestN)) continue;
+            
+            d += `M ${v1[0]} ${v1[1]} L ${v2[0]} ${v2[1]} `;
+        }
+    }
+    
+    if (d.length === 0) return;
+    
+    const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    pathEl.setAttribute('d', d);
+    pathEl.setAttribute('fill', 'none');
+    pathEl.setAttribute('stroke', strokeColor);
+    pathEl.setAttribute('stroke-width', strokeWidth);
+    pathEl.setAttribute('stroke-linejoin', 'round');
+    pathEl.setAttribute('stroke-linecap', 'round');
+    
+    g.appendChild(pathEl);
+},
+
+/**
  * Simplify path using Douglas-Peucker algorithm
  */
 _simplifyPath(points, tolerance) {
@@ -3136,18 +3284,17 @@ _findConnectedComponents(cells) {
     for (const startCell of cells) {
         if (visited.has(startCell)) continue;
         
-        // BFS to find connected component
+        // BFS to find connected component (head pointer, no .shift())
         const component = [];
         const queue = [startCell];
+        let qHead = 0;
         visited.add(startCell);
         
-        while (queue.length > 0) {
-            const cell = queue.shift();
+        while (qHead < queue.length) {
+            const cell = queue[qHead++];
             component.push(cell);
             
-            // Check neighbors
-            const neighbors = Array.from(this.voronoi.neighbors(cell));
-            for (const neighbor of neighbors) {
+            for (const neighbor of this.voronoi.neighbors(cell)) {
                 if (cellSet.has(neighbor) && !visited.has(neighbor)) {
                     visited.add(neighbor);
                     queue.push(neighbor);
@@ -3658,16 +3805,22 @@ _renderKingdomBorders(ctx, bounds) {
     if (!this.kingdoms || !this.heights) return;
     
     const zoom = this.viewport.zoom;
-    const borderWidth = Math.max(0.25, 1 / zoom);
+    const borderWidth = Math.max(0.2, 0.5 / zoom);   // thinner than before
     
     // Build smooth coastline for clipping
     if (!this._coastlineCache) { this._coastlineCache = this._buildSmoothCoastlineLoops(); } const coastLoops = this._coastlineCache;
     
-    // Collect border edges between different kingdoms (not coastlines)
+    // Collect border edges between different kingdoms (not coastlines, not lakes)
     const borderEdges = [];
     
     for (let i = 0; i < this.cellCount; i++) {
         if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+        // Skip lake cells: they may carry stale kingdom assignments from
+        // before lakes were formed (e.g. the user changed the lake slider
+        // after kingdoms were generated). Drawing border edges through
+        // lake cells creates the visible inter-lake strokes you'd otherwise
+        // see crossing the water.
+        if (this.lakeCells && this.lakeCells.has(i)) continue;
         
         const myKingdom = this.kingdoms[i];
         if (myKingdom < 0) continue;
@@ -3697,10 +3850,11 @@ _renderKingdomBorders(ctx, bounds) {
             }
             
             const neighborIsOcean = edgeNeighbor < 0 || this.heights[edgeNeighbor] < ELEVATION.SEA_LEVEL;
+            const neighborIsLake = edgeNeighbor >= 0 && this.lakeCells && this.lakeCells.has(edgeNeighbor);
             const neighborKingdom = edgeNeighbor >= 0 ? this.kingdoms[edgeNeighbor] : -1;
             
-            // Only collect border if different kingdom AND not coastline
-            if (!neighborIsOcean && neighborKingdom !== myKingdom && neighborKingdom >= 0) {
+            // Only collect border if different kingdom AND not coastline AND not lakeshore
+            if (!neighborIsOcean && !neighborIsLake && neighborKingdom !== myKingdom && neighborKingdom >= 0) {
                 // Create sorted key to avoid duplicates
                 const k1 = Math.min(myKingdom, neighborKingdom);
                 const k2 = Math.max(myKingdom, neighborKingdom);
@@ -3733,20 +3887,17 @@ _renderKingdomBorders(ctx, bounds) {
         ctx.clip();
     }
     
-    // Draw smoothed borders
+    // Draw smoothed borders — dashed atlas-style
     ctx.strokeStyle = 'rgba(101, 85, 60, 0.7)';
     ctx.lineWidth = borderWidth;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     
-    // Set dash pattern if enabled
-    if (this.dashedBorders) {
-        const dashLength = Math.max(4, 8 / zoom);
-        const gapLength = Math.max(3, 6 / zoom);
-        ctx.setLineDash([dashLength, gapLength]);
-    } else {
-        ctx.setLineDash([]);
-    }
+    // Always dashed (atlas-map style). Dash scales with zoom so the visual
+    // density stays consistent. Kept tight to read as "small dashes".
+    const dashLength = Math.max(2, 3 / zoom);
+    const gapLength = Math.max(1.5, 2.2 / zoom);
+    ctx.setLineDash([dashLength, gapLength]);
     
     for (const path of smoothedPaths) {
         if (path.length < 2) continue;
@@ -4590,10 +4741,11 @@ _updateKingdomSVG() {
         if (boundaries.length === 0) continue;
         
         // Get kingdom color
+        const palette = this._kingdomPalette || POLITICAL_COLORS;
         const colorIndex = (this.kingdomColors && this.kingdomColors[k] >= 0) 
             ? this.kingdomColors[k] 
-            : k % POLITICAL_COLORS.length;
-        const color = POLITICAL_COLORS[colorIndex];
+            : k % palette.length;
+        const color = palette[colorIndex];
         
         // Draw each boundary loop as a filled path (no stroke)
         for (const boundary of boundaries) {
@@ -4616,7 +4768,42 @@ _updateKingdomSVG() {
     
     // 2. Second pass: Draw border lines between different kingdoms
     const borderEdges = this._collectKingdomBorderEdges();
-    const strokeWidth = 1.2; // Fixed width in world coordinates - scales with transform
+    // Dashed thin border style (atlas-map look). Width is in world coords so
+    // it scales with zoom; dasharray same. Roughly: dash = 2 world units,
+    // gap = 1.5 — short dotted-dashed. Tuning these tighter would feel busy;
+    // looser would lose the dashed read at typical zooms.
+    const strokeWidth = 0.6;
+    const dashArray = '2,1.5';
+    
+    // 1.5: Paint lakes at full opacity, OVER the translucent kingdom fills.
+    // This is what makes lakes look "solid" — without this step, the
+    // semi-transparent kingdom layer above the canvas-painted lake cells
+    // bleeds the kingdom color through (50% alpha on top of lake color).
+    // Drawing lakes here, in the kingdom SVG layer above the kingdom fills,
+    // gives them full visual priority. They still get clipped to land by
+    // the coast-clip path on the parent group, which is correct (lakes
+    // are inside land).
+    if (this.lakeCells && this.lakeCells.size > 0) {
+        const lakeColor = this._lakeFillColor();
+        let lakeD = '';
+        for (const cellIdx of this.lakeCells) {
+            const cell = this.voronoi.cellPolygon(cellIdx);
+            if (!cell || cell.length < 3) continue;
+            lakeD += `M ${cell[0][0]} ${cell[0][1]} `;
+            for (let j = 1; j < cell.length; j++) {
+                lakeD += `L ${cell[j][0]} ${cell[j][1]} `;
+            }
+            lakeD += 'Z ';
+        }
+        if (lakeD) {
+            const lakePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            lakePath.setAttribute('d', lakeD);
+            lakePath.setAttribute('fill', lakeColor);
+            lakePath.setAttribute('stroke', 'none');
+            lakePath.setAttribute('fill-rule', 'nonzero');
+            g.appendChild(lakePath);
+        }
+    }
     
     if (borderEdges.length > 0) {
         // Chain edges into continuous paths
@@ -4640,6 +4827,7 @@ _updateKingdomSVG() {
             pathEl.setAttribute('stroke-width', strokeWidth);
             pathEl.setAttribute('stroke-linecap', 'round');
             pathEl.setAttribute('stroke-linejoin', 'round');
+            pathEl.setAttribute('stroke-dasharray', dashArray);
             pathEl.setAttribute('class', 'kingdom-border');
             g.appendChild(pathEl);
         }

@@ -468,10 +468,11 @@ export class TileCache {
         ctx.lineWidth = 0.5;
         
         for (const [kingdomId, indices] of kingdomBatches) {
+            const palette = gen._kingdomPalette || POLITICAL_COLORS;
             const colorIndex = (gen.kingdomColors && gen.kingdomColors[kingdomId] >= 0)
                 ? gen.kingdomColors[kingdomId]
-                : kingdomId % POLITICAL_COLORS.length;
-            const color = hasKingdoms ? POLITICAL_COLORS[colorIndex] : POLITICAL_COLORS[0];
+                : kingdomId % palette.length;
+            const color = hasKingdoms ? palette[colorIndex] : palette[0];
             
             ctx.fillStyle = color;
             ctx.strokeStyle = color;
