@@ -3,7 +3,7 @@
  * UI controller and event handling
  */
 
-import { VoronoiGenerator } from './voronoi-generator.js?v=222';
+import { VoronoiGenerator } from './voronoi-generator.js';
 import { WorkerBridge } from './worker-bridge.js';
 
 // Worker bridge for background generation
@@ -136,15 +136,11 @@ const generateKingdomsBtn = document.getElementById('generate-kingdoms-btn');
 const renderMode = document.getElementById('render-mode');
 const subdivisionSlider = document.getElementById('subdivision');
 const subdivisionValue = document.getElementById('subdivision-value');
-const showWindroseToggle = document.getElementById('show-windrose');
 const showEdgesToggle = document.getElementById('show-edges');
 const showCoastlineToggle = document.getElementById('show-coastline');
 const showCentersToggle = document.getElementById('show-centers');
 const showDelaunayToggle = document.getElementById('show-delaunay');
 const showGridToggle = document.getElementById('show-grid');
-const showScaleToggle = document.getElementById('show-scale');
-const worldSizeSlider = document.getElementById('world-size-km');
-const worldSizeValue = document.getElementById('world-size-km-val');
 
 // DOM Elements - Viewport
 const zoomInBtn = document.getElementById('zoom-in');
@@ -715,12 +711,6 @@ subdivisionSlider.addEventListener('change', (e) => {
     updateRenderStats();
 });
 
-showWindroseToggle.addEventListener('change', (e) => {
-    generator.showWindrose = e.target.checked;
-    generator.render();
-    updateRenderStats();
-});
-
 showEdgesToggle.addEventListener('change', (e) => {
     generator.showEdges = e.target.checked;
     generator.render();
@@ -753,19 +743,6 @@ showRiversToggle.addEventListener('change', (e) => {
 
 showGridToggle.addEventListener('change', (e) => {
     generator.showGrid = e.target.checked;
-    generator.render();
-    updateRenderStats();
-});
-
-showScaleToggle.addEventListener('change', (e) => {
-    generator.showScale = e.target.checked;
-    generator.render();
-    updateRenderStats();
-});
-
-worldSizeSlider.addEventListener('input', (e) => {
-    worldSizeValue.textContent = e.target.value;
-    generator.worldSizeKm = parseInt(e.target.value);
     generator.render();
     updateRenderStats();
 });
@@ -1375,8 +1352,6 @@ generator.showCenters = showCentersToggle.checked;
 generator.showDelaunay = showDelaunayToggle.checked;
 generator.showRivers = showRiversToggle.checked;
 generator.showGrid = showGridToggle.checked;
-generator.showScale = showScaleToggle.checked;
-generator.worldSizeKm = parseInt(worldSizeSlider.value);
 generator.renderMode = renderMode.value;
 generator.subdivisionLevel = 0;
 generator.coastJaggedness = parseFloat(coastJaggedness.value);

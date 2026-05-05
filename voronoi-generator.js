@@ -60,7 +60,10 @@ export class VoronoiGenerator {
             x: 0,           // Pan offset X
             y: 0,           // Pan offset Y
             zoom: 1,        // Zoom level (1 = 100%)
-            minZoom: 0.5,
+            minZoom: 1,     // Cannot zoom out beyond original fit-to-screen size.
+                            // Showing the parchment background outside the map
+                            // looks broken; keeping the floor at 1 means the
+                            // map always fills the canvas at its smallest.
             maxZoom: 20,
             targetZoom: 1,  // For smooth zoom animation
         };
@@ -74,7 +77,6 @@ export class VoronoiGenerator {
         this.showEdges = true;
         this.showCenters = false;
         this.showDelaunay = false;
-        this.showWindrose = false;  // Show compass/wind rose on map
         this.showRivers = true;  // Show rivers on terrain
         this.showCoastline = true;  // Show coastline stroke on political map
         this.showGrid = true;    // Show coordinate grid
@@ -90,8 +92,6 @@ export class VoronoiGenerator {
         // lakeMinDepth: 0 = many small shallow lakes; 1 = few large deep lakes
         this.lakeDensity  = 0.5;
         this.lakeMinDepth = 0.3;
-        this.showScale = true;   // Show scale bar
-        this.worldSizeKm = 1000; // World size in kilometers (map width)
         this.renderMode = 'political'; // 'heightmap', 'terrain', 'precipitation', 'political'
         this.seaLevel = 0.4;
         this.subdivisionLevel = 2;  // 0 = no subdivision, 1-4 = subdivision levels
@@ -142,6 +142,17 @@ export class VoronoiGenerator {
         // Animation frame tracking
         this._animationFrameId = null;
         
+        // ─── Wheel coalescing state ───
+        // Trackpads and high-DPI mice fire wheel events at 60-120 Hz, and
+        // each event triggers viewport math + clamping + render scheduling.
+        // We coalesce all wheel events within a single animation frame into
+        // one viewport update, applied via rAF. This keeps zoom feeling
+        // instantaneous without doing redundant work between frames.
+        this._wheelAccum = 0;
+        this._wheelMouseX = 0;
+        this._wheelMouseY = 0;
+        this._wheelRafId = null;
+        
         // Bind event handlers
         this._onWheel = this._onWheel.bind(this);
         this._onMouseDown = this._onMouseDown.bind(this);
@@ -184,40 +195,79 @@ export class VoronoiGenerator {
         this.canvas.removeEventListener('touchstart', this._onTouchStart);
         this.canvas.removeEventListener('touchmove', this._onTouchMove);
         this.canvas.removeEventListener('touchend', this._onTouchEnd);
+        if (this._wheelRafId !== null) {
+            cancelAnimationFrame(this._wheelRafId);
+            this._wheelRafId = null;
+        }
     }
     
     /**
-     * Mouse wheel zoom handler
+     * Mouse wheel zoom handler.
+     *
+     * Wheel events come in fast (often 60-120 Hz on trackpads). Doing the
+     * full viewport recalc + render-schedule on every event wastes work
+     * because all the intermediate viewports are thrown away within a
+     * single frame anyway. So this handler just *accumulates* the wheel
+     * delta and schedules a single rAF that applies the net change. If
+     * more wheel events arrive before the frame fires, they keep adding
+     * to the accumulator and the same rAF resolves them all together.
      */
     _onWheel(e) {
         e.preventDefault();
         
         const rect = this.canvas.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
+        // Always use the LATEST mouse position — that's where the user is
+        // looking, and zoom-toward-cursor should follow the cursor's
+        // current spot rather than where it was several events ago.
+        this._wheelMouseX = e.clientX - rect.left;
+        this._wheelMouseY = e.clientY - rect.top;
+        // Sum deltas so multiple wheel ticks in the same frame compound
+        // (one full notch at 100 deltaY behaves the same whether it
+        // arrived as one event or four, modulo direction).
+        this._wheelAccum += e.deltaY;
         
-        // Calculate zoom
-        const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-        const newZoom = Math.max(this.viewport.minZoom, 
-                        Math.min(this.viewport.maxZoom, 
+        if (this._wheelRafId !== null) return;  // already pending
+        this._wheelRafId = requestAnimationFrame(() => {
+            this._wheelRafId = null;
+            this._applyWheelZoom();
+        });
+    }
+    
+    /**
+     * Apply the accumulated wheel delta as a single viewport change.
+     * Called from rAF, so it runs at most once per frame regardless of
+     * how many wheel events fired.
+     */
+    _applyWheelZoom() {
+        const accum = this._wheelAccum;
+        if (accum === 0) return;
+        this._wheelAccum = 0;
+        
+        // Convert accumulated delta to a multiplicative zoom factor.
+        // Each notch of ~100 deltaY produces roughly 0.9× / 1.1×, so
+        // for an arbitrary accumulator we use exp() to compose them
+        // smoothly. step ≈ 100/log(1.1) gives same feel as before.
+        const step = 0.001;
+        const zoomFactor = Math.exp(-accum * step);
+        const newZoom = Math.max(this.viewport.minZoom,
+                        Math.min(this.viewport.maxZoom,
                         this.viewport.zoom * zoomFactor));
         
-        if (newZoom !== this.viewport.zoom) {
-            // Mark as interacting for fast CSS transform
-            this._isInteracting = true;
-            
-            // Zoom toward mouse position
-            const worldX = (mouseX - this.viewport.x) / this.viewport.zoom;
-            const worldY = (mouseY - this.viewport.y) / this.viewport.zoom;
-            
-            this.viewport.zoom = newZoom;
-            
-            this.viewport.x = mouseX - worldX * newZoom;
-            this.viewport.y = mouseY - worldY * newZoom;
-            
-            this._debouncedRender();
-            this._onZoomChange();
-        }
+        if (newZoom === this.viewport.zoom) return;
+        
+        this._isInteracting = true;
+        
+        // Zoom toward last-recorded cursor position
+        const worldX = (this._wheelMouseX - this.viewport.x) / this.viewport.zoom;
+        const worldY = (this._wheelMouseY - this.viewport.y) / this.viewport.zoom;
+        
+        this.viewport.zoom = newZoom;
+        this.viewport.x = this._wheelMouseX - worldX * newZoom;
+        this.viewport.y = this._wheelMouseY - worldY * newZoom;
+        this._clampPan();
+        
+        this._debouncedRender();
+        this._onZoomChange();
     }
     
     /**
@@ -246,8 +296,32 @@ export class VoronoiGenerator {
         
         this.viewport.x = this.lastPan.x + dx;
         this.viewport.y = this.lastPan.y + dy;
+        this._clampPan();
         
         this._debouncedRender();
+    }
+    
+    /**
+     * Clamp viewport pan so the canvas can never be dragged past the map's
+     * edges (which would expose the parchment background outside the map).
+     * At zoom=1 the map exactly fills the canvas, so pan is locked at (0,0).
+     * At higher zoom the user can pan within the bounds of the magnified map.
+     */
+    _clampPan() {
+        const z = this.viewport.zoom;
+        // Minimum pan x: when the right edge of the map is flush with the
+        // right edge of the canvas. minPanX = canvasWidth - mapPixelWidth.
+        // = this.width - this.width * z = this.width * (1 - z)
+        const minPanX = this.width  * (1 - z);
+        const minPanY = this.height * (1 - z);
+        // Maximum pan: when the left/top edge of the map is flush with the
+        // left/top edge of the canvas. = 0.
+        const maxPanX = 0;
+        const maxPanY = 0;
+        if (this.viewport.x < minPanX) this.viewport.x = minPanX;
+        if (this.viewport.x > maxPanX) this.viewport.x = maxPanX;
+        if (this.viewport.y < minPanY) this.viewport.y = minPanY;
+        if (this.viewport.y > maxPanY) this.viewport.y = maxPanY;
     }
     
     /**
@@ -292,6 +366,7 @@ export class VoronoiGenerator {
             
             this.viewport.x = this.lastPan.x + dx;
             this.viewport.y = this.lastPan.y + dy;
+            this._clampPan();
             
             this._debouncedRender();
         }
@@ -327,11 +402,15 @@ export class VoronoiGenerator {
                 this.renderLowRes();
             });
             
-            // Schedule full render after interaction stops
+            // Schedule full render after interaction stops. 80ms is short
+            // enough that the high-quality version snaps in almost as soon
+            // as the user finishes scrolling, but long enough that we don't
+            // do an expensive full render mid-scroll if the user pauses
+            // briefly between wheel ticks.
             this._fullRenderTimer = setTimeout(() => {
                 this._isInteracting = false;
                 this.render();
-            }, 150);
+            }, 80);
         } else {
             // Normal render via requestAnimationFrame
             this._renderDebounceTimer = requestAnimationFrame(() => {
@@ -375,6 +454,7 @@ export class VoronoiGenerator {
         
         this.viewport.x = centerX - worldX * newZoom;
         this.viewport.y = centerY - worldY * newZoom;
+        this._clampPan();
         
         this.render();
         this._onZoomChange();
@@ -440,8 +520,72 @@ export class VoronoiGenerator {
      */
     resize() {
         const rect = this.canvas.parentElement.getBoundingClientRect();
-        this.width = rect.width;
-        this.height = rect.height;
+        const newW = rect.width;
+        const newH = rect.height;
+        
+        // Scale all stored world-space coordinates from the old canvas
+        // dimensions to the new ones. Without this, points generated for
+        // a 1200×900 canvas remain at their original positions when the
+        // canvas grows to 1500×900 — so the map sits in a sub-rectangle
+        // of the new canvas, leaving a band of "unmapped" land between
+        // the original world bounds and the new canvas edges.
+        //
+        // We scale: the points array (which everything cell-indexed is
+        // implicitly tied to), and any structures that store explicit
+        // {x, y} coordinates derived at generation time (road paths,
+        // sea-route paths, kingdom centroids).
+        //
+        // Cell indices themselves are stable across resize because we
+        // don't reorder the points array — only its coordinates change.
+        const oldW = this.width || newW;
+        const oldH = this.height || newH;
+        const sx = oldW > 0 ? newW / oldW : 1;
+        const sy = oldH > 0 ? newH / oldH : 1;
+        const dimsChanged = (sx !== 1 || sy !== 1) && this.points && this.points.length > 0;
+        
+        if (dimsChanged) {
+            // Scale Voronoi seed points
+            for (let i = 0; i < this.points.length; i += 2) {
+                this.points[i]     *= sx;
+                this.points[i + 1] *= sy;
+            }
+            // Scale road path coordinates (cell indices are unchanged)
+            if (this.roads && this.roads.length) {
+                for (const road of this.roads) {
+                    if (!road.path) continue;
+                    for (const p of road.path) {
+                        if (p && typeof p.x === 'number') p.x *= sx;
+                        if (p && typeof p.y === 'number') p.y *= sy;
+                    }
+                }
+            }
+            // Scale sea-route path coordinates
+            if (this.seaRoutes && this.seaRoutes.length) {
+                for (const route of this.seaRoutes) {
+                    if (!route.path) continue;
+                    for (const p of route.path) {
+                        if (p && typeof p.x === 'number') p.x *= sx;
+                        if (p && typeof p.y === 'number') p.y *= sy;
+                    }
+                }
+            }
+            // Scale kingdom label centroids
+            if (this.kingdomCentroids && this.kingdomCentroids.length) {
+                for (const c of this.kingdomCentroids) {
+                    if (c && typeof c.x === 'number') c.x *= sx;
+                    if (c && typeof c.y === 'number') c.y *= sy;
+                }
+            }
+            // Render caches that store screen-space data are now stale
+            this._coastlineCache = null;
+            this._contourCache = null;
+            this._borderEdgesCache = null;
+            this._borderPathsCache = null;
+            this._kingdomBoundaryCache = null;
+        }
+        
+        this.width  = newW;
+        this.height = newH;
         
         this.canvas.width = this.width * this.dpr;
         this.canvas.height = this.height * this.dpr;
@@ -457,7 +601,7 @@ export class VoronoiGenerator {
             });
         }
         
-        // Regenerate if we have points
+        // Regenerate Voronoi diagram with new bbox (and any scaled points)
         if (this.points && this.cellCount > 0) {
             this.updateDiagram();
             this.render();
@@ -503,8 +647,11 @@ export class VoronoiGenerator {
         const w = this.width - margin * 2;
         const h = this.height - margin * 2;
         
-        // Generate land probability map for biased distribution
-        const landProb = heightmapOptions ? this._generateLandProbabilityMap(seed, heightmapOptions) : null;
+        // Density biasing is disabled — pass null so biased generators
+        // fall through to their uniform versions. Main-thread generation
+        // is the fallback path; the worker is the primary code path and
+        // already uses uniform distribution.
+        const landProb = null;
         
         switch (distribution) {
             case 'random':
@@ -2592,11 +2739,45 @@ export class VoronoiGenerator {
             }
         }
         
+        // Classify what kind of settlement this cell would host based on its
+        // geography. Subtypes drive icon rendering. Priority order: port >
+        // lakeside > mountain > highland > river > plains. Only one subtype
+        // is assigned per settlement — the highest-priority match wins.
+        // Rationale: a city right on the ocean coast IS a port even if it
+        // also has a river — the sea is the dominant visual feature.
+        // Mountain cities take precedence over river cities because being
+        // at altitude is a more visually striking trait.
+        const classifySettlement = (cellIdx) => {
+            const elev = this.heights[cellIdx];
+            // Sea-port: borders ocean (not lake) on at least one side
+            if (coastalCells.has(cellIdx)) {
+                let oceanNeighbors = 0;
+                for (const n of this.getNeighbors(cellIdx)) {
+                    if (this.heights[n] < ELEVATION.SEA_LEVEL && !(this.lakeCells && this.lakeCells.has(n))) {
+                        oceanNeighbors++;
+                    }
+                }
+                return oceanNeighbors >= 1 ? 'port' : 'coastal';
+            }
+            if (lakeShoreCells.has(cellIdx)) return 'lakeside';
+            if (elev > 1200) return 'mountain';
+            if (elev > 600) return 'highland';
+            if (riverCells.has(cellIdx) || nearRiverCells.has(cellIdx)) return 'river';
+            return 'plains';
+        };
+        
+        // Parallel array to this.capitols holding the geographic subtype of
+        // each kingdom's capital (port / lakeside / mountain / etc.).
+        this.capitolSubtypes = new Array(this.kingdomCount).fill('plains');
+        
         for (let k = 0; k < this.kingdomCount; k++) {
             const cells = this.kingdomCells[k];
             if (!cells || cells.length === 0) continue;
             
             const capitolCell = this.capitols[k];
+            if (capitolCell >= 0) {
+                this.capitolSubtypes[k] = classifySettlement(capitolCell);
+            }
             
             // Calculate number of cities based on kingdom size and road density.
             // Old cap of 20 cities per kingdom made high-cell-count maps look
@@ -2755,6 +2936,7 @@ export class VoronoiGenerator {
                         cell: candidate.cell,
                         kingdom: k,
                         type: 'city',
+                        subtype: classifySettlement(candidate.cell),
                         isCoastal: isCoastal,
                         elevation: elevation
                     });
@@ -2848,6 +3030,7 @@ export class VoronoiGenerator {
                     cell: c.cell,
                     kingdom: k,
                     type: 'city',
+                    subtype: 'mountain',
                     isCoastal: false,
                     elevation: this.heights[c.cell],
                     isMountain: true   // flagged so road validation knows
@@ -3005,33 +3188,22 @@ export class VoronoiGenerator {
      */
     _generateRoads() {
         this.roads = [];
+        if (!this.capitols || this.kingdomCount === 0) return;
         
-        // Track cells that have roads to avoid overlaps and a separate set of
-        // cells that are 1-2 hops from an existing road. New paths get a
-        // bonus for being on OR near existing roads, which strongly encourages
-        // them to merge instead of running parallel.
-        const roadCells = new Set();
-        const nearRoadCells = new Set();
-        
-        // Pre-build river cell sets once (expensive to do per-pathfind)
+        // Pre-build river cell sets once
         const riverCells = new Set();
         const nearRiverCells = new Set();
-        
         if (this.rivers) {
             for (const river of this.rivers) {
                 if (river.path) {
                     for (const point of river.path) {
                         const cellIdx = point.cell !== undefined ? point.cell : point;
-                        if (cellIdx >= 0) {
-                            riverCells.add(cellIdx);
-                        }
+                        if (cellIdx >= 0) riverCells.add(cellIdx);
                     }
                 }
             }
-            // Build near-river set after all river cells are known
             for (const cellIdx of riverCells) {
-                const neighbors = this.getNeighbors(cellIdx);
-                for (const n of neighbors) {
+                for (const n of this.getNeighbors(cellIdx)) {
                     if (!riverCells.has(n) && this.heights[n] >= ELEVATION.SEA_LEVEL) {
                         nearRiverCells.add(n);
                     }
@@ -3039,118 +3211,509 @@ export class VoronoiGenerator {
             }
         }
         
-        // PHASE 1: Internal kingdom roads (capitol to cities)
+        const roadCells = new Set();      // shared accumulator — every new path gets a strong bonus for re-using cells already in here
+        const nearRoadCells = new Set();  // cells within 1 hop of any road; used by A* for the near-road merge bonus
+        
+        // ─── PHASE 1: Continent detection ───
+        // Two capitals are on the "same continent" iff a land-only path
+        // connects their cells through Voronoi neighbours. We do a flood
+        // fill from each capital that hasn't been visited yet, marking
+        // its connected component. This decides how many trade-route
+        // backbones we'll build.
+        const capitolList = [];
+        for (let k = 0; k < this.kingdomCount; k++) {
+            if (this.capitols[k] >= 0) capitolList.push({ kingdom: k, cell: this.capitols[k] });
+        }
+        if (capitolList.length === 0) return;
+        
+        const continentOfCell = new Map();   // landCellIdx → continentId
+        const isLand = (cellIdx) => {
+            if (this.heights[cellIdx] < ELEVATION.SEA_LEVEL) return false;
+            if (this.lakeCells && this.lakeCells.has(cellIdx)) return false;
+            return true;
+        };
+        let nextContId = 0;
+        const floodContinent = (startCell) => {
+            const contId = nextContId++;
+            const queue = [startCell];
+            continentOfCell.set(startCell, contId);
+            let head = 0;
+            while (head < queue.length) {
+                const c = queue[head++];
+                for (const n of this.voronoi.neighbors(c)) {
+                    if (continentOfCell.has(n)) continue;
+                    if (!isLand(n)) continue;
+                    continentOfCell.set(n, contId);
+                    queue.push(n);
+                }
+            }
+            return contId;
+        };
+        
+        // Group capitals by continent. Each capital triggers a flood iff
+        // its continent hasn't been mapped yet.
+        const continentCapitols = new Map();   // continentId → [{kingdom, cell}, ...]
+        for (const cap of capitolList) {
+            let contId = continentOfCell.get(cap.cell);
+            if (contId === undefined) contId = floodContinent(cap.cell);
+            if (!continentCapitols.has(contId)) continentCapitols.set(contId, []);
+            continentCapitols.get(contId).push(cap);
+        }
+        
+        // ─── PHASE 2: Trade-route backbone per continent ───
+        // For each continent with 2+ capitals, build a minimum spanning
+        // tree over the capitals using EUCLIDEAN distance as the edge
+        // weight, then run A* only for the (N-1) MST edges that get
+        // selected. Capital pairs that are close as the crow flies are
+        // nearly always close by road, so Euclidean is a fine MST metric.
+        // This avoids running N×(N-1)/2 expensive A* paths just to
+        // populate the edge table — for 20 capitals it's 19 A* runs
+        // instead of 190 (10× fewer pathfinding calls).
+        for (const [contId, caps] of continentCapitols) {
+            if (caps.length < 2) continue;
+            
+            const edges = [];
+            for (let i = 0; i < caps.length; i++) {
+                const ax = this.points[caps[i].cell * 2];
+                const ay = this.points[caps[i].cell * 2 + 1];
+                for (let j = i + 1; j < caps.length; j++) {
+                    const bx = this.points[caps[j].cell * 2];
+                    const by = this.points[caps[j].cell * 2 + 1];
+                    edges.push({ i, j, length: Math.sqrt((ax - bx) ** 2 + (ay - by) ** 2) });
+                }
+            }
+            edges.sort((a, b) => a.length - b.length);
+            
+            const parent = caps.map((_, i) => i);
+            const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+            const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) { parent[ra] = rb; return true; } return false; };
+            
+            const mstEdges = [];
+            for (const e of edges) {
+                if (union(e.i, e.j)) {
+                    mstEdges.push(e);
+                    if (mstEdges.length === caps.length - 1) break;
+                }
+            }
+            
+            // Lay down the MST roads. Each one re-pathfinds with up-to-date
+            // roadCells so it merges with the trade routes built earlier
+            // via the road-bonus in _findRoadPath.
+            const tradeRoadEntries = [];
+            for (const e of mstEdges) {
+                const path = this._findRoadPath(
+                    caps[e.i].cell, caps[e.j].cell,
+                    roadCells, riverCells, nearRiverCells, nearRoadCells
+                );
+                if (!path || path.length < 2) continue;
+                const roadObj = {
+                    path,
+                    kingdom: -1,
+                    type: 'trade',
+                    continent: contId,
+                    _startCell: caps[e.i].cell,
+                    _endCell: caps[e.j].cell,
+                };
+                this.roads.push(roadObj);
+                tradeRoadEntries.push(roadObj);
+                this._markRoadCells(path, roadCells, nearRoadCells);
+            }
+            
+            // Relaxation pass: each trade route was built when only
+            // EARLIER MST edges were in roadCells. Re-run A* now that
+            // every trade route on this continent is laid down — the
+            // first-built routes can now benefit from seeing the
+            // last-built ones (and vice versa), pulling them onto a
+            // shared trunk where geometry makes that cheaper.
+            //
+            // Without this, MST edge #1 built a path through open
+            // country, then MST edge #2 built a parallel path slightly
+            // offset (because edge #1 wasn't yet on its preferred
+            // route). After relaxation, edge #1 sees edge #2's cells
+            // as roadCells and merges onto them where beneficial.
+            //
+            // Applied iteratively (2 passes) so convergence takes one
+            // round of mutual visibility per pass. More passes give
+            // marginal returns but cost more A* runs.
+            const RELAX_PASSES = 2;
+            for (let pass = 0; pass < RELAX_PASSES; pass++) {
+                for (const roadObj of tradeRoadEntries) {
+                    // Build roadCells/nearRoadCells excluding THIS road's
+                    // cells, so it doesn't merge with itself trivially.
+                    const otherRoadCells = new Set(roadCells);
+                    const otherNearRoadCells = new Set(nearRoadCells);
+                    for (const p of roadObj.path) {
+                        if (p.cell !== undefined && p.cell >= 0) {
+                            otherRoadCells.delete(p.cell);
+                        }
+                    }
+                    // Rebuild near-road for the pruned set (cheap: just
+                    // walk the remaining cells once).
+                    otherNearRoadCells.clear();
+                    for (const c of otherRoadCells) {
+                        for (const n of this.voronoi.neighbors(c)) {
+                            otherNearRoadCells.add(n);
+                        }
+                    }
+                    
+                    const newPath = this._findRoadPath(
+                        roadObj._startCell, roadObj._endCell,
+                        otherRoadCells, riverCells, nearRiverCells, otherNearRoadCells
+                    );
+                    if (!newPath || newPath.length < 2) continue;
+                    
+                    // Remove this road's cells from roadCells, swap path,
+                    // then re-mark.
+                    for (const p of roadObj.path) {
+                        if (p.cell !== undefined && p.cell >= 0) {
+                            roadCells.delete(p.cell);
+                        }
+                    }
+                    roadObj.path = newPath;
+                    this._markRoadCells(newPath, roadCells, nearRoadCells);
+                }
+                // Rebuild nearRoadCells from scratch since deletes leak
+                nearRoadCells.clear();
+                for (const c of roadCells) {
+                    for (const n of this.voronoi.neighbors(c)) {
+                        nearRoadCells.add(n);
+                    }
+                }
+            }
+        }
+        
+        // ─── PHASE 3: Local roads — connect each city to its capital ───
+        // Cities are connected one at a time, each taking the cheapest
+        // path that already-built roads allow. The road-bonus in
+        // _findRoadPath strongly encourages the local road to LATCH ONTO
+        // the nearest stretch of trade route rather than running its own
+        // parallel route through open country (which was the bug in the
+        // screenshot — minor pathfinding noise produced two near-identical
+        // paths instead of one merged road).
         for (let k = 0; k < this.kingdomCount; k++) {
             const capitolCell = this.capitols[k];
             if (capitolCell < 0) continue;
             
-            // Get all cities in this kingdom
-            const kingdomCities = this.cities.filter(c => c.kingdom === k);
+            const kingdomCities = (this.cities || []).filter(c => c.kingdom === k);
             if (kingdomCities.length === 0) continue;
             
-            // Sort cities by distance to capitol
-            const capitolX = this.points[capitolCell * 2];
-            const capitolY = this.points[capitolCell * 2 + 1];
-            
+            const capX = this.points[capitolCell * 2];
+            const capY = this.points[capitolCell * 2 + 1];
             kingdomCities.sort((a, b) => {
-                const ax = this.points[a.cell * 2];
-                const ay = this.points[a.cell * 2 + 1];
-                const bx = this.points[b.cell * 2];
-                const by = this.points[b.cell * 2 + 1];
-                const distA = Math.sqrt((ax - capitolX) ** 2 + (ay - capitolY) ** 2);
-                const distB = Math.sqrt((bx - capitolX) ** 2 + (by - capitolY) ** 2);
-                return distA - distB;
+                const da = (this.points[a.cell * 2] - capX) ** 2 + (this.points[a.cell * 2 + 1] - capY) ** 2;
+                const db = (this.points[b.cell * 2] - capX) ** 2 + (this.points[b.cell * 2 + 1] - capY) ** 2;
+                return da - db;
             });
             
-            // Track connected nodes (cities/capitol) and their positions
-            const connectedNodes = [{
-                cell: capitolCell,
-                x: capitolX,
-                y: capitolY
-            }];
+            // Track the connected nodes (capital + cities already wired)
+            const connectedNodes = [{ cell: capitolCell, x: capX, y: capY }];
             
-            // Connect each city to the nearest connected node (creates a minimum spanning tree-like structure)
-            for (let i = 0; i < kingdomCities.length; i++) {
-                const city = kingdomCities[i];
-                const cityX = this.points[city.cell * 2];
-                const cityY = this.points[city.cell * 2 + 1];
+            for (const city of kingdomCities) {
+                const cx = this.points[city.cell * 2];
+                const cy = this.points[city.cell * 2 + 1];
                 
-                // Find nearest connected node
+                // Find nearest connected node (Euclidean distance — A* will
+                // do the right thing anyway, this is just to pick a start).
                 let nearestNode = connectedNodes[0];
-                let nearestDist = Infinity;
-                
-                for (const node of connectedNodes) {
-                    const dist = Math.sqrt((node.x - cityX) ** 2 + (node.y - cityY) ** 2);
-                    if (dist < nearestDist) {
-                        nearestDist = dist;
-                        nearestNode = node;
-                    }
+                let nearestD = Infinity;
+                for (const n of connectedNodes) {
+                    const d = (n.x - cx) ** 2 + (n.y - cy) ** 2;
+                    if (d < nearestD) { nearestD = d; nearestNode = n; }
                 }
                 
-                // Try to connect to nearest
-                let road = this._findRoadPath(nearestNode.cell, city.cell, roadCells, riverCells, nearRiverCells);
-                
-                // If no path found, try connecting directly to capitol
+                let road = this._findRoadPath(
+                    nearestNode.cell, city.cell,
+                    roadCells, riverCells, nearRiverCells, nearRoadCells
+                );
                 if (!road && nearestNode.cell !== capitolCell) {
-                    road = this._findRoadPath(capitolCell, city.cell, roadCells, riverCells, nearRiverCells);
+                    road = this._findRoadPath(
+                        capitolCell, city.cell,
+                        roadCells, riverCells, nearRiverCells, nearRoadCells
+                    );
                 }
+                if (!road || road.length < 2) continue;
                 
-                if (road && road.length >= 2) {
-                    // Major road if directly connected to capitol or one of first 2 cities
-                    const isMajor = nearestNode.cell === capitolCell || i < 2;
-                    this.roads.push({
-                        path: road,
-                        kingdom: k,
-                        type: isMajor ? 'major' : 'minor'
-                    });
-                    this._markRoadCells(road, roadCells);
-                    connectedNodes.push({
-                        cell: city.cell,
-                        x: cityX,
-                        y: cityY
-                    });
-                }
-            }
-        }
-        
-        // PHASE 2: Just 2-3 inter-kingdom trade routes connecting closest capitol pairs
-        const capitolPairs = [];
-        
-        for (let k1 = 0; k1 < this.kingdomCount; k1++) {
-            const capitol1 = this.capitols[k1];
-            if (capitol1 < 0) continue;
-            
-            const cap1X = this.points[capitol1 * 2];
-            const cap1Y = this.points[capitol1 * 2 + 1];
-            
-            for (let k2 = k1 + 1; k2 < this.kingdomCount; k2++) {
-                const capitol2 = this.capitols[k2];
-                if (capitol2 < 0) continue;
-                
-                const cap2X = this.points[capitol2 * 2];
-                const cap2Y = this.points[capitol2 * 2 + 1];
-                const dist = Math.sqrt((cap1X - cap2X) ** 2 + (cap1Y - cap2Y) ** 2);
-                
-                capitolPairs.push({ k1, k2, capitol1, capitol2, dist });
-            }
-        }
-        
-        // Sort by distance and only create the 2-3 shortest connections
-        capitolPairs.sort((a, b) => a.dist - b.dist);
-        const maxTradeRoutes = Math.min(3, Math.ceil(this.kingdomCount / 3));
-        
-        for (let i = 0; i < Math.min(maxTradeRoutes, capitolPairs.length); i++) {
-            const pair = capitolPairs[i];
-            const road = this._findRoadPath(pair.capitol1, pair.capitol2, roadCells, riverCells, nearRiverCells);
-            if (road && road.length >= 2) {
+                // Major road if the city is the very first local connection
+                // off the capital; everything else is minor. The trade-route
+                // hierarchy is: trade > major > minor.
+                const isMajor = nearestNode.cell === capitolCell && connectedNodes.length === 1;
                 this.roads.push({
                     path: road,
-                    kingdom: -1,
-                    type: 'trade'
+                    kingdom: k,
+                    type: isMajor ? 'major' : 'minor'
                 });
-                this._markRoadCells(road, roadCells);
+                this._markRoadCells(road, roadCells, nearRoadCells);
+                connectedNodes.push({ cell: city.cell, x: cx, y: cy });
             }
         }
+        
+        // ─── PHASE 4: Network consolidation ───
+        // Rebuild this.roads from a merged edge graph. Every cell-edge
+        // used by any road is tagged with the HIGHEST tier of any road
+        // that uses it (trade > major > minor > pass). Then we walk
+        // continuous runs per tier and emit a fresh road per run.
+        //
+        // What this gets us:
+        //   • A feeder road that latched onto a trade route via the
+        //     road-bonus has its overlapping segment PROMOTED to trade.
+        //     The feeder no longer exists as a separate entity through
+        //     those cells — it's part of the trade trunk.
+        //   • Two roads that share cells are physically merged into a
+        //     single road object through those cells. No more
+        //     same-cells-drawn-twice doubled strokes.
+        //   • Trade routes that ran in close parallel through different
+        //     cells stay as-is (they don't share edges, so no merge).
+        //     Those still need the relaxation pass to be pulled onto
+        //     literally-shared cells.
+        //
+        // Result: this.roads contains zero overlapping edges. Render
+        // becomes trivial — just draw each road as its own <path>, no
+        // dedup logic needed.
+        this._consolidateRoadNetwork();
+    }
+    
+    /**
+     * Merge all roads into a single edge graph keyed on cell pairs,
+     * tagged with the highest-priority tier that uses each edge. Then
+     * extract continuous polylines per tier and emit them as fresh
+     * road objects, replacing this.roads.
+     */
+    _consolidateRoadNetwork() {
+        if (!this.roads || this.roads.length === 0) return;
+        
+        const priority = { trade: 0, major: 1, minor: 2, pass: 3 };
+        const tierName = ['trade', 'major', 'minor', 'pass'];
+        
+        // edgeTier: "ka-kb" → tier value (lower is higher priority)
+        const edgeTier = new Map();
+        const edgeKey = (a, b) => a < b ? `${a}-${b}` : `${b}-${a}`;
+        // Track origin kingdom of each edge for road metadata (best-effort:
+        // first road that introduced the edge).
+        const edgeKingdom = new Map();
+        const edgeContinent = new Map();
+        
+        for (const road of this.roads) {
+            const path = road.path;
+            if (!path || path.length < 2) continue;
+            const tier = priority[road.type] !== undefined ? priority[road.type] : 9;
+            
+            for (let i = 1; i < path.length; i++) {
+                const prev = path[i - 1];
+                const curr = path[i];
+                if (!prev || !curr) continue;
+                if (prev.cell === undefined || curr.cell === undefined) continue;
+                if (prev.cell < 0 || curr.cell < 0 || prev.cell === curr.cell) continue;
+                
+                const key = edgeKey(prev.cell, curr.cell);
+                const existing = edgeTier.get(key);
+                if (existing === undefined || tier < existing) {
+                    edgeTier.set(key, tier);
+                    if (road.kingdom !== undefined) edgeKingdom.set(key, road.kingdom);
+                    if (road.continent !== undefined) edgeContinent.set(key, road.continent);
+                }
+            }
+        }
+        
+        // Group edges by tier
+        const tierEdges = new Map();   // tier → Set<key>
+        for (const [key, tier] of edgeTier) {
+            let s = tierEdges.get(tier);
+            if (!s) { s = new Set(); tierEdges.set(tier, s); }
+            s.add(key);
+        }
+        
+        const decodeKey = (key) => {
+            const dash = key.indexOf('-');
+            return [parseInt(key.substring(0, dash), 10), parseInt(key.substring(dash + 1), 10)];
+        };
+        
+        const newRoads = [];
+        
+        // For each tier, build adjacency, then walk continuous polylines.
+        // Endpoints (degree 1) and junctions (degree ≥3) anchor runs.
+        // Pure middle cells (degree 2) get absorbed into runs.
+        for (const [tier, edgeSet] of tierEdges) {
+            const adj = new Map();
+            for (const key of edgeSet) {
+                const [a, b] = decodeKey(key);
+                if (!adj.has(a)) adj.set(a, []);
+                if (!adj.has(b)) adj.set(b, []);
+                adj.get(a).push(b);
+                adj.get(b).push(a);
+            }
+            
+            const usedEdges = new Set();
+            const walkFrom = (startCell) => {
+                const adjList = adj.get(startCell) || [];
+                for (const next of adjList) {
+                    if (usedEdges.has(edgeKey(startCell, next))) continue;
+                    const run = [startCell];
+                    let curr = startCell;
+                    let nextCell = next;
+                    while (nextCell !== undefined) {
+                        const k = edgeKey(curr, nextCell);
+                        if (usedEdges.has(k)) break;
+                        usedEdges.add(k);
+                        run.push(nextCell);
+                        const nbrs = adj.get(nextCell) || [];
+                        if (nbrs.length !== 2) break;
+                        const continuation = nbrs.find(n => n !== curr && !usedEdges.has(edgeKey(nextCell, n)));
+                        if (continuation === undefined) break;
+                        curr = nextCell;
+                        nextCell = continuation;
+                    }
+                    if (run.length >= 2) {
+                        // Build {x, y, cell} triples for the run
+                        const path = run.map(c => ({
+                            x: this.points[c * 2],
+                            y: this.points[c * 2 + 1],
+                            cell: c
+                        }));
+                        const sampleKey = edgeKey(run[0], run[1]);
+                        newRoads.push({
+                            path,
+                            type: tierName[tier] || 'minor',
+                            kingdom: edgeKingdom.get(sampleKey) ?? -1,
+                            continent: edgeContinent.get(sampleKey)
+                        });
+                    }
+                }
+            };
+            
+            // First pass: endpoints + junctions
+            const seeds = [];
+            for (const [cell, nbrs] of adj) {
+                if (nbrs.length !== 2) seeds.push(cell);
+            }
+            seeds.sort((a, b) => a - b);
+            for (const seed of seeds) walkFrom(seed);
+            // Second pass: pure cycles
+            for (const [cell] of adj) walkFrom(cell);
+        }
+        
+        this.roads = newRoads;
+    }
+    
+    /**
+     * (Disabled.) The earlier snap-merge post-process broke the chain
+     * invariant — see comment in _generateRoads.
+     */
+    _mergeAdjacentRoads_disabled() {
+        if (!this.roads || this.roads.length < 2) return;
+        
+        const priority = { trade: 0, major: 1, minor: 2, pass: 3 };
+        // Sort a parallel index array; don't reorder this.roads itself
+        // because callers may have references that depend on its order.
+        const order = this.roads.map((_, i) => i)
+            .sort((a, b) => (priority[this.roads[a].type] || 9) - (priority[this.roads[b].type] || 9));
+        
+        // Snap radius in WORLD units. ~5× cell spacing — generous enough
+        // to catch parallel paths that drift up to 4-5 cells apart even
+        // when A* picks substantially different routes despite the
+        // road-bonus. Prior values (1.8×, 3×) were leaving visible gaps
+        // near label-placement areas where the second pathfind chose to
+        // detour around a cluster of cells.
+        const avgCellSpacing = Math.sqrt((this.width * this.height) / Math.max(1, this.cellCount));
+        const snapRadius = avgCellSpacing * 5.0;
+        const snapRadius2 = snapRadius * snapRadius;
+        
+        // Spatial hash: bucket world space into cells of size = snapRadius.
+        // Querying for "nearest locked cell" then visits only the 3×3
+        // bucket neighbourhood around the query point (constant time)
+        // instead of scanning every locked cell. Without this the merge
+        // pass alone was an O(roads × cellsPerRoad × totalLockedCells)
+        // operation that quickly dominated render time.
+        const bucketSize = snapRadius;
+        const lockedBuckets = new Map();   // "bx,by" → [cellIdx, ...]
+        const bucketKey = (bx, by) => `${bx},${by}`;
+        const addToBuckets = (cellIdx) => {
+            const x = this.points[cellIdx * 2];
+            const y = this.points[cellIdx * 2 + 1];
+            const bx = Math.floor(x / bucketSize);
+            const by = Math.floor(y / bucketSize);
+            const k = bucketKey(bx, by);
+            let arr = lockedBuckets.get(k);
+            if (!arr) { arr = []; lockedBuckets.set(k, arr); }
+            arr.push(cellIdx);
+        };
+        const queryNearest = (px, py) => {
+            const bx = Math.floor(px / bucketSize);
+            const by = Math.floor(py / bucketSize);
+            let best = -1;
+            let bestD = snapRadius2;
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    const arr = lockedBuckets.get(bucketKey(bx + dx, by + dy));
+                    if (!arr) continue;
+                    for (const lc of arr) {
+                        const lx = this.points[lc * 2];
+                        const ly = this.points[lc * 2 + 1];
+                        const d = (lx - px) ** 2 + (ly - py) ** 2;
+                        if (d < bestD) { bestD = d; best = lc; }
+                    }
+                }
+            }
+            return best;
+        };
+        
+        const seenBucketed = new Set();   // dedupe so we don't bucket a cell twice
+        for (const idx of order) {
+            const road = this.roads[idx];
+            if (!road.path || road.path.length < 2) continue;
+            
+            // road.path is an array of {x, y, cell} objects (from
+            // _findRoadPath). For each step we look at the cell index,
+            // try to snap it onto a locked cell, and emit a fresh
+            // {x, y, cell} triple referring to whatever cell we ended up
+            // pointing at. That keeps the path shape consistent with
+            // what the renderer expects and what _markRoadCells walked.
+            const newPath = [];
+            for (const point of road.path) {
+                const cellIdx = point.cell;
+                if (cellIdx === undefined || cellIdx < 0) {
+                    // Defensive: leave malformed entries alone
+                    if (newPath.length === 0 || newPath[newPath.length - 1] !== point) {
+                        newPath.push(point);
+                    }
+                    continue;
+                }
+                const px = this.points[cellIdx * 2];
+                const py = this.points[cellIdx * 2 + 1];
+                
+                const snapTo = queryNearest(px, py);
+                const finalCell = snapTo >= 0 ? snapTo : cellIdx;
+                
+                // Collapse consecutive duplicates — a snapped path that
+                // visits the same cell several times in a row would
+                // render as a zero-length segment.
+                const last = newPath[newPath.length - 1];
+                if (!last || last.cell !== finalCell) {
+                    newPath.push({
+                        x: this.points[finalCell * 2],
+                        y: this.points[finalCell * 2 + 1],
+                        cell: finalCell
+                    });
+                }
+            }
+            
+            road.path = newPath;
+            // Refresh cells array if present (callers like
+            // pruneRoadsAcrossLakes use this)
+            road.path.cells = newPath.map(p => p.cell);
+            
+            // After this road is laid down, its cells become "locked"
+            // for subsequent snap targets.
+            for (const p of newPath) {
+                if (p.cell === undefined || p.cell < 0) continue;
+                if (!seenBucketed.has(p.cell)) {
+                    seenBucketed.add(p.cell);
+                    addToBuckets(p.cell);
+                }
+            }
+        }
+        
+        // Drop roads that collapsed to <2 cells
+        this.roads = this.roads.filter(r => r.path && r.path.length >= 2);
     }
     
     /**
@@ -3301,38 +3864,19 @@ export class VoronoiGenerator {
             
             if (water1 < 0 || water2 < 0) continue;
             
-            const w1x = this.points[water1 * 2];
-            const w1y = this.points[water1 * 2 + 1];
-            const w2x = this.points[water2 * 2];
-            const w2y = this.points[water2 * 2 + 1];
+            // Pathfind through ocean cells from water1 to water2.
+            // Returns an array of cell indices, or null if unreachable.
+            const oceanPath = this._findOceanPath(water1, water2, oceanCells);
+            if (!oceanPath) continue;
             
-            // Check if path between water cells crosses land
-            let crossesLand = false;
-            const numChecks = 20;
-            
-            for (let t = 0.05; t <= 0.95; t += 0.05) {
-                const checkX = w1x + (w2x - w1x) * t;
-                const checkY = w1y + (w2y - w1y) * t;
-                const checkCell = this.findCellWorld(checkX, checkY);
-                
-                if (checkCell >= 0 && this.heights[checkCell] >= ELEVATION.SEA_LEVEL) {
-                    crossesLand = true;
-                    break;
-                }
-            }
-            
-            if (crossesLand) continue;
-            
-            // Create the sea path
-            const path = [
-                { x: pair.s1.x, y: pair.s1.y },
-                { x: w1x, y: w1y },
-                { x: w2x, y: w2y },
-                { x: pair.s2.x, y: pair.s2.y }
-            ];
-            
+            // Store the FULL cell sequence (not thinned). Thinning is
+            // deferred until after the network is consolidated, so that
+            // two routes which share a long ocean stretch get merged
+            // into one polyline through the shared cells (rather than
+            // ending up with different thinned samples that don't quite
+            // line up).
             this.seaRoutes.push({
-                path: path,
+                cells: oceanPath.slice(),
                 from: pair.s1,
                 to: pair.s2
             });
@@ -3340,6 +3884,216 @@ export class VoronoiGenerator {
             markSettlementUsed(pair.s1.cell);
             markSettlementUsed(pair.s2.cell);
         }
+        
+        // ─── Consolidate the sea-route network ───
+        // Just like the road network, multiple sea routes can share
+        // ocean cells (two ports A and C both running routes to port B
+        // will overlap on the approach to B). Drawing each route as
+        // its own <path> over shared cells produces visible doubled/
+        // crosshatched dashed strokes. Solution: merge all routes into
+        // a single edge graph, walk continuous polylines, and emit one
+        // sea-route per polyline with the thinning + smoothing applied
+        // to the merged polyline.
+        this._consolidateSeaRoutes();
+    }
+    
+    /**
+     * Merge all sea routes into one edge graph, walk continuous
+     * polylines, and rebuild this.seaRoutes with no overlapping cells.
+     * Mirrors _consolidateRoadNetwork but for sea-route data shape
+     * (which uses `cells` arrays of ocean cell indices).
+     */
+    _consolidateSeaRoutes() {
+        if (!this.seaRoutes || this.seaRoutes.length === 0) return;
+        
+        const edgeKey = (a, b) => a < b ? `${a}-${b}` : `${b}-${a}`;
+        const edgeSeen = new Set();
+        const adj = new Map();   // cell → [neighbour cells]
+        
+        for (const route of this.seaRoutes) {
+            const cells = route.cells;
+            if (!cells || cells.length < 2) continue;
+            for (let i = 1; i < cells.length; i++) {
+                const a = cells[i - 1], b = cells[i];
+                if (a === b) continue;
+                const key = edgeKey(a, b);
+                if (edgeSeen.has(key)) continue;
+                edgeSeen.add(key);
+                if (!adj.has(a)) adj.set(a, []);
+                if (!adj.has(b)) adj.set(b, []);
+                adj.get(a).push(b);
+                adj.get(b).push(a);
+            }
+        }
+        
+        // Walk continuous polylines anchored at endpoints (degree 1) and
+        // junctions (degree ≥3). Pure middle cells (degree 2) get
+        // absorbed into runs.
+        const usedEdges = new Set();
+        const runs = [];
+        const walkFrom = (startCell) => {
+            const adjList = adj.get(startCell) || [];
+            for (const next of adjList) {
+                if (usedEdges.has(edgeKey(startCell, next))) continue;
+                const run = [startCell];
+                let curr = startCell;
+                let nextCell = next;
+                while (nextCell !== undefined) {
+                    const k = edgeKey(curr, nextCell);
+                    if (usedEdges.has(k)) break;
+                    usedEdges.add(k);
+                    run.push(nextCell);
+                    const nbrs = adj.get(nextCell) || [];
+                    if (nbrs.length !== 2) break;
+                    const continuation = nbrs.find(n => n !== curr && !usedEdges.has(edgeKey(nextCell, n)));
+                    if (continuation === undefined) break;
+                    curr = nextCell;
+                    nextCell = continuation;
+                }
+                if (run.length >= 2) runs.push(run);
+            }
+        };
+        const seeds = [];
+        for (const [cell, nbrs] of adj) {
+            if (nbrs.length !== 2) seeds.push(cell);
+        }
+        seeds.sort((a, b) => a - b);
+        for (const seed of seeds) walkFrom(seed);
+        for (const [cell] of adj) walkFrom(cell);
+        
+        // Apply path thinning + build {x, y} render path per run.
+        // Thinning here uses a fixed stride based on each run's length so
+        // long polylines get fewer waypoints and short ones stay dense.
+        const newRoutes = [];
+        for (const run of runs) {
+            const targetWaypoints = 40;
+            const stride = Math.max(1, Math.floor(run.length / targetWaypoints));
+            const thinned = [];
+            for (let i = 0; i < run.length; i += stride) thinned.push(run[i]);
+            if (thinned[thinned.length - 1] !== run[run.length - 1]) {
+                thinned.push(run[run.length - 1]);
+            }
+            const path = thinned.map(c => ({
+                x: this.points[c * 2],
+                y: this.points[c * 2 + 1],
+                cell: c
+            }));
+            newRoutes.push({ path, cells: run });
+        }
+        
+        this.seaRoutes = newRoutes;
+    }
+    
+    /**
+     * Pathfind through ocean cells using A*. Returns an array of cell
+     * indices forming a path from `start` to `end`, or null if unreachable.
+     *
+     * Cost is euclidean distance between cell centers. Heuristic is straight-
+     * line distance to the goal. Both staying purely in `oceanCells` ensures
+     * the path naturally curves around peninsulas and excludes lakes (which
+     * are not in oceanCells by construction).
+     *
+     * Iteration cap protects against pathological cases (e.g. cell graph
+     * disconnects). Sea routes are heavier-weight than roads, but still
+     * cheap enough at 25k iterations for typical map sizes.
+     */
+    _findOceanPath(start, end, oceanCells) {
+        if (start === end) return [start];
+        if (!oceanCells.has(start) || !oceanCells.has(end)) return null;
+        
+        // Pre-compute "shore proximity" classes once. Cells that are
+        // directly adjacent to land (`shore`) get a heavy traversal
+        // penalty; cells that are 2 hops from land (`nearShore`) get
+        // a milder penalty. This pushes A* into deeper water for the
+        // bulk of the route, while still allowing the start/end to be
+        // shore cells (those are the destinations themselves).
+        //
+        // Without this, A* picked the geometrically shortest cell-to-cell
+        // chain — and rendering smooth curves between consecutive
+        // centroids near the coast made the line cut visibly across
+        // peninsulas and bays.
+        const shoreCells = new Set();
+        const nearShoreCells = new Set();
+        for (const c of oceanCells) {
+            for (const n of this.getNeighbors(c)) {
+                if (!oceanCells.has(n)) {
+                    shoreCells.add(c);
+                    break;
+                }
+            }
+        }
+        for (const c of shoreCells) {
+            for (const n of this.getNeighbors(c)) {
+                if (oceanCells.has(n) && !shoreCells.has(n)) {
+                    nearShoreCells.add(n);
+                }
+            }
+        }
+        
+        const cameFrom = new Map();
+        const gScore   = new Map();
+        gScore.set(start, 0);
+        
+        const pointsArr = this.points;
+        const ex = pointsArr[end * 2], ey = pointsArr[end * 2 + 1];
+        const dist = (a, b) => {
+            const ax = pointsArr[a * 2], ay = pointsArr[a * 2 + 1];
+            const bx = pointsArr[b * 2], by = pointsArr[b * 2 + 1];
+            return Math.hypot(ax - bx, ay - by);
+        };
+        const heuristic = (cell) => {
+            const cx = pointsArr[cell * 2], cy = pointsArr[cell * 2 + 1];
+            return Math.hypot(cx - ex, cy - ey);
+        };
+        // Per-step traversal cost — straight Euclidean distance times a
+        // multiplier based on how close `to` is to the shore.
+        const stepCost = (from, to) => {
+            let mult = 1;
+            if (shoreCells.has(to)) mult = 5;        // strong penalty
+            else if (nearShoreCells.has(to)) mult = 2;
+            return dist(from, to) * mult;
+        };
+        
+        const open = new Map();
+        open.set(start, heuristic(start));
+        
+        let iterations = 0;
+        const maxIterations = 25000;
+        
+        while (open.size > 0) {
+            if (++iterations > maxIterations) return null;
+            
+            let current = -1;
+            let bestF = Infinity;
+            for (const [cell, f] of open) {
+                if (f < bestF) { bestF = f; current = cell; }
+            }
+            if (current < 0) return null;
+            open.delete(current);
+            
+            if (current === end) {
+                const path = [current];
+                while (cameFrom.has(path[0])) {
+                    path.unshift(cameFrom.get(path[0]));
+                }
+                return path;
+            }
+            
+            const currentG = gScore.get(current);
+            for (const n of this.getNeighbors(current)) {
+                if (!oceanCells.has(n)) continue;
+                
+                const tentativeG = currentG + stepCost(current, n);
+                const existingG  = gScore.has(n) ? gScore.get(n) : Infinity;
+                if (tentativeG < existingG) {
+                    cameFrom.set(n, current);
+                    gScore.set(n, tentativeG);
+                    open.set(n, tentativeG + heuristic(n));
+                }
+            }
+        }
+        
+        return null;
     }
     
     /**
@@ -3373,18 +4127,19 @@ export class VoronoiGenerator {
     }
     
     /**
-     * Mark cells along a road path as having roads
+     * Mark cells along a road path as having roads. If `nearRoadCells`
+     * is provided, also adds each road cell's Voronoi neighbours to it
+     * — the road A* uses this set for an O(1) "is this cell adjacent
+     * to an existing road?" check, which is what gives feeder roads
+     * the bonus that pulls them onto the trade backbone.
      */
-    _markRoadCells(road, roadCells) {
-        // Use the cells array if available, otherwise extract from points
-        if (road.cells) {
-            for (const cell of road.cells) {
-                roadCells.add(cell);
-            }
-        } else {
-            for (const point of road) {
-                if (point.cell !== undefined) {
-                    roadCells.add(point.cell);
+    _markRoadCells(road, roadCells, nearRoadCells = null) {
+        const cells = road.cells || road.map(p => p.cell).filter(c => c !== undefined);
+        for (const cell of cells) {
+            roadCells.add(cell);
+            if (nearRoadCells) {
+                for (const n of this.voronoi.neighbors(cell)) {
+                    nearRoadCells.add(n);
                 }
             }
         }
@@ -3394,7 +4149,7 @@ export class VoronoiGenerator {
      * Find a road path between two cells using A* pathfinding
      * Avoids water and rivers, prefers paths alongside rivers and existing roads
      */
-    _findRoadPath(startCell, endCell, existingRoadCells = null, riverCells = null, nearRiverCells = null) {
+    _findRoadPath(startCell, endCell, existingRoadCells = null, riverCells = null, nearRiverCells = null, existingNearRoadCells = null) {
         const startX = this.points[startCell * 2];
         const startY = this.points[startCell * 2 + 1];
         const endX = this.points[endCell * 2];
@@ -3404,8 +4159,9 @@ export class VoronoiGenerator {
         const rivers = riverCells || new Set();
         const nearRivers = nearRiverCells || new Set();
         
-        // A* pathfinding
-        const openSet = new Map();
+        // A* pathfinding state. The open set is implemented as a binary
+        // heap further down (see heapPush/heapPop) — the legacy linear-scan
+        // Map version was the dominant cost in road generation.
         const closedSet = new Set();
         const cameFrom = new Map();
         const gScore = new Map();
@@ -3453,16 +4209,31 @@ export class VoronoiGenerator {
             let riverBonus = 1;
             if (nearRivers.has(to)) riverBonus = 0.7;
             
-            // Strong bonus for existing roads (roads merge together)
+            // Strong bonus for existing roads. We want new roads to merge
+            // hard onto existing ones rather than running parallel — the
+            // pre-merge baseline of 0.3 was leaving visible parallel paths
+            // a couple cells apart. 0.12 makes overlapping the existing
+            // road *much* cheaper than going around it, even when that
+            // means a small detour.
+            //
+            // The near-road check is now O(1) — caller supplies
+            // existingNearRoadCells (a Set of cells within 1 hop of any
+            // road) and we just look up. Previously this loop iterated
+            // voronoi.neighbors(to) on every neighbour expansion, which
+            // was a measurable hot spot — every A* expansion cost
+            // ~degree extra ops.
             let roadBonus = 1;
-            if (existingRoadCells && existingRoadCells.has(to)) roadBonus = 0.3;
+            if (existingRoadCells && existingRoadCells.has(to)) {
+                roadBonus = 0.12;
+            } else if (existingNearRoadCells && existingNearRoadCells.has(to)) {
+                roadBonus = 0.5;
+            }
             
             return baseDist * elevCost * mountainPenalty * riverBonus * roadBonus * riverCost;
         };
         
         gScore.set(startCell, 0);
         fScore.set(startCell, heuristic(startCell));
-        openSet.set(startCell, fScore.get(startCell));
         
         let iterations = 0;
         // Bumped from 5000 — mountain cities can require longer winding paths
@@ -3470,18 +4241,59 @@ export class VoronoiGenerator {
         // is smaller. 12000 still terminates failed paths quickly.
         const maxIterations = 12000;
         
-        while (openSet.size > 0 && iterations < maxIterations) {
-            iterations++;
-            
-            // Get cell with lowest fScore
-            let current = null;
-            let lowestF = Infinity;
-            for (const [cell, f] of openSet) {
-                if (f < lowestF) {
-                    lowestF = f;
-                    current = cell;
+        // Binary min-heap over openSet keyed on fScore. The previous
+        // implementation did a linear scan of the open set to find the
+        // lowest-fScore cell on every iteration, which made A* O(N²)
+        // and dominated road generation time. The heap makes it O(N log N)
+        // — typically a 100×+ speedup on long paths.
+        //
+        // openHeap stores {cell, f} entries. We lazily handle stale entries:
+        // when we pop a cell that's already in closedSet, or whose recorded
+        // fScore doesn't match the heap's f, we skip it. This is simpler
+        // than implementing decrease-key.
+        const openHeap = [];
+        const heapPush = (item) => {
+            openHeap.push(item);
+            let i = openHeap.length - 1;
+            while (i > 0) {
+                const parent = (i - 1) >> 1;
+                if (openHeap[parent].f <= openHeap[i].f) break;
+                [openHeap[i], openHeap[parent]] = [openHeap[parent], openHeap[i]];
+                i = parent;
+            }
+        };
+        const heapPop = () => {
+            const top = openHeap[0];
+            const last = openHeap.pop();
+            if (openHeap.length > 0) {
+                openHeap[0] = last;
+                let i = 0;
+                const n = openHeap.length;
+                while (true) {
+                    const l = 2 * i + 1, r = 2 * i + 2;
+                    let smallest = i;
+                    if (l < n && openHeap[l].f < openHeap[smallest].f) smallest = l;
+                    if (r < n && openHeap[r].f < openHeap[smallest].f) smallest = r;
+                    if (smallest === i) break;
+                    [openHeap[i], openHeap[smallest]] = [openHeap[smallest], openHeap[i]];
+                    i = smallest;
                 }
             }
+            return top;
+        };
+        
+        heapPush({ cell: startCell, f: fScore.get(startCell) });
+        
+        while (openHeap.length > 0 && iterations < maxIterations) {
+            iterations++;
+            
+            const top = heapPop();
+            const current = top.cell;
+            // Skip stale heap entries (we pushed a newer fScore for this
+            // cell after this entry was inserted, or the cell was already
+            // closed via an earlier pop).
+            if (closedSet.has(current)) continue;
+            if (top.f > fScore.get(current)) continue;
             
             if (current === endCell) {
                 // Reconstruct path with cell indices for road marking
@@ -3501,7 +4313,6 @@ export class VoronoiGenerator {
                 return path;
             }
             
-            openSet.delete(current);
             closedSet.add(current);
             
             const neighbors = this.getNeighbors(current);
@@ -3518,7 +4329,7 @@ export class VoronoiGenerator {
                     gScore.set(neighbor, tentativeG);
                     const f = tentativeG + heuristic(neighbor);
                     fScore.set(neighbor, f);
-                    openSet.set(neighbor, f);
+                    heapPush({ cell: neighbor, f });
                 }
             }
         }
@@ -5059,42 +5870,81 @@ export class VoronoiGenerator {
             // wider here, narrower there, drifting like a real coastline —
             // rather than a flat ribbon parallel to the equator.
             case 'isthmus': {
-                // Centerline of the land band — a slow, shared wander up/down
-                // as we move east/west. Range ~±0.20 (band shifts by up to
-                // 20% of map height as you traverse).
-                const centerY = Noise.simplex2(nx * 1.5, 8.3) * 0.20;
+                // ---- Centerline wander ----
+                // Two octaves of noise: a slow wander (the dominant shape)
+                // plus a faster second wobble that breaks up symmetry. The
+                // amplitudes 0.25 + 0.10 give a centerline that drifts up
+                // to ~35% of map height between extremes, with character.
+                const centerSlow = Noise.simplex2(nx * 1.2, 8.3) * 0.25;
+                const centerFast = Noise.simplex2(nx * 3.7, 19.1) * 0.10;
+                const centerY = centerSlow + centerFast;
                 
-                // Half-width of the band — varies along x so the isthmus
-                // pinches and bulges. Base 0.40 ± up to 0.12.
-                const halfWidth = 0.40 + Noise.simplex2(nx * 2.3, 41.7) * 0.12;
+                // ---- Edge bulges ----
+                // The isthmus connects to bigger continents off-screen, so
+                // the western and eastern ends of the visible map should
+                // BULGE out vertically. dx is normalized to ~[-1, +1]; using
+                // dx*dx as a U-shape, multiplying halfWidth by (1 + 0.7*dx²)
+                // makes the edges 1.7× thicker than the middle pinch.
+                const edgeBulge = 1 + 0.7 * dx * dx;
                 
-                // Coastline noise — independent wobble for each coast on top
-                // of the shared centerline + halfwidth, so the two coasts
-                // don't move in perfect lockstep. Smaller amplitude (0.06)
-                // since centerline is already doing most of the work.
+                // Half-width along the band. Base 0.32, plus medium-freq
+                // noise so the isthmus pinches & bulges along its length,
+                // multiplied by the edge bulge factor.
+                const baseHalfWidth = 0.32 + Noise.simplex2(nx * 2.3, 41.7) * 0.12;
+                const halfWidth = baseHalfWidth * edgeBulge;
+                
+                // Independent coastline wobbles on top — small amplitude
+                // since the structural variation is doing the heavy lifting.
                 const northWobble = Noise.simplex2(nx * 4.0, 11.7) * 0.06;
                 const southWobble = Noise.simplex2(nx * 4.3, 53.1) * 0.06;
                 
-                const northCoastY = centerY - halfWidth + northWobble;  // ocean above
-                const southCoastY = centerY + halfWidth + southWobble;  // ocean below
+                const northCoastY = centerY - halfWidth + northWobble;
+                const southCoastY = centerY + halfWidth + southWobble;
                 
-                // landBandMask: 1 inside band, 0 in the seas. Smoothstep on
-                // each coastline for a soft transition (0.10 of map height).
+                // landBandMask: 1 inside the main isthmus, 0 in the seas
                 const distFromNorthCoast = dy - northCoastY;
                 const distFromSouthCoast = southCoastY - dy;
                 const northMask = this._smoothstep(0, 0.10, distFromNorthCoast);
                 const southMask = this._smoothstep(0, 0.10, distFromSouthCoast);
-                const landBandMask = Math.min(northMask, southMask);
+                const mainBandMask = Math.min(northMask, southMask);
                 
-                // No east/west edge taper — land continues off both edges,
-                // suggesting the isthmus extends to bigger landmasses beyond.
+                // ---- Islands ----
+                // Scattered land outside the main band. We sample a high-
+                // frequency noise field; cells where it crosses a threshold
+                // become land. The threshold is high (0.55), so most of the
+                // ocean is empty — only ~10% of points qualify, producing
+                // sparse islands. Multiplied by a "distance from band" decay
+                // so islands cluster near the coast and become rarer the
+                // further out you sample.
+                const islandNoise = Noise.simplex2(nx * 6.0, ny * 6.0 + 137.1);
+                const distFromBand = Math.min(
+                    Math.abs(dy - northCoastY),
+                    Math.abs(dy - southCoastY)
+                );
+                // proximity: 1 right at the coast, 0 at the map edges
+                const islandProximity = 1 - this._smoothstep(0.0, 0.45, distFromBand);
+                // Threshold tuning: islands form where noise > 0.45 AND we're
+                // close enough to the coast for them to be plausible.
+                const rawIslandMask = this._smoothstep(0.45, 0.62, islandNoise) * islandProximity;
                 
-                mult = 1 - (1 - landBandMask) * strength;
+                // Combine: land where main band OR island noise wins.
+                // mainBandMask goes 0..1 and rawIslandMask goes 0..1 too —
+                // taking the max means either source can produce land.
+                const landMask = Math.max(mainBandMask, rawIslandMask);
                 
-                // Solid bias inside the continent so the heightmap noise
-                // doesn't drop random patches below sea level mid-isthmus.
-                if (landBandMask > 0.5) {
-                    add = (landBandMask - 0.5) * 0.18 * strength;
+                mult = 1 - (1 - landMask) * strength;
+                
+                // Solid bias inside the main isthmus to keep it firmly above
+                // sea level. Don't apply this lift to islands — they should
+                // be naturally small and low, like real archipelagos.
+                if (mainBandMask > 0.5) {
+                    add = (mainBandMask - 0.5) * 0.18 * strength;
+                }
+                // Islands get a tiny lift so they don't disappear under
+                // adversarial heightmap noise, but kept much smaller than
+                // the main continent's bias.
+                if (rawIslandMask > 0.4 && mainBandMask < 0.3) {
+                    add = Math.max(add, (rawIslandMask - 0.4) * 0.08 * strength);
                 }
                 break;
             }
@@ -5134,10 +5984,30 @@ export class VoronoiGenerator {
                 coastDist += Noise.simplex2(nx * 4.0, ny * 4.0) * 0.20;
                 
                 // Smoothly transition: -0.1 -> ocean, +0.1 -> land
-                const landMask = this._smoothstep(-0.15, 0.15, coastDist);
+                const mainLandMask = this._smoothstep(-0.15, 0.15, coastDist);
+                
+                // ---- Large ocean islands ----
+                // Sample low-frequency noise to create big island shapes
+                // (think Britain, Madagascar). Low frequency = few large
+                // shapes rather than many small ones. Threshold is high
+                // (0.35) so most of the ocean stays empty — about 20-25%
+                // of the ocean area becomes land. Multiplied by oceanFactor
+                // so islands don't bleed onto the existing continent.
+                const islandNoise = Noise.simplex2(nx * 1.8 + 53.7, ny * 1.8 + 91.3);
+                // oceanFactor: 1 in ocean, 0 on continent — multiplied in so
+                // islands only form away from the main landmass.
+                const oceanFactor = 1 - mainLandMask;
+                const rawIslandMask = this._smoothstep(0.35, 0.55, islandNoise) * oceanFactor;
+                
+                const landMask = Math.max(mainLandMask, rawIslandMask);
                 
                 mult = 1 - (1 - landMask) * strength;
-                add  = landMask * 0.12 * strength;  // bias inland
+                // Inland bias for the main continent
+                add = mainLandMask * 0.12 * strength;
+                // Smaller bias for islands so they don't become inflated
+                if (rawIslandMask > 0.4 && mainLandMask < 0.3) {
+                    add = Math.max(add, (rawIslandMask - 0.4) * 0.10 * strength);
+                }
                 break;
             }
             

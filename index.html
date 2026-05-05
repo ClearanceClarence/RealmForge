@@ -3,11 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Dev mode: prevent the browser from caching ANY of our resources.
+         Combined with the no-cache headers in .htaccess, this means edits
+         to JS/CSS take effect on every page reload without needing manual
+         version bumps or hard-refresh. Remove these meta tags before
+         shipping a public build (cached static assets are essential for
+         production performance). -->
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>RealmForge - Fantasy Map Generator</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=Inter:wght@300;400;500;600;700&family=Cinzel:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=314">
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <!-- Cartography Loading Screen - Detailed -->
@@ -319,7 +328,7 @@
                         <path d="M3,21 L21,3 M8,21 L21,8" stroke="currentColor" fill="none" stroke-width="1.5"/>
                     </svg>
                 </div>
-                <div class="footer-text">ANNO DOMINI MMXXV</div>
+                <div class="footer-text">ANNO DOMINI MMXXVI</div>
             </div>
         </div>
     </div>
@@ -611,28 +620,10 @@
                                 <span>Mesh</span>
                             </label>
                             <label class="ctrl-check">
-                                <input type="checkbox" id="show-windrose">
-                                <span>Compass Rose</span>
-                            </label>
-                            <label class="ctrl-check">
                                 <input type="checkbox" id="show-grid" checked>
                                 <span>Coordinate Grid</span>
                             </label>
-                            <label class="ctrl-check">
-                                <input type="checkbox" id="show-scale" checked>
-                                <span>Scale Bar</span>
-                            </label>
                         </div>
-                    </div>
-
-                    <!-- Map Scale -->
-                    <div class="ctrl-section">
-                        <div class="ctrl-section-head"><span><span class="sec-icon">⧉</span>Map Scale<span class="sec-chevron">▾</span></span></div>
-                        <label class="ctrl-row">
-                            <span>World Size (km)</span>
-                            <input type="range" id="world-size-km" min="100" max="5000" value="1000" step="100">
-                            <span class="ctrl-value" id="world-size-km-val">1000</span>
-                        </label>
                     </div>
 
                     <!-- Export -->
@@ -729,6 +720,6 @@
     });
     </script>
     
-    <script type="module" src="app.js?v=314"></script>
+    <script type="module" src="app.js"></script>
 </body>
 </html>

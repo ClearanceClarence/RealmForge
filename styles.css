@@ -1505,8 +1505,11 @@ select:focus { outline: none; border-color: var(--accent); }
 
 #kingdom-svg .kingdom-border {
     fill: none;
+    stroke: rgb(86, 86, 109);
+    stroke-width: 1px;
+    stroke-dasharray: 2px;
+    stroke-linecap: butt;
     stroke-linejoin: round;
-    stroke-linecap: round;
 }
 
 /* Sea Routes */
@@ -1524,16 +1527,22 @@ select:focus { outline: none; border-color: var(--accent); }
 }
 
 #river-svg path {
-    fill: rgb(166, 155, 125);
+    fill: rgb(93, 151, 187);
     stroke: none;
 }
 
-/* Roads */
+/* Roads. Trade routes are the visual backbone — solid line in a warm
+   brown, more prominent than the dashed local roads. Local roads stay
+   subtle so they don't overwhelm the political-color fills. */
 #road-svg path {
     fill: none;
-    stroke: rgba(90, 74, 58, 0.5);
+    stroke: rgb(96, 78, 60);
     stroke-linecap: butt;
     stroke-linejoin: miter;
+}
+#road-svg .road-trade {
+    stroke-linecap: round;
+    stroke-linejoin: round;
 }
 
 /* Cities - natural marker style */
@@ -1555,8 +1564,17 @@ select:focus { outline: none; border-color: var(--accent); }
 #label-svg .kingdom-label {
     font-family: 'Cinzel', 'Times New Roman', serif;
     font-variant: small-caps;
-    letter-spacing: 0.15em;
-    font-weight: 400;
+    letter-spacing: 0.12em;
+    font-weight: 600;
+    /* Parchment-colored stroke painted UNDER the fill so the dark text is
+       legible even where it sits on busy terrain, river lines, or
+       similar-colored kingdom fills. paint-order makes the stroke render
+       behind the fill so letterforms still look clean. */
+    fill: #2C2416;
+    stroke: rgba(232, 220, 200, 0.85);
+    stroke-width: 3px;
+    stroke-linejoin: round;
+    paint-order: stroke fill;
 }
 
 #label-svg .city-label {
@@ -1567,6 +1585,22 @@ select:focus { outline: none; border-color: var(--accent); }
 #label-svg .capitol-label {
     font-family: 'Cormorant Garamond', 'Times New Roman', serif;
     font-weight: 500;
+}
+
+/* Lake labels follow real-map cartographic convention: italic, in a
+   slightly muted blue that reads as "this is water" without competing
+   with the kingdom names. Letter-spacing is loose so the name visually
+   spans the lake's width. */
+#label-svg .lake-label {
+    font-family: 'IM Fell English', 'Times New Roman', serif;
+    font-style: italic;
+    font-weight: 400;
+    letter-spacing: 0.15em;
+    fill: #2A4458;
+    stroke: rgba(232, 220, 200, 0.7);
+    stroke-width: 2px;
+    stroke-linejoin: round;
+    paint-order: stroke fill;
 }
 
 /* ========================================
@@ -1826,3 +1860,4 @@ select:focus { outline: none; border-color: var(--accent); }
     .sidebar { width: 220px; }
     .brand-name { display: none; }
 }
+

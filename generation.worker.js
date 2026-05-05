@@ -167,21 +167,42 @@ function applyWorldMask(h, x, y, width, height, preset, strength) {
         }
         case 'isthmus': {
             // Mirror of voronoi-generator.js isthmus case. See comments there.
-            // Wandering centerline + varying width, no east/west edge taper.
-            const centerY = Noise.simplex2(nx * 1.5, 8.3) * 0.20;
-            const halfWidth = 0.40 + Noise.simplex2(nx * 2.3, 41.7) * 0.12;
+            // Two-octave centerline + edge bulges + scattered islands.
+            const centerSlow = Noise.simplex2(nx * 1.2, 8.3) * 0.25;
+            const centerFast = Noise.simplex2(nx * 3.7, 19.1) * 0.10;
+            const centerY = centerSlow + centerFast;
+            
+            const edgeBulge = 1 + 0.7 * dx * dx;
+            const baseHalfWidth = 0.32 + Noise.simplex2(nx * 2.3, 41.7) * 0.12;
+            const halfWidth = baseHalfWidth * edgeBulge;
+            
             const northWobble = Noise.simplex2(nx * 4.0, 11.7) * 0.06;
             const southWobble = Noise.simplex2(nx * 4.3, 53.1) * 0.06;
             const northCoastY = centerY - halfWidth + northWobble;
             const southCoastY = centerY + halfWidth + southWobble;
+            
             const distFromNorthCoast = dy - northCoastY;
             const distFromSouthCoast = southCoastY - dy;
             const northMask = smoothstep(0, 0.10, distFromNorthCoast);
             const southMask = smoothstep(0, 0.10, distFromSouthCoast);
-            const landBandMask = Math.min(northMask, southMask);
-            mult = 1 - (1 - landBandMask) * strength;
-            if (landBandMask > 0.5) {
-                add = (landBandMask - 0.5) * 0.18 * strength;
+            const mainBandMask = Math.min(northMask, southMask);
+            
+            const islandNoise = Noise.simplex2(nx * 6.0, ny * 6.0 + 137.1);
+            const distFromBand = Math.min(
+                Math.abs(dy - northCoastY),
+                Math.abs(dy - southCoastY)
+            );
+            const islandProximity = 1 - smoothstep(0.0, 0.45, distFromBand);
+            const rawIslandMask = smoothstep(0.45, 0.62, islandNoise) * islandProximity;
+            
+            const landMask = Math.max(mainBandMask, rawIslandMask);
+            mult = 1 - (1 - landMask) * strength;
+            
+            if (mainBandMask > 0.5) {
+                add = (mainBandMask - 0.5) * 0.18 * strength;
+            }
+            if (rawIslandMask > 0.4 && mainBandMask < 0.3) {
+                add = Math.max(add, (rawIslandMask - 0.4) * 0.08 * strength);
             }
             break;
         }
@@ -196,13 +217,25 @@ function applyWorldMask(h, x, y, width, height, preset, strength) {
             break;
         }
         case 'coastal': {
+            // Mirror of voronoi-generator.js coastal case. See comments there.
+            // Diagonal coast NW -> SE, plus large scattered islands in the ocean.
             const angle = Math.PI * 0.25;
             const ax = Math.cos(angle), ay = Math.sin(angle);
             let coastDist = dx * ax + dy * ay;
             coastDist += Noise.simplex2(nx * 4.0, ny * 4.0) * 0.20;
-            const landMask = smoothstep(-0.15, 0.15, coastDist);
+            const mainLandMask = smoothstep(-0.15, 0.15, coastDist);
+            
+            // Large island noise — low frequency = few big shapes
+            const islandNoise = Noise.simplex2(nx * 1.8 + 53.7, ny * 1.8 + 91.3);
+            const oceanFactor = 1 - mainLandMask;
+            const rawIslandMask = smoothstep(0.35, 0.55, islandNoise) * oceanFactor;
+            
+            const landMask = Math.max(mainLandMask, rawIslandMask);
             mult = 1 - (1 - landMask) * strength;
-            add  = landMask * 0.12 * strength;
+            add  = mainLandMask * 0.12 * strength;
+            if (rawIslandMask > 0.4 && mainLandMask < 0.3) {
+                add = Math.max(add, (rawIslandMask - 0.4) * 0.10 * strength);
+            }
             break;
         }
         case 'inland-sea': {
@@ -326,14 +359,13 @@ function generatePoissonDisc(cellCount, width, height, margin = 1) {
                 break;
             }
         }
-        if (!found) active.splice(randIdx, 1);
+        
+        if (!found) {
+            active[randIdx] = active[active.length - 1];
+            active.pop();
+        }
     }
     
-    while (pointCount < cellCount) {
-        points[pointCount * 2] = margin + PRNG.random() * w;
-        points[pointCount * 2 + 1] = margin + PRNG.random() * h;
-        pointCount++;
-    }
     return { points, actualCount: pointCount };
 }
 

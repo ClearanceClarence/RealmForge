@@ -1,0 +1,54 @@
+# ─────────────────────────────────────────────────────────────────────
+# RealmForge — development cache-busting
+# ─────────────────────────────────────────────────────────────────────
+# Tells Apache (XAMPP) to send no-cache headers for source files, so
+# that every page reload fetches the latest JS/CSS from disk. Without
+# this, browsers aggressively cache ES modules (especially Workers and
+# unversioned imports), which means edits don't take effect even after
+# Ctrl+F5.
+#
+# This is a development-only setup. In production you'd want the
+# opposite: long max-age + a content-hash in the filename. For now,
+# while we're iterating fast, no cache means no stale code.
+# ─────────────────────────────────────────────────────────────────────
+
+<IfModule mod_headers.c>
+    # All JavaScript files (including .mjs and .worker.js)
+    <FilesMatch "\.(js|mjs|cjs)$">
+        Header set Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+        Header set Pragma "no-cache"
+        Header set Expires "0"
+    </FilesMatch>
+
+    # CSS files
+    <FilesMatch "\.css$">
+        Header set Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+        Header set Pragma "no-cache"
+        Header set Expires "0"
+    </FilesMatch>
+
+    # HTML files — also no-cache so refactors of index.html take effect
+    <FilesMatch "\.html?$">
+        Header set Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+        Header set Pragma "no-cache"
+        Header set Expires "0"
+    </FilesMatch>
+</IfModule>
+
+# Fallback for environments without mod_headers (less reliable but better
+# than nothing). mod_expires is enabled by default in most XAMPP installs.
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType application/javascript "access plus 0 seconds"
+    ExpiresByType text/javascript "access plus 0 seconds"
+    ExpiresByType text/css "access plus 0 seconds"
+    ExpiresByType text/html "access plus 0 seconds"
+</IfModule>
+
+# Make sure web workers and ES modules get the right MIME type. Without
+# this, some older Apache configurations serve .js files as text/plain,
+# which makes ES module imports fail silently.
+<IfModule mod_mime.c>
+    AddType application/javascript .js
+    AddType application/javascript .mjs
+</IfModule>

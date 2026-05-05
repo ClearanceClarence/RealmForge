@@ -687,14 +687,11 @@ export function addTileCaching(VoronoiGenerator) {
                 this._renderRoads?.(ctx, bounds);
             }
             
-            // Cities and capitals
+            // Cities and capitals are rendered via SVG (see _updateCitySVG)
+            // so the bitmap tiles don't need to draw them. Leaving the
+            // _placedCityLabels init in place — other code may still
+            // expect this to exist as a temporary scratch array.
             this._placedCityLabels = [];
-            if (this.capitols && this.capitolNames) {
-                this._renderCapitols(ctx, bounds);
-            }
-            if (this.cities && this.cityNames) {
-                this._renderCities(ctx, bounds);
-            }
             this._placedCityLabels = null;
         }
         

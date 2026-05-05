@@ -178,16 +178,6 @@ render() {
         this._renderCoordinateGrid(ctx, bounds);
     }
     
-    // Render wind rose overlay
-    if (this.showWindrose) {
-        this._renderWindrose(ctx);
-    }
-    
-    // Render scale bar
-    if (this.showScale) {
-        this._renderScaleBar(ctx);
-    }
-    
     ctx.restore();
     
     // Draw zoom indicator
@@ -664,14 +654,25 @@ _renderPoliticalBase(ctx, bounds) {
     
     if (coastLoops.length === 0) return;
     
-    // 2. Fill land with base parchment color
+    // 2. Fill land. Iterate cell polygons rather than the smooth coastline
+    // loops — for normal worlds (no land touching map edges) the two are
+    // visually identical. For worlds where land runs off the map edges
+    // (e.g. isthmus preset), the coastline loops can have artifacts at
+    // map corners (d3-delaunay clips corner cells with a single diagonal
+    // edge that the loop-chaining algorithm closes incorrectly), producing
+    // visible triangular wedges of "land" in ocean regions. Painting per-
+    // cell sidesteps the issue entirely: each cell knows for itself whether
+    // it's land or ocean.
     ctx.fillStyle = '#E8DCC8'; // Base parchment - kingdoms will tint this
     ctx.beginPath();
-    for (const loop of coastLoops) {
-        if (loop.length < 3) continue;
-        ctx.moveTo(loop[0][0], loop[0][1]);
-        for (let i = 1; i < loop.length; i++) {
-            ctx.lineTo(loop[i][0], loop[i][1]);
+    for (let i = 0; i < this.cellCount; i++) {
+        if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+        if (this.lakeCells && this.lakeCells.has(i)) continue;  // lakes painted separately
+        const cellPoly = this.voronoi.cellPolygon(i);
+        if (!cellPoly || cellPoly.length < 3) continue;
+        ctx.moveTo(cellPoly[0][0], cellPoly[0][1]);
+        for (let j = 1; j < cellPoly.length; j++) {
+            ctx.lineTo(cellPoly[j][0], cellPoly[j][1]);
         }
         ctx.closePath();
     }
@@ -1002,6 +1003,38 @@ _buildKingdomBoundary(kingdomId) {
     const cellSet = new Set(cells);
     const boundaryEdges = [];
     
+    // Map-edge detection. Same logic as in _buildSmoothCoastlineLoops:
+    // the kingdom polygon's edges along the literal map boundary need to
+    // be treated as boundary edges (so the chain walks along the map edge),
+    // and diagonal corner-clip edges (endpoints on adjacent map edges) need
+    // to be decomposed into two edges through the corner vertex.
+    // Without this, a kingdom touching a map corner has the chain close
+    // implicitly via the diagonal — producing a visible triangular wedge
+    // of kingdom-color extending into the ocean.
+    const W = this.width;
+    const H = this.height;
+    const EDGE_TOL = 0.5;
+    const onLeft   = (x, y) => x <= EDGE_TOL;
+    const onRight  = (x, y) => x >= W - EDGE_TOL;
+    const onTop    = (x, y) => y <= EDGE_TOL;
+    const onBottom = (x, y) => y >= H - EDGE_TOL;
+    const sameMapEdge = (x1, y1, x2, y2) =>
+        (onLeft(x1, y1)   && onLeft(x2, y2))   ||
+        (onRight(x1, y1)  && onRight(x2, y2))  ||
+        (onTop(x1, y1)    && onTop(x2, y2))    ||
+        (onBottom(x1, y1) && onBottom(x2, y2));
+    const sharedCorner = (x1, y1, x2, y2) => {
+        const e1Left = onLeft(x1, y1), e1Right = onRight(x1, y1);
+        const e1Top  = onTop(x1, y1),  e1Bottom = onBottom(x1, y1);
+        const e2Left = onLeft(x2, y2), e2Right = onRight(x2, y2);
+        const e2Top  = onTop(x2, y2),  e2Bottom = onBottom(x2, y2);
+        if ((e1Top    && e2Left)   || (e2Top    && e1Left))   return [0, 0];
+        if ((e1Top    && e2Right)  || (e2Top    && e1Right))  return [W, 0];
+        if ((e1Bottom && e2Left)   || (e2Bottom && e1Left))   return [0, H];
+        if ((e1Bottom && e2Right)  || (e2Bottom && e1Right))  return [W, H];
+        return null;
+    };
+    
     // Collect all boundary edges
     for (const i of cells) {
         const cell = this.voronoi.cellPolygon(i);
@@ -1012,6 +1045,22 @@ _buildKingdomBoundary(kingdomId) {
         for (let j = 0; j < cell.length - 1; j++) {
             const v1 = cell[j];
             const v2 = cell[j + 1];
+            
+            // Map-edge segment of a kingdom cell: the kingdom ends at the
+            // literal map boundary here. Walk along it.
+            if (sameMapEdge(v1[0], v1[1], v2[0], v2[1])) {
+                boundaryEdges.push([v1[0], v1[1], v2[0], v2[1]]);
+                continue;
+            }
+            
+            // Diagonal corner-clip: decompose through the shared corner
+            // so the chain walks the corner instead of cutting it.
+            const corner = sharedCorner(v1[0], v1[1], v2[0], v2[1]);
+            if (corner !== null) {
+                boundaryEdges.push([v1[0], v1[1], corner[0], corner[1]]);
+                boundaryEdges.push([corner[0], corner[1], v2[0], v2[1]]);
+                continue;
+            }
             
             // Find which neighbor this edge borders
             const edgeMidX = (v1[0] + v2[0]) / 2;
@@ -1237,12 +1286,49 @@ _buildSmoothCoastlineLoops() {
     // interior neighbour (which is land). To make the coastline loop close
     // properly when land runs off the edge of the map (e.g. isthmus preset),
     // we explicitly treat map-boundary edges of land cells as coastline.
+    //
+    // CORNER CELL CAVEAT: d3-delaunay clips polygons to the bbox; for a cell
+    // whose unclipped polygon would extend past a corner, the clipping
+    // produces a single DIAGONAL edge from one map edge to another (e.g.
+    // (50, 0) → (0, 50)) without inserting the corner vertex (0, 0).
+    // Such a diagonal isn't actually a coastline — but if we just skip it,
+    // the coastline loop has a gap at the corner and the polygon-fill
+    // algorithm closes it with a straight line, which produces the visible
+    // triangular wedge across the corner.
+    //
+    // Fix: when a land cell has a diagonal corner-clip edge (endpoints on
+    // different map edges that share a corner), DECOMPOSE it into two edges
+    // that route through the corner vertex, e.g. (50,0)→(0,0)→(0,50). The
+    // chain algorithm then walks around the corner correctly.
     const W = this.width;
     const H = this.height;
-    const EDGE_TOL = 0.5;  // world-space pixels; cell vertices snap to bbox
-    const isOnMapEdge = (x, y) =>
-        x <= EDGE_TOL || x >= W - EDGE_TOL ||
-        y <= EDGE_TOL || y >= H - EDGE_TOL;
+    const EDGE_TOL = 0.5;
+    const onLeft   = (x, y) => x <= EDGE_TOL;
+    const onRight  = (x, y) => x >= W - EDGE_TOL;
+    const onTop    = (x, y) => y <= EDGE_TOL;
+    const onBottom = (x, y) => y >= H - EDGE_TOL;
+    const sameMapEdge = (x1, y1, x2, y2) =>
+        (onLeft(x1, y1)   && onLeft(x2, y2))   ||
+        (onRight(x1, y1)  && onRight(x2, y2))  ||
+        (onTop(x1, y1)    && onTop(x2, y2))    ||
+        (onBottom(x1, y1) && onBottom(x2, y2));
+    
+    // Returns the corner [cx, cy] shared by the map edges containing the
+    // two endpoints, or null if the endpoints aren't on adjacent edges
+    // (i.e. one on top and one on bottom — which shouldn't happen for a
+    // single cell polygon edge).
+    const sharedCorner = (x1, y1, x2, y2) => {
+        const e1Left = onLeft(x1, y1), e1Right = onRight(x1, y1);
+        const e1Top  = onTop(x1, y1),  e1Bottom = onBottom(x1, y1);
+        const e2Left = onLeft(x2, y2), e2Right = onRight(x2, y2);
+        const e2Top  = onTop(x2, y2),  e2Bottom = onBottom(x2, y2);
+        // Top-left corner: one on top, the other on left
+        if ((e1Top    && e2Left) || (e2Top    && e1Left))   return [0, 0];
+        if ((e1Top    && e2Right) || (e2Top    && e1Right)) return [W, 0];
+        if ((e1Bottom && e2Left) || (e2Bottom && e1Left))   return [0, H];
+        if ((e1Bottom && e2Right) || (e2Bottom && e1Right)) return [W, H];
+        return null;
+    };
     
     for (let i = 0; i < this.cellCount; i++) {
         if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
@@ -1256,11 +1342,23 @@ _buildSmoothCoastlineLoops() {
             const v1 = cell[j];
             const v2 = cell[j + 1];
             
-            // If both endpoints sit on the map boundary (top/bottom/left/right),
-            // this is a map-edge edge of a land cell — treat as coast so the
-            // loop closes by walking along the map edge.
-            if (isOnMapEdge(v1[0], v1[1]) && isOnMapEdge(v2[0], v2[1])) {
+            // If both endpoints sit on the SAME edge of the map (top/bottom/
+            // left/right), this is a map-edge coastline of a land cell —
+            // treat as coast so the loop closes by walking along that edge.
+            if (sameMapEdge(v1[0], v1[1], v2[0], v2[1])) {
                 coastEdges.push([v1[0], v1[1], v2[0], v2[1]]);
+                continue;
+            }
+            
+            // If endpoints are on adjacent map edges (e.g. top + left), this
+            // is a diagonal corner-clip edge of a land cell. Replace it with
+            // two virtual edges that route through the corner vertex, so the
+            // coastline chain walks around the corner instead of cutting it
+            // off with a diagonal.
+            const corner = sharedCorner(v1[0], v1[1], v2[0], v2[1]);
+            if (corner !== null) {
+                coastEdges.push([v1[0], v1[1], corner[0], corner[1]]);
+                coastEdges.push([corner[0], corner[1], v2[0], v2[1]]);
                 continue;
             }
             
@@ -1771,6 +1869,19 @@ _renderKingdomNames(ctx, bounds) {
             }
         }
         
+        // Clamp label center so the text bounding box fits within the map.
+        // Without this, labels for kingdoms whose centroid lies near a map
+        // edge (small or edge-touching kingdoms — common in the isthmus
+        // preset where land runs off the edges) get text rendered outside
+        // the map area and visually clipped.
+        {
+            const clampPad = fontSize * 0.6;
+            const halfW = textWidth / 2 + clampPad;
+            const halfH = fontSize * 0.9;
+            textCenterX = Math.max(halfW, Math.min(this.width  - halfW, textCenterX));
+            textCenterY = Math.max(halfH, Math.min(this.height - halfH, textCenterY));
+        }
+        
         // Calculate label bounding box for collision detection
         // Account for rotation by computing the axis-aligned bounding box of the rotated rectangle
         const padding = fontSize * 0.4;
@@ -1835,576 +1946,12 @@ _renderKingdomNames(ctx, bounds) {
     }
 },
 
-/**
- * Render capitol cities for each kingdom
- */
-_renderCapitols(ctx, bounds) {
-    if (!this.capitols || !this.capitolNames) return;
-    
-    const zoom = this.viewport.zoom;
-    const placedLabels = this._placedCityLabels || [];
-    
-    for (let k = 0; k < this.kingdomCount; k++) {
-        const capitolCell = this.capitols[k];
-        const capitolName = this.capitolNames[k];
-        
-        if (capitolCell < 0 || !capitolName) continue;
-        
-        const x = this.points[capitolCell * 2];
-        const y = this.points[capitolCell * 2 + 1];
-        
-        // Skip if outside view
-        if (x < bounds.left - 50 || x > bounds.right + 50 ||
-            y < bounds.top - 50 || y > bounds.bottom + 50) continue;
-        
-        // Scale for zoom
-        const scale = Math.max(0.5, 1 / zoom);
-        const baseSize = 12;
-        const s = baseSize * scale;
-        
-        ctx.save();
-        ctx.translate(x, y);
-        
-        // Draw detailed castle/fortress icon
-        const inkColor = '#2C2416';
-        const lightColor = 'rgba(255, 252, 245, 0.95)';
-        const strokeWidth = Math.max(0.3, 0.8 * scale);
-        
-        // Light glow/halo behind for visibility
-        ctx.shadowColor = lightColor;
-        ctx.shadowBlur = 4 * scale;
-        
-        // Main castle body
-        ctx.fillStyle = inkColor;
-        ctx.strokeStyle = inkColor;
-        ctx.lineWidth = strokeWidth;
-        ctx.lineJoin = 'miter';
-        ctx.lineCap = 'square';
-        
-        // Central keep (tall rectangle)
-        ctx.beginPath();
-        ctx.rect(-s * 0.25, -s * 0.9, s * 0.5, s * 0.9);
-        ctx.fill();
-        
-        // Keep battlements (crenellations on top)
-        ctx.beginPath();
-        const keepBattleWidth = s * 0.12;
-        const keepBattleHeight = s * 0.15;
-        for (let i = 0; i < 3; i++) {
-            const bx = -s * 0.25 + i * keepBattleWidth * 1.5 + keepBattleWidth * 0.25;
-            ctx.rect(bx, -s * 0.9 - keepBattleHeight, keepBattleWidth, keepBattleHeight);
-        }
-        ctx.fill();
-        
-        // Left tower
-        ctx.beginPath();
-        ctx.rect(-s * 0.6, -s * 0.65, s * 0.3, s * 0.65);
-        ctx.fill();
-        
-        // Left tower roof (pointed)
-        ctx.beginPath();
-        ctx.moveTo(-s * 0.65, -s * 0.65);
-        ctx.lineTo(-s * 0.45, -s * 0.95);
-        ctx.lineTo(-s * 0.25, -s * 0.65);
-        ctx.closePath();
-        ctx.fill();
-        
-        // Right tower  
-        ctx.beginPath();
-        ctx.rect(s * 0.3, -s * 0.65, s * 0.3, s * 0.65);
-        ctx.fill();
-        
-        // Right tower roof (pointed)
-        ctx.beginPath();
-        ctx.moveTo(s * 0.25, -s * 0.65);
-        ctx.lineTo(s * 0.45, -s * 0.95);
-        ctx.lineTo(s * 0.65, -s * 0.65);
-        ctx.closePath();
-        ctx.fill();
-        
-        // Walls connecting towers
-        ctx.beginPath();
-        ctx.rect(-s * 0.6, -s * 0.35, s * 0.35, s * 0.35);
-        ctx.rect(s * 0.25, -s * 0.35, s * 0.35, s * 0.35);
-        ctx.fill();
-        
-        // Wall battlements
-        ctx.beginPath();
-        const wallBattleWidth = s * 0.08;
-        const wallBattleHeight = s * 0.1;
-        // Left wall
-        for (let i = 0; i < 3; i++) {
-            const bx = -s * 0.58 + i * wallBattleWidth * 1.3;
-            ctx.rect(bx, -s * 0.35 - wallBattleHeight, wallBattleWidth, wallBattleHeight);
-        }
-        // Right wall
-        for (let i = 0; i < 3; i++) {
-            const bx = s * 0.27 + i * wallBattleWidth * 1.3;
-            ctx.rect(bx, -s * 0.35 - wallBattleHeight, wallBattleWidth, wallBattleHeight);
-        }
-        ctx.fill();
-        
-        // Gate (arched doorway)
-        ctx.fillStyle = lightColor;
-        ctx.beginPath();
-        ctx.moveTo(-s * 0.12, 0);
-        ctx.lineTo(-s * 0.12, -s * 0.25);
-        ctx.arc(0, -s * 0.25, s * 0.12, Math.PI, 0, false);
-        ctx.lineTo(s * 0.12, 0);
-        ctx.closePath();
-        ctx.fill();
-        
-        // Flag on central keep
-        ctx.fillStyle = inkColor;
-        ctx.beginPath();
-        // Pole
-        ctx.rect(-s * 0.02, -s * 1.3, s * 0.04, s * 0.25);
-        ctx.fill();
-        // Flag
-        ctx.beginPath();
-        ctx.moveTo(s * 0.02, -s * 1.3);
-        ctx.lineTo(s * 0.25, -s * 1.2);
-        ctx.lineTo(s * 0.02, -s * 1.1);
-        ctx.closePath();
-        ctx.fill();
-        
-        // Small windows on keep
-        ctx.fillStyle = lightColor;
-        ctx.beginPath();
-        ctx.rect(-s * 0.08, -s * 0.7, s * 0.06, s * 0.1);
-        ctx.rect(s * 0.02, -s * 0.7, s * 0.06, s * 0.1);
-        ctx.rect(-s * 0.03, -s * 0.5, s * 0.06, s * 0.08);
-        ctx.fill();
-        
-        ctx.shadowBlur = 0;
-        ctx.restore();
-        
-        // Draw capitol name with collision detection
-        const markerSize = s * 1.3;
-        const fontSize = Math.max(6, 11 / zoom);
-        ctx.font = `600 ${fontSize}px 'IM Fell English', Georgia, serif`;
-        
-        const textWidth = ctx.measureText(capitolName).width;
-        const textHeight = fontSize;
-        const padding = 3 / zoom;
-        
-        // Try different label positions
-        const positions = [
-            { // Right (default)
-                textX: x + markerSize + padding,
-                textY: y,
-                align: 'left',
-                box: {
-                    left: x + markerSize,
-                    right: x + markerSize + textWidth + padding * 2,
-                    top: y - textHeight * 0.6,
-                    bottom: y + textHeight * 0.6
-                }
-            },
-            { // Left
-                textX: x - markerSize - padding,
-                textY: y,
-                align: 'right',
-                box: {
-                    left: x - markerSize - textWidth - padding * 2,
-                    right: x - markerSize,
-                    top: y - textHeight * 0.6,
-                    bottom: y + textHeight * 0.6
-                }
-            },
-            { // Above-right
-                textX: x + markerSize * 0.5,
-                textY: y - markerSize - padding,
-                align: 'left',
-                box: {
-                    left: x + markerSize * 0.5 - padding,
-                    right: x + markerSize * 0.5 + textWidth + padding,
-                    top: y - markerSize - textHeight - padding,
-                    bottom: y - markerSize
-                }
-            },
-            { // Below-right
-                textX: x + markerSize * 0.5,
-                textY: y + markerSize + padding + textHeight * 0.5,
-                align: 'left',
-                box: {
-                    left: x + markerSize * 0.5 - padding,
-                    right: x + markerSize * 0.5 + textWidth + padding,
-                    top: y + markerSize,
-                    bottom: y + markerSize + textHeight + padding
-                }
-            }
-        ];
-        
-        // Find first non-colliding position
-        let bestPos = positions[0]; // Default to right
-        for (const pos of positions) {
-            let collides = false;
-            for (const placed of placedLabels) {
-                if (pos.box.left < placed.right && pos.box.right > placed.left &&
-                    pos.box.top < placed.bottom && pos.box.bottom > placed.top) {
-                    collides = true;
-                    break;
-                }
-            }
-            if (!collides) {
-                bestPos = pos;
-                break;
-            }
-        }
-        
-        ctx.textAlign = bestPos.align;
-        ctx.textBaseline = 'middle';
-        
-        // Soft halo for legibility
-        const shadowLayers = [
-            { blur: 3, alpha: 0.4 },
-            { blur: 2, alpha: 0.6 },
-            { blur: 1, alpha: 0.8 }
-        ];
-        for (const layer of shadowLayers) {
-            ctx.shadowColor = `rgba(255, 252, 245, ${layer.alpha})`;
-            ctx.shadowBlur = layer.blur;
-            ctx.fillStyle = 'rgba(255, 252, 245, 0.85)';
-            ctx.fillText(capitolName, bestPos.textX, bestPos.textY);
-        }
-        ctx.shadowColor = 'transparent';
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = '#2C2416';
-        ctx.fillText(capitolName, bestPos.textX, bestPos.textY);
-        
-        // Track this label
-        placedLabels.push(bestPos.box);
-        
-        // Store hit box for hover detection (include marker area)
-        if (this._labelHitBoxes) {
-            this._labelHitBoxes.push({
-                type: 'capital',
-                index: k,
-                cell: capitolCell,
-                name: capitolName,
-                box: {
-                    left: Math.min(x - markerSize, bestPos.box.left),
-                    right: Math.max(x + markerSize, bestPos.box.right),
-                    top: Math.min(y - markerSize, bestPos.box.top),
-                    bottom: Math.max(y + markerSize, bestPos.box.bottom)
-                }
-            });
-        }
-    }
-},
 
-/**
- * Render cities (non-capitol settlements)
- */
-_renderCities(ctx, bounds) {
-    if (!this.cities || !this.cityNames) return;
-    
-    const zoom = this.viewport.zoom;
-    
-    // Only show city labels when zoomed in enough
-    const showLabels = zoom > 1.2;
-    // Only show markers when somewhat zoomed in
-    const showMarkers = zoom > 0.6;
-    
-    if (!showMarkers) return;
-    
-    // First pass: collect all city positions and draw markers
-    const cityPositions = [];
-    
-    for (let i = 0; i < this.cities.length; i++) {
-        const city = this.cities[i];
-        const cityName = this.cityNames && this.cityNames[i] ? this.cityNames[i] : `City ${i + 1}`;
-        
-        if (!city || city.cell < 0) continue;
-        
-        const x = this.points[city.cell * 2];
-        const y = this.points[city.cell * 2 + 1];
-        
-        // Skip if outside view
-        if (x < bounds.left - 50 || x > bounds.right + 50 ||
-            y < bounds.top - 50 || y > bounds.bottom + 50) continue;
-        
-        // Scale for zoom
-        const scale = Math.max(0.4, 0.8 / zoom);
-        const baseSize = 8;
-        const s = baseSize * scale;
-        const markerSize = s * 1.2;
-        
-        ctx.save();
-        ctx.translate(x, y);
-        
-        // Draw detailed town icon
-        const inkColor = '#2C2416';
-        const lightColor = 'rgba(255, 252, 245, 0.95)';
-        const strokeWidth = Math.max(0.2, 0.5 * scale);
-        
-        ctx.globalAlpha = Math.min(1, zoom * 0.8);
-        
-        // Light glow behind
-        ctx.shadowColor = lightColor;
-        ctx.shadowBlur = 2 * scale;
-        
-        ctx.fillStyle = inkColor;
-        ctx.strokeStyle = inkColor;
-        ctx.lineWidth = strokeWidth;
-        ctx.lineJoin = 'miter';
-        ctx.lineCap = 'square';
-        
-        // Church/cathedral spire (center, tallest)
-        ctx.beginPath();
-        // Spire
-        ctx.moveTo(0, -s * 1.1);
-        ctx.lineTo(-s * 0.12, -s * 0.5);
-        ctx.lineTo(s * 0.12, -s * 0.5);
-        ctx.closePath();
-        ctx.fill();
-        // Church body
-        ctx.beginPath();
-        ctx.rect(-s * 0.18, -s * 0.5, s * 0.36, s * 0.5);
-        ctx.fill();
-        
-        // Cross on top
-        ctx.beginPath();
-        ctx.rect(-s * 0.02, -s * 1.25, s * 0.04, s * 0.12);
-        ctx.rect(-s * 0.06, -s * 1.2, s * 0.12, s * 0.03);
-        ctx.fill();
-        
-        // Left building (house with peaked roof)
-        ctx.beginPath();
-        ctx.rect(-s * 0.55, -s * 0.35, s * 0.3, s * 0.35);
-        ctx.fill();
-        // Roof
-        ctx.beginPath();
-        ctx.moveTo(-s * 0.6, -s * 0.35);
-        ctx.lineTo(-s * 0.4, -s * 0.6);
-        ctx.lineTo(-s * 0.2, -s * 0.35);
-        ctx.closePath();
-        ctx.fill();
-        
-        // Right building (house with peaked roof)
-        ctx.beginPath();
-        ctx.rect(s * 0.25, -s * 0.3, s * 0.28, s * 0.3);
-        ctx.fill();
-        // Roof
-        ctx.beginPath();
-        ctx.moveTo(s * 0.2, -s * 0.3);
-        ctx.lineTo(s * 0.39, -s * 0.55);
-        ctx.lineTo(s * 0.58, -s * 0.3);
-        ctx.closePath();
-        ctx.fill();
-        
-        // Small tower/turret on right building
-        ctx.beginPath();
-        ctx.rect(s * 0.42, -s * 0.5, s * 0.1, s * 0.2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.moveTo(s * 0.4, -s * 0.5);
-        ctx.lineTo(s * 0.47, -s * 0.65);
-        ctx.lineTo(s * 0.54, -s * 0.5);
-        ctx.closePath();
-        ctx.fill();
-        
-        // Windows (tiny bright spots)
-        ctx.fillStyle = lightColor;
-        ctx.beginPath();
-        // Church window (arched)
-        ctx.arc(0, -s * 0.25, s * 0.06, Math.PI, 0, false);
-        ctx.rect(-s * 0.06, -s * 0.25, s * 0.12, s * 0.1);
-        ctx.fill();
-        // House windows
-        ctx.beginPath();
-        ctx.rect(-s * 0.48, -s * 0.22, s * 0.06, s * 0.08);
-        ctx.rect(-s * 0.35, -s * 0.22, s * 0.06, s * 0.08);
-        ctx.rect(s * 0.32, -s * 0.18, s * 0.05, s * 0.07);
-        ctx.rect(s * 0.42, -s * 0.18, s * 0.05, s * 0.07);
-        ctx.fill();
-        
-        ctx.shadowBlur = 0;
-        ctx.globalAlpha = 1;
-        ctx.restore();
-        
-        if (showLabels) {
-            cityPositions.push({ x, y, name: cityName, markerSize, index: i });
-        }
-    }
-    
-    if (!showLabels || cityPositions.length === 0) return;
-    
-    // Use shared placed labels array (capitols already added)
-    const placedLabels = this._placedCityLabels || [];
-    
-    // Second pass: draw city labels with collision detection
-    const fontSize = Math.max(5, 9 / zoom);
-    ctx.font = `italic ${fontSize}px 'IM Fell English', Georgia, serif`;
-    
-    for (const city of cityPositions) {
-        const { x, y, name, markerSize, index } = city;
-        
-        const textWidth = ctx.measureText(name).width;
-        const textHeight = fontSize;
-        const padding = 2 / zoom;
-        
-        // Try different label positions: right, left, above-right, below-right, above, below, above-left, below-left
-        const positions = [
-            { // Right (default)
-                textX: x + markerSize + padding,
-                textY: y,
-                align: 'left',
-                box: {
-                    left: x + markerSize,
-                    right: x + markerSize + textWidth + padding * 2,
-                    top: y - textHeight * 0.6,
-                    bottom: y + textHeight * 0.6
-                }
-            },
-            { // Left
-                textX: x - markerSize - padding,
-                textY: y,
-                align: 'right',
-                box: {
-                    left: x - markerSize - textWidth - padding * 2,
-                    right: x - markerSize,
-                    top: y - textHeight * 0.6,
-                    bottom: y + textHeight * 0.6
-                }
-            },
-            { // Above-right (diagonal)
-                textX: x + markerSize * 0.5,
-                textY: y - markerSize - textHeight * 0.3,
-                align: 'left',
-                box: {
-                    left: x + markerSize * 0.5 - padding,
-                    right: x + markerSize * 0.5 + textWidth + padding,
-                    top: y - markerSize - textHeight,
-                    bottom: y - markerSize + textHeight * 0.2
-                }
-            },
-            { // Below-right (diagonal)
-                textX: x + markerSize * 0.5,
-                textY: y + markerSize + textHeight * 0.5,
-                align: 'left',
-                box: {
-                    left: x + markerSize * 0.5 - padding,
-                    right: x + markerSize * 0.5 + textWidth + padding,
-                    top: y + markerSize - textHeight * 0.2,
-                    bottom: y + markerSize + textHeight
-                }
-            },
-            { // Above center
-                textX: x,
-                textY: y - markerSize - padding - textHeight * 0.3,
-                align: 'center',
-                box: {
-                    left: x - textWidth / 2 - padding,
-                    right: x + textWidth / 2 + padding,
-                    top: y - markerSize - textHeight - padding,
-                    bottom: y - markerSize
-                }
-            },
-            { // Below center
-                textX: x,
-                textY: y + markerSize + padding + textHeight * 0.5,
-                align: 'center',
-                box: {
-                    left: x - textWidth / 2 - padding,
-                    right: x + textWidth / 2 + padding,
-                    top: y + markerSize,
-                    bottom: y + markerSize + textHeight + padding
-                }
-            },
-            { // Above-left (diagonal)
-                textX: x - markerSize * 0.5,
-                textY: y - markerSize - textHeight * 0.3,
-                align: 'right',
-                box: {
-                    left: x - markerSize * 0.5 - textWidth - padding,
-                    right: x - markerSize * 0.5 + padding,
-                    top: y - markerSize - textHeight,
-                    bottom: y - markerSize + textHeight * 0.2
-                }
-            },
-            { // Below-left (diagonal)
-                textX: x - markerSize * 0.5,
-                textY: y + markerSize + textHeight * 0.5,
-                align: 'right',
-                box: {
-                    left: x - markerSize * 0.5 - textWidth - padding,
-                    right: x - markerSize * 0.5 + padding,
-                    top: y + markerSize - textHeight * 0.2,
-                    bottom: y + markerSize + textHeight
-                }
-            }
-        ];
-        
-        // Find first non-colliding position
-        let bestPos = null;
-        for (const pos of positions) {
-            let collides = false;
-            for (const placed of placedLabels) {
-                if (pos.box.left < placed.right && pos.box.right > placed.left &&
-                    pos.box.top < placed.bottom && pos.box.bottom > placed.top) {
-                    collides = true;
-                    break;
-                }
-            }
-            if (!collides) {
-                bestPos = pos;
-                break;
-            }
-        }
-        
-        // If all positions collide, skip this label entirely to keep map clean
-        if (!bestPos) {
-            continue;
-        }
-        
-        // Draw the label
-        ctx.save();
-        ctx.font = `italic ${fontSize}px 'IM Fell English', Georgia, serif`;
-        ctx.textAlign = bestPos.align;
-        ctx.textBaseline = 'middle';
-        
-        // Soft halo for legibility
-        const shadowLayers = [
-            { blur: 2, alpha: 0.5 },
-            { blur: 1, alpha: 0.7 }
-        ];
-        for (const layer of shadowLayers) {
-            ctx.shadowColor = `rgba(255, 252, 245, ${layer.alpha})`;
-            ctx.shadowBlur = layer.blur;
-            ctx.fillStyle = 'rgba(255, 252, 245, 0.8)';
-            ctx.fillText(name, bestPos.textX, bestPos.textY);
-        }
-        ctx.shadowColor = 'transparent';
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = '#3D3425';
-        ctx.fillText(name, bestPos.textX, bestPos.textY);
-        
-        ctx.restore();
-        
-        // Add this label to placed labels
-        placedLabels.push(bestPos.box);
-        
-        // Store hit box for hover detection (include marker area)
-        if (this._labelHitBoxes) {
-            const cityObj = this.cities[index];
-            this._labelHitBoxes.push({
-                type: 'city',
-                index: index,
-                cell: cityObj ? cityObj.cell : -1,
-                kingdom: cityObj ? cityObj.kingdom : -1,
-                name: name,
-                box: {
-                    left: Math.min(x - markerSize, bestPos.box.left),
-                    right: Math.max(x + markerSize, bestPos.box.right),
-                    top: Math.min(y - markerSize, bestPos.box.top),
-                    bottom: Math.max(y + markerSize, bestPos.box.bottom)
-                }
-            });
-        }
-    }
-},
+// Canvas-based city icon code (the seven _drawCityIcon subtypes
+// plus _renderCities) was removed — settlements are now rendered
+// as plain SVG circles via _updateCitySVG. See git history for the
+// detailed icon implementations if they're ever needed again.
+
 
 /**
  * Render roads connecting cities
@@ -2425,61 +1972,63 @@ _updateRoadSVG() {
     
     // Show SVG (may have been hidden during low-res render)
     svg.style.opacity = '1';
-    
-    // Clear existing paths
     svg.innerHTML = '';
     
     if (!this.roads || this.roads.length === 0) return;
     
     const zoom = this.viewport.zoom;
-    
-    // Only show roads when somewhat zoomed in
     if (zoom < 0.5) return;
     
-    // Set SVG viewBox to match canvas
     svg.setAttribute('viewBox', `0 0 ${this.width} ${this.height}`);
-    
-    // Create a group for all roads with transform
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.setAttribute('transform', `translate(${this.viewport.x}, ${this.viewport.y}) scale(${zoom})`);
     
-    // Draw each road as its own path
+    // The road list is consolidated by _consolidateRoadNetwork at the
+    // end of generation: every cell-edge belongs to exactly one road,
+    // tagged with the highest tier that originally used it. So we can
+    // just draw each road as its own <path> with no dedup logic — there
+    // are no overlapping cells to deduplicate.
+    
     for (const road of this.roads) {
         const path = road.path;
         if (!path || path.length < 2) continue;
         
-        // Simplify path to remove redundant points
         const points = path.map(p => ({ x: p.x, y: p.y }));
         const simplified = this._simplifyPath(points, 3);
-        
-        // Build path with gentle curves
+        if (simplified.length < 2) continue;
         const d = this._buildRoadSVGPath(simplified);
         
         const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         pathEl.setAttribute('d', d);
         
-        // Style based on road type
-        let strokeWidth, dashLength, gapLength;
-        
-        if (road.type === 'major' || road.type === 'trade') {
-            // Major roads and trade routes - slightly wider, smaller gaps
-            strokeWidth = 0.8;
-            dashLength = 1.5;
-            gapLength = 1.5;
+        // Style by road type
+        let strokeWidth, dashLength, gapLength, customColor = null;
+        if (road.type === 'trade') {
+            strokeWidth = 1.4;
+            dashLength = 0;
+            gapLength = 0;
+            customColor = 'rgb(96, 78, 60)';
+        } else if (road.type === 'major') {
+            strokeWidth = 0.9;
+            dashLength = 2;
+            gapLength = 1.2;
         } else if (road.type === 'pass') {
-            // Mountain pass roads - thinner, longer gaps
             strokeWidth = 0.6;
             dashLength = 1;
             gapLength = 2.5;
         } else {
-            // Minor roads
             strokeWidth = 0.7;
             dashLength = 1;
             gapLength = 2;
         }
         
         pathEl.setAttribute('stroke-width', strokeWidth);
-        pathEl.setAttribute('stroke-dasharray', `${dashLength} ${gapLength}`);
+        if (dashLength > 0) {
+            pathEl.setAttribute('stroke-dasharray', `${dashLength} ${gapLength}`);
+        }
+        if (customColor) {
+            pathEl.setAttribute('stroke', customColor);
+        }
         pathEl.setAttribute('class', `road-${road.type || 'minor'}`);
         
         g.appendChild(pathEl);
@@ -2509,15 +2058,32 @@ _updateSeaRouteSVG() {
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.setAttribute('transform', `translate(${this.viewport.x}, ${this.viewport.y}) scale(${zoom})`);
     
-    // Draw each sea route
+    // Draw each sea route. We smooth the polyline (which follows actual
+    // ocean cells from A*) using quadratic Beziers through midpoints — each
+    // path point becomes a control point and the curves pass through the
+    // midpoint of consecutive segments. This turns the cell-grid jaggedness
+    // into a flowing curve that suggests a sailing route.
     for (const route of this.seaRoutes) {
         const path = route.path;
         if (!path || path.length < 2) continue;
         
-        // Build SVG path string
-        let d = `M ${path[0].x} ${path[0].y}`;
-        for (let i = 1; i < path.length; i++) {
-            d += ` L ${path[i].x} ${path[i].y}`;
+        let d;
+        if (path.length === 2) {
+            // Just a straight line for two-point paths
+            d = `M ${path[0].x} ${path[0].y} L ${path[1].x} ${path[1].y}`;
+        } else {
+            // Smoothed: M to first, then quadratic Beziers using each
+            // middle point as a control and the midpoint to the next
+            // as the curve endpoint. End with a final straight segment
+            // to the actual last point.
+            d = `M ${path[0].x} ${path[0].y}`;
+            for (let i = 1; i < path.length - 1; i++) {
+                const cx = path[i].x, cy = path[i].y;
+                const mx = (path[i].x + path[i + 1].x) / 2;
+                const my = (path[i].y + path[i + 1].y) / 2;
+                d += ` Q ${cx} ${cy} ${mx} ${my}`;
+            }
+            d += ` L ${path[path.length - 1].x} ${path[path.length - 1].y}`;
         }
         
         const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -2577,7 +2143,7 @@ _updateCoastlineSVG() {
         const isPolitical = this.renderMode === 'political' || this.renderMode === 'political-terrain';
         strokeColor = isPolitical ? POLITICAL_OCEAN : OCEAN_COLORS[0];
     }
-    const strokeWidth = 1; // Fixed width in world units
+    const strokeWidth = 0.5; // Fixed width in world units
     
     // Draw each coastline loop as a path
     for (const loop of coastLoops) {
@@ -2633,7 +2199,7 @@ _updateLakeBordersSVG() {
     
     // Same style as coastline so they read as a unified shoreline language
     const strokeColor = '#A89880';
-    const strokeWidth = 1;
+    const strokeWidth = 0.5;
     
     // Walk every lake cell, emit segments where neighbour is not also a lake cell.
     // Build a single SVG <path> with all border segments — much faster than
@@ -3214,60 +2780,154 @@ _connectContourSegments(segments) {
 },
 
 /**
- * Find the horizontal span of a kingdom at a given Y level
- */
-/**
- * Find the best position for a kingdom label using advanced algorithm
- * Handles disconnected regions (islands) by finding the largest connected component
- * Then finds the visual center (pole of inaccessibility) within that region
+ * Find the best position for a kingdom label.
+ *
+ * Algorithm overview:
+ *   1. Build a fine raster occupancy grid of the kingdom by sampling
+ *      each grid cell's center against the Voronoi diagram. The grid
+ *      resolution scales with kingdom size so small kingdoms get fine
+ *      sampling and big kingdoms don't waste work on excessive detail.
+ *   2. Compute a 2-pass distance transform — for every inside cell,
+ *      the chamfer distance (in grid units) to the nearest outside
+ *      cell. This is THE interior-distance metric; it handles concave
+ *      shapes, holes (lakes!), and disconnected coastlines correctly,
+ *      unlike the prior cell-center-only "boundary" approach.
+ *   3. Estimate a target label rectangle (width × height in world
+ *      units) given the kingdom's size and the desired font.
+ *   4. For each inside grid cell, *score* it as a candidate label
+ *      anchor. The score combines: how interior the WORST corner of
+ *      the proposed label rectangle would be, a centrality bonus
+ *      pulling toward the kingdom centroid, and a penalty for being
+ *      near city/capital markers. The corner test is what makes this
+ *      rectangle-aware — points where the rectangle would clip outside
+ *      the kingdom or off the map are scored low even if their own
+ *      grid cell is deeply interior.
+ *   5. Return the highest-scoring candidate. Caller may shrink the
+ *      font and retry if the best score is still too low for the
+ *      requested label size.
+ *
+ * Returns: { centerX, centerY, spanWidth, regionWidth, regionHeight,
+ *            minX, maxX, minY, maxY, score, gridStep, distanceField,
+ *            gridOriginX, gridOriginY, gridW, gridH }
+ * The grid metadata is included so the caller can call
+ * `_kingdomLabelFits(...)` to test whether a smaller font would fit
+ * better at a given location, without recomputing the field.
  */
 _findBestKingdomLabelPosition(cells, kingdomId) {
     if (!cells || cells.length === 0) return null;
     
-    // Step 1: Find connected components of this kingdom
+    // Step 1: Find connected components and pick the largest. Disconnected
+    // territories are common (offshore islands belonging to a mainland
+    // kingdom); the label always goes on the biggest landmass.
     const components = this._findConnectedComponents(cells);
-    
     if (components.length === 0) return null;
-    
-    // Step 2: Find the largest component by cell count
     let largestComponent = components[0];
     for (const comp of components) {
-        if (comp.length > largestComponent.length) {
-            largestComponent = comp;
-        }
+        if (comp.length > largestComponent.length) largestComponent = comp;
     }
+    const componentSet = new Set(largestComponent);
     
-    // Step 3: Calculate bounding box and centroid of largest component
+    // Step 2: Bounding box + centroid of the chosen component
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     let sumX = 0, sumY = 0;
-    
     for (const cellIdx of largestComponent) {
         const x = this.points[cellIdx * 2];
         const y = this.points[cellIdx * 2 + 1];
-        minX = Math.min(minX, x);
-        maxX = Math.max(maxX, x);
-        minY = Math.min(minY, y);
-        maxY = Math.max(maxY, y);
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
         sumX += x;
         sumY += y;
     }
-    
-    const regionWidth = maxX - minX;
+    const regionWidth  = maxX - minX;
     const regionHeight = maxY - minY;
     const centroidX = sumX / largestComponent.length;
     const centroidY = sumY / largestComponent.length;
     
-    // Collect city/capitol positions to avoid
-    const citiesToAvoid = [];
-    const zoom = this.viewport.zoom;
+    // Step 3: Build occupancy grid. Resolution chosen so the grid is
+    // around 60×60 for medium kingdoms. Bigger kingdoms get finer
+    // granularity (capped at 100×100 to avoid quadratic blow-up on
+    // continent-sized empires); tiny kingdoms get a floor of 24×24
+    // so we still get a usable distance field.
+    const targetCells = 60;
+    const longSide = Math.max(regionWidth, regionHeight);
+    const shortSide = Math.min(regionWidth, regionHeight);
+    let gridStep = longSide / targetCells;
+    // Clamp: small kingdoms might have a long side under 100px so
+    // the step would be too small. Force a max grid extent of 100.
+    const aspect = longSide / Math.max(1, shortSide);
+    const gridW = Math.min(100, Math.max(24, Math.ceil(regionWidth / gridStep) + 1));
+    const gridH = Math.min(100, Math.max(24, Math.ceil(regionHeight / gridStep) + 1));
+    // Recompute gridStep based on clamped dimensions to keep it consistent
+    const stepX = regionWidth / Math.max(1, gridW - 1);
+    const stepY = regionHeight / Math.max(1, gridH - 1);
+    gridStep = (stepX + stepY) / 2;
     
+    // Sample occupancy. inside[gx + gy * gridW] = 1 if that grid point
+    // lies in our kingdom component, 0 otherwise.
+    const inside = new Uint8Array(gridW * gridH);
+    for (let gy = 0; gy < gridH; gy++) {
+        const py = minY + gy * stepY;
+        for (let gx = 0; gx < gridW; gx++) {
+            const px = minX + gx * stepX;
+            const nearest = this.delaunay.find(px, py);
+            if (componentSet.has(nearest)) inside[gx + gy * gridW] = 1;
+        }
+    }
+    
+    // Step 4: Distance transform via two-pass chamfer (3-4 metric).
+    // Output: dist[idx] = chamfer distance in grid units to nearest
+    // outside cell. Outside cells get distance 0.
+    const dist = new Float32Array(gridW * gridH);
+    const FAR = 1e9;
+    for (let i = 0; i < dist.length; i++) {
+        dist[i] = inside[i] ? FAR : 0;
+    }
+    // Forward pass (top-left → bottom-right)
+    for (let gy = 0; gy < gridH; gy++) {
+        for (let gx = 0; gx < gridW; gx++) {
+            const idx = gx + gy * gridW;
+            if (!inside[idx]) continue;
+            let d = dist[idx];
+            if (gx > 0)            d = Math.min(d, dist[idx - 1]       + 3);
+            if (gy > 0)            d = Math.min(d, dist[idx - gridW]   + 3);
+            if (gx > 0 && gy > 0)  d = Math.min(d, dist[idx - 1 - gridW] + 4);
+            if (gx < gridW - 1 && gy > 0) d = Math.min(d, dist[idx + 1 - gridW] + 4);
+            dist[idx] = d;
+        }
+    }
+    // Backward pass (bottom-right → top-left)
+    for (let gy = gridH - 1; gy >= 0; gy--) {
+        for (let gx = gridW - 1; gx >= 0; gx--) {
+            const idx = gx + gy * gridW;
+            if (!inside[idx]) continue;
+            let d = dist[idx];
+            if (gx < gridW - 1)               d = Math.min(d, dist[idx + 1]       + 3);
+            if (gy < gridH - 1)               d = Math.min(d, dist[idx + gridW]   + 3);
+            if (gx < gridW - 1 && gy < gridH - 1) d = Math.min(d, dist[idx + 1 + gridW] + 4);
+            if (gx > 0 && gy < gridH - 1)     d = Math.min(d, dist[idx - 1 + gridW] + 4);
+            dist[idx] = d;
+        }
+    }
+    
+    // Step 5: Estimate desired label rectangle.
+    //
+    // The caller doesn't tell us its font size yet (font size depends on
+    // available span, chicken-and-egg). So we estimate using the same
+    // formula the renderer uses and iterate down if no good fit exists.
+    // We START with the largest plausible label — this gives us a useful
+    // signal of "where would the largest label fit best?" — then if the
+    // best score is too low, retry with a smaller estimate.
+    const name = (this.kingdomNames && this.kingdomNames[kingdomId]) || '';
+    const { mainName } = this._parseKingdomName(name);
+    const displayLen = (mainName || name).length;
+    
+    // Cities & capitals to avoid (in WORLD coordinates)
+    const citiesToAvoid = [];
     if (this.capitols && this.capitols[kingdomId] >= 0) {
-        const capCell = this.capitols[kingdomId];
-        citiesToAvoid.push({
-            x: this.points[capCell * 2],
-            y: this.points[capCell * 2 + 1],
-            radius: Math.max(80, 120 / zoom)
-        });
+        const cc = this.capitols[kingdomId];
+        citiesToAvoid.push({ x: this.points[cc * 2], y: this.points[cc * 2 + 1], r: 30 });
     }
     if (this.cities) {
         for (const city of this.cities) {
@@ -3275,32 +2935,116 @@ _findBestKingdomLabelPosition(cells, kingdomId) {
                 citiesToAvoid.push({
                     x: this.points[city.cell * 2],
                     y: this.points[city.cell * 2 + 1],
-                    radius: Math.max(50, 80 / zoom)
+                    r: 18
                 });
             }
         }
     }
     
-    // Step 4: Find the "pole of inaccessibility" - point furthest from edges AND cities
-    const bestPoint = this._findPoleOfInaccessibility(largestComponent, minX, maxX, minY, maxY, citiesToAvoid);
+    // Try several font sizes from largest plausible to a floor.
+    // The actual ratio of label-width/height is roughly (chars × 0.65) / 1
+    // for an uppercase serif at letter-spacing 0.12em; we use that to
+    // build a label rectangle in world units at each trial font.
+    const trialFonts = [22, 18, 14, 11, 8, 6, 5];
+    let best = null;
     
-    // Step 5: Find the horizontal span at the best Y position
-    const { spanWidth, spanCenterX } = this._findKingdomSpanAtY(
-        largestComponent, 
-        bestPoint.y, 
-        minX, 
-        maxX
-    );
+    for (const fontSize of trialFonts) {
+        const labelW = Math.max(1, displayLen) * fontSize * 0.65;
+        const labelH = fontSize * 1.1;  // 1 line height
+        // Half-extents in grid units
+        const hwGrid = (labelW / 2) / gridStep;
+        const hhGrid = (labelH / 2) / gridStep;
+        // For corner test: the label is "fitting" if dist[center] >=
+        // chamferDistance(hwGrid, hhGrid). We compute the chamfer-equivalent
+        // of the half-diagonal: chamfer distance for a Δ=(hwGrid, hhGrid)
+        // step is min(hw, hh)*4 + (max(hw,hh) - min(hw,hh))*3 — i.e. travel
+        // diagonally as far as possible, then orthogonally for the remainder.
+        const a = Math.min(hwGrid, hhGrid);
+        const b = Math.max(hwGrid, hhGrid);
+        const requiredDist = a * 4 + (b - a) * 3;
+        
+        // Search every interior grid cell for the best candidate.
+        let bestScore = -Infinity;
+        let bestGx = -1, bestGy = -1;
+        for (let gy = 0; gy < gridH; gy++) {
+            for (let gx = 0; gx < gridW; gx++) {
+                const idx = gx + gy * gridW;
+                if (!inside[idx]) continue;
+                const d = dist[idx];
+                if (d < requiredDist) continue;  // label rectangle would clip outside the kingdom
+                
+                const wx = minX + gx * stepX;
+                const wy = minY + gy * stepY;
+                
+                // Score components:
+                //   - "fitness" = d - requiredDist : how much extra interior
+                //     room beyond the bare minimum the label needs. Bigger
+                //     is better; this is the dominant term.
+                //   - centrality bonus: small pull toward (centroidX, centroidY)
+                //     to break ties between equally-fit positions in favor
+                //     of more "obvious" placements.
+                //   - city penalty: subtract for proximity to known markers.
+                let score = (d - requiredDist);
+                
+                const cdx = wx - centroidX;
+                const cdy = wy - centroidY;
+                const distFromCenter = Math.sqrt(cdx * cdx + cdy * cdy);
+                // Centrality is at most 1/4 of typical "fitness" range, so
+                // it influences ties without overriding genuine fit quality.
+                const diagonal = Math.sqrt(regionWidth * regionWidth + regionHeight * regionHeight);
+                score -= (distFromCenter / Math.max(1, diagonal)) * (requiredDist * 0.25);
+                
+                // City penalty
+                let cityPenalty = 0;
+                for (const c of citiesToAvoid) {
+                    const ddx = wx - c.x, ddy = wy - c.y;
+                    const dd = Math.sqrt(ddx * ddx + ddy * ddy);
+                    if (dd < c.r + labelH / 2) {
+                        // close to a city — penalize proportionally to overlap
+                        cityPenalty += (c.r + labelH / 2 - dd) / gridStep;
+                    }
+                }
+                score -= cityPenalty;
+                
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestGx = gx;
+                    bestGy = gy;
+                }
+            }
+        }
+        
+        if (bestGx >= 0) {
+            best = {
+                centerX: minX + bestGx * stepX,
+                centerY: minY + bestGy * stepY,
+                fontSize: fontSize,
+                score: bestScore,
+                spanWidth: labelW,        // we already verified the label fits
+                regionWidth, regionHeight,
+                componentSize: largestComponent.length,
+                minX, maxX, minY, maxY
+            };
+            break;  // first font size that produces ANY fit wins
+        }
+    }
     
-    return {
-        centerX: bestPoint.x,
-        centerY: bestPoint.y,
-        spanWidth: Math.max(spanWidth, regionWidth * 0.3), // Minimum span
-        regionWidth,
-        regionHeight,
-        componentSize: largestComponent.length,
-        minX, maxX, minY, maxY
-    };
+    // If no font fits at all (very tiny kingdom), fall back to centroid
+    // with a tiny font; better to render something off-shape than nothing.
+    if (!best) {
+        best = {
+            centerX: centroidX,
+            centerY: centroidY,
+            fontSize: 5,
+            score: 0,
+            spanWidth: regionWidth * 0.6,
+            regionWidth, regionHeight,
+            componentSize: largestComponent.length,
+            minX, maxX, minY, maxY
+        };
+    }
+    
+    return best;
 },
 
 /**
@@ -3340,128 +3084,6 @@ _findConnectedComponents(cells) {
     return components;
 },
 
-/**
- * Find the pole of inaccessibility - the point furthest from the boundary
- * Uses iterative grid refinement for efficiency
- * Also avoids cities/capitols if provided
- */
-_findPoleOfInaccessibility(cells, minX, maxX, minY, maxY, citiesToAvoid = []) {
-    const cellSet = new Set(cells);
-    
-    // Build a set of boundary cells (cells with non-kingdom neighbors)
-    const boundaryCells = [];
-    for (const cellIdx of cells) {
-        const neighbors = Array.from(this.voronoi.neighbors(cellIdx));
-        let isBoundary = false;
-        for (const n of neighbors) {
-            if (!cellSet.has(n)) {
-                isBoundary = true;
-                break;
-            }
-        }
-        if (isBoundary) {
-            boundaryCells.push({
-                x: this.points[cellIdx * 2],
-                y: this.points[cellIdx * 2 + 1]
-            });
-        }
-    }
-    
-    // If no boundary (shouldn't happen), return centroid
-    if (boundaryCells.length === 0) {
-        let sumX = 0, sumY = 0;
-        for (const cellIdx of cells) {
-            sumX += this.points[cellIdx * 2];
-            sumY += this.points[cellIdx * 2 + 1];
-        }
-        return { x: sumX / cells.length, y: sumY / cells.length };
-    }
-    
-    // Grid search: find point with maximum distance to nearest boundary AND cities
-    const gridResolution = 8; // Initial grid
-    let bestX = (minX + maxX) / 2;
-    let bestY = (minY + maxY) / 2;
-    let bestDist = 0;
-    
-    // Multiple passes with refinement
-    let searchMinX = minX, searchMaxX = maxX;
-    let searchMinY = minY, searchMaxY = maxY;
-    
-    for (let pass = 0; pass < 3; pass++) {
-        const stepX = (searchMaxX - searchMinX) / gridResolution;
-        const stepY = (searchMaxY - searchMinY) / gridResolution;
-        
-        for (let gy = 0; gy <= gridResolution; gy++) {
-            for (let gx = 0; gx <= gridResolution; gx++) {
-                const testX = searchMinX + gx * stepX;
-                const testY = searchMinY + gy * stepY;
-                
-                // Check if point is inside the kingdom (find nearest cell)
-                const nearestCell = this.delaunay.find(testX, testY);
-                if (!cellSet.has(nearestCell)) continue;
-                
-                // Find minimum distance to any boundary cell
-                let minDist = Infinity;
-                for (const bc of boundaryCells) {
-                    const dist = Math.sqrt((testX - bc.x) ** 2 + (testY - bc.y) ** 2);
-                    minDist = Math.min(minDist, dist);
-                }
-                
-                // Also check distance to cities - penalize being too close
-                for (const city of citiesToAvoid) {
-                    const dist = Math.sqrt((testX - city.x) ** 2 + (testY - city.y) ** 2);
-                    // If within city radius, heavily penalize
-                    if (dist < city.radius) {
-                        minDist = Math.min(minDist, dist * 0.3); // Strong penalty
-                    }
-                }
-                
-                if (minDist > bestDist) {
-                    bestDist = minDist;
-                    bestX = testX;
-                    bestY = testY;
-                }
-            }
-        }
-        
-        // Refine search area around best point
-        const margin = Math.max(stepX, stepY) * 1.5;
-        searchMinX = Math.max(minX, bestX - margin);
-        searchMaxX = Math.min(maxX, bestX + margin);
-        searchMinY = Math.max(minY, bestY - margin);
-        searchMaxY = Math.min(maxY, bestY + margin);
-    }
-    
-    return { x: bestX, y: bestY, distance: bestDist };
-},
-
-_findKingdomSpanAtY(cells, targetY, minX, maxX) {
-    const tolerance = (maxX - minX) * 0.08; // 8% tolerance band (tighter for better accuracy)
-    let spanMinX = Infinity;
-    let spanMaxX = -Infinity;
-    let count = 0;
-    
-    for (const cellIdx of cells) {
-        const y = this.points[cellIdx * 2 + 1];
-        if (Math.abs(y - targetY) <= tolerance) {
-            const x = this.points[cellIdx * 2];
-            spanMinX = Math.min(spanMinX, x);
-            spanMaxX = Math.max(spanMaxX, x);
-            count++;
-        }
-    }
-    
-    // Fallback to full width if no cells found at target Y
-    if (count < 2 || spanMinX >= spanMaxX) {
-        return { spanWidth: maxX - minX, spanCenterX: (minX + maxX) / 2, cellCount: count };
-    }
-    
-    return { 
-        spanWidth: spanMaxX - spanMinX, 
-        spanCenterX: (spanMinX + spanMaxX) / 2,
-        cellCount: count
-    };
-},
 /**
  * Draw straight (possibly rotated) kingdom text
  */
@@ -4418,6 +4040,58 @@ _renderHoveredCell(ctx) {
     ctx.lineWidth = 1.5 / this.viewport.zoom;
     ctx.stroke();
 },
+
+/**
+ * Render a subtle coordinate grid overlay. The spacing snaps to a
+ * "nice" 1-2-5 step in world units and adapts to zoom: ~10 lines
+ * across the visible area, with finer subdivisions appearing as you
+ * zoom in.
+ *
+ * Drawn inside the world-space transform, so we work in world units.
+ * Bounds is the visible world rect.
+ */
+_renderCoordinateGrid(ctx, bounds) {
+    const zoom = this.viewport.zoom;
+    
+    // Pick a spacing that yields ~10 lines across the visible width.
+    // Snap to a "nice" 1-2-5 step on the map's own scale (a power of 10
+    // of world units), so as you zoom in, finer subdivisions appear.
+    const visibleW = bounds.right - bounds.left;
+    if (visibleW <= 0) return;
+    const targetLines = 10;
+    const rawStep = visibleW / targetLines;
+    const pow = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const norm = rawStep / pow;
+    let step;
+    if (norm < 1.5)      step = 1  * pow;
+    else if (norm < 3.5) step = 2  * pow;
+    else if (norm < 7.5) step = 5  * pow;
+    else                 step = 10 * pow;
+    if (step <= 0 || !isFinite(step)) return;
+    
+    // Light, low-contrast lines so the grid reads as reference, not as
+    // foreground. Uses world-space line widths (scaled by zoom) so it
+    // looks consistent at any magnification.
+    ctx.save();
+    ctx.strokeStyle = 'rgba(60, 50, 40, 0.18)';
+    ctx.lineWidth = 0.5 / zoom;
+    ctx.beginPath();
+    
+    const xStart = Math.ceil(bounds.left / step) * step;
+    for (let x = xStart; x <= bounds.right; x += step) {
+        ctx.moveTo(x, bounds.top);
+        ctx.lineTo(x, bounds.bottom);
+    }
+    const yStart = Math.ceil(bounds.top / step) * step;
+    for (let y = yStart; y <= bounds.bottom; y += step) {
+        ctx.moveTo(bounds.left, y);
+        ctx.lineTo(bounds.right, y);
+    }
+    
+    ctx.stroke();
+    ctx.restore();
+},
+
 /**
  * Render outline for entire hovered lake
  */
@@ -4591,7 +4265,7 @@ _renderRiversCanvas(ctx, bounds) {
         ctx.closePath();
         
         // River fill color
-        ctx.fillStyle = 'rgb(166, 155, 125)';
+        ctx.fillStyle = 'rgb(93, 151, 187)';
         ctx.fill();
     }
     
@@ -4619,30 +4293,35 @@ _updateRiverSVG() {
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.setAttribute('transform', `translate(${this.viewport.x}, ${this.viewport.y}) scale(${zoom})`);
     
-    // Create clipping path from coastline
-    const coastLoops = this._coastlineCache || this._buildSmoothCoastlineLoops();
-    if (coastLoops.length > 0) {
+    // Create clipping path from coastline using per-cell polygons (robust
+    // against corner-clip artifacts; see comments in _updateKingdomSVG).
+    if (this.heights && this.cellCount > 0) {
         const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
         const clipPath = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
         clipPath.setAttribute('id', 'coastline-clip');
         
         let clipD = '';
-        for (const loop of coastLoops) {
-            if (loop.length < 3) continue;
-            clipD += `M ${loop[0][0]} ${loop[0][1]} `;
-            for (let i = 1; i < loop.length; i++) {
-                clipD += `L ${loop[i][0]} ${loop[i][1]} `;
+        for (let i = 0; i < this.cellCount; i++) {
+            if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+            if (this.lakeCells && this.lakeCells.has(i)) continue;
+            const cellPoly = this.voronoi.cellPolygon(i);
+            if (!cellPoly || cellPoly.length < 3) continue;
+            clipD += `M ${cellPoly[0][0]} ${cellPoly[0][1]} `;
+            for (let j = 1; j < cellPoly.length; j++) {
+                clipD += `L ${cellPoly[j][0]} ${cellPoly[j][1]} `;
             }
             clipD += 'Z ';
         }
         
-        const clipPathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        clipPathEl.setAttribute('d', clipD);
-        clipPath.appendChild(clipPathEl);
-        defs.appendChild(clipPath);
-        svg.appendChild(defs);
-        
-        g.setAttribute('clip-path', 'url(#coastline-clip)');
+        if (clipD) {
+            const clipPathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            clipPathEl.setAttribute('d', clipD);
+            clipPath.appendChild(clipPathEl);
+            defs.appendChild(clipPath);
+            svg.appendChild(defs);
+            
+            g.setAttribute('clip-path', 'url(#coastline-clip)');
+        }
     }
     
     // Width parameters (in world space, will scale with zoom)
@@ -4729,35 +4408,45 @@ _updateKingdomSVG() {
     // Set SVG viewBox to match canvas
     svg.setAttribute('viewBox', `0 0 ${this.width} ${this.height}`);
     
-    // Create clipping path from coastline
+    // Create clipping path from coastline. We construct it from per-cell
+    // polygons rather than the smooth coastline loops, because the loop
+    // chaining can produce artifacts at map corners (visible diagonal
+    // wedges of "land" extending into ocean) when land touches the map
+    // edges. Per-cell construction is robust because each cell knows
+    // independently whether it's land or ocean.
     const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-    const coastLoops = this._coastlineCache || this._buildSmoothCoastlineLoops();
+    const hasLand = this.heights && this.cellCount > 0;
     
-    if (coastLoops.length > 0) {
+    if (hasLand) {
         const clipPath = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
         clipPath.setAttribute('id', 'coast-clip');
         
         let clipD = '';
-        for (const loop of coastLoops) {
-            if (loop.length < 3) continue;
-            clipD += `M ${loop[0][0]} ${loop[0][1]} `;
-            for (let i = 1; i < loop.length; i++) {
-                clipD += `L ${loop[i][0]} ${loop[i][1]} `;
+        for (let i = 0; i < this.cellCount; i++) {
+            if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+            if (this.lakeCells && this.lakeCells.has(i)) continue;
+            const cellPoly = this.voronoi.cellPolygon(i);
+            if (!cellPoly || cellPoly.length < 3) continue;
+            clipD += `M ${cellPoly[0][0]} ${cellPoly[0][1]} `;
+            for (let j = 1; j < cellPoly.length; j++) {
+                clipD += `L ${cellPoly[j][0]} ${cellPoly[j][1]} `;
             }
             clipD += 'Z ';
         }
         
-        const clipPathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        clipPathEl.setAttribute('d', clipD);
-        clipPath.appendChild(clipPathEl);
-        defs.appendChild(clipPath);
+        if (clipD) {
+            const clipPathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            clipPathEl.setAttribute('d', clipD);
+            clipPath.appendChild(clipPathEl);
+            defs.appendChild(clipPath);
+        }
     }
     svg.appendChild(defs);
     
     // Create a group with transform
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.setAttribute('transform', `translate(${this.viewport.x}, ${this.viewport.y}) scale(${zoom})`);
-    if (coastLoops.length > 0) {
+    if (hasLand) {
         g.setAttribute('clip-path', 'url(#coast-clip)');
     }
     
@@ -4766,10 +4455,6 @@ _updateKingdomSVG() {
         const cells = this.kingdomCells[k];
         if (!cells || cells.length === 0) continue;
         
-        // Build smooth boundary for this kingdom
-        const boundaries = this._buildKingdomBoundary(k);
-        if (boundaries.length === 0) continue;
-        
         // Get kingdom color
         const palette = this._kingdomPalette || POLITICAL_COLORS;
         const colorIndex = (this.kingdomColors && this.kingdomColors[k] >= 0) 
@@ -4777,23 +4462,38 @@ _updateKingdomSVG() {
             : k % palette.length;
         const color = palette[colorIndex];
         
-        // Draw each boundary loop as a filled path (no stroke)
-        for (const boundary of boundaries) {
-            if (boundary.length < 3) continue;
-            
-            let d = `M ${boundary[0][0]} ${boundary[0][1]}`;
-            for (let i = 1; i < boundary.length; i++) {
-                d += ` L ${boundary[i][0]} ${boundary[i][1]}`;
+        // Render the kingdom fill as the union of its cell polygons. We
+        // build one SVG path with a Move-Line-Line-...-Z subpath per cell.
+        // SVG renders adjacent subpaths cleanly via the nonzero fill rule
+        // (default), so cell-shared edges don't appear as visible seams.
+        //
+        // Why per-cell instead of building one outline polygon? Because
+        // tracing a kingdom outline that includes cells touching the map
+        // edge runs into corner-clip artifacts: d3-delaunay clips corner
+        // cells with a single diagonal edge, and the chain-closing
+        // algorithm closes the kingdom polygon implicitly through that
+        // diagonal — producing a visible triangular wedge of kingdom
+        // color extending into the ocean. Per-cell rendering sidesteps
+        // the issue: each cell knows its own shape; the union is exact.
+        let d = '';
+        for (const i of cells) {
+            const cellPoly = this.voronoi.cellPolygon(i);
+            if (!cellPoly || cellPoly.length < 3) continue;
+            d += `M ${cellPoly[0][0]} ${cellPoly[0][1]} `;
+            for (let j = 1; j < cellPoly.length; j++) {
+                d += `L ${cellPoly[j][0]} ${cellPoly[j][1]} `;
             }
-            d += ' Z';
-            
-            const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-            pathEl.setAttribute('d', d);
-            pathEl.setAttribute('fill', color);
-            pathEl.setAttribute('stroke', 'none');
-            pathEl.setAttribute('class', 'kingdom-fill');
-            g.appendChild(pathEl);
+            d += 'Z ';
         }
+        
+        if (!d) continue;
+        
+        const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        pathEl.setAttribute('d', d);
+        pathEl.setAttribute('fill', color);
+        pathEl.setAttribute('stroke', 'none');
+        pathEl.setAttribute('class', 'kingdom-fill');
+        g.appendChild(pathEl);
     }
     
     // 2. Second pass: Draw border lines between different kingdoms
@@ -4802,8 +4502,8 @@ _updateKingdomSVG() {
     // it scales with zoom; dasharray same. Roughly: dash = 2 world units,
     // gap = 1.5 — short dotted-dashed. Tuning these tighter would feel busy;
     // looser would lose the dashed read at typical zooms.
-    const strokeWidth = 0.6;
-    const dashArray = '2,1.5';
+    const strokeWidth = 1;
+    const dashArray = '2';
     
     // 1.5: Paint lakes at full opacity, OVER the translucent kingdom fills.
     // This is what makes lakes look "solid" — without this step, the
@@ -4853,9 +4553,9 @@ _updateKingdomSVG() {
             const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
             pathEl.setAttribute('d', d);
             pathEl.setAttribute('fill', 'none');
-            pathEl.setAttribute('stroke', '#9A8A7A');
+            pathEl.setAttribute('stroke', 'rgb(86, 86, 109)');
             pathEl.setAttribute('stroke-width', strokeWidth);
-            pathEl.setAttribute('stroke-linecap', 'round');
+            pathEl.setAttribute('stroke-linecap', 'butt');
             pathEl.setAttribute('stroke-linejoin', 'round');
             pathEl.setAttribute('stroke-dasharray', dashArray);
             pathEl.setAttribute('class', 'kingdom-border');
@@ -4972,102 +4672,46 @@ _updateCitySVG() {
     
     const zoom = this.viewport.zoom;
     
-    // Set SVG viewBox to match canvas
     svg.setAttribute('viewBox', `0 0 ${this.width} ${this.height}`);
     
-    // Create defs for icon symbols
-    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    // ─────────────────────────────────────────────────────────────────
+    // Minimal settlement markers:
+    //   - Cities are drawn as a small filled circle with a hairline ring.
+    //   - Capitols are drawn as a five-point star (filled, with a thin
+    //     outline). Stars are large and offset upward so the label sits
+    //     beside them comfortably, just like the previous castle icon.
+    //
+    // The label hit-boxes are kept in sync with the marker geometry so
+    // hover/click pickup still works exactly as before.
+    // ─────────────────────────────────────────────────────────────────
+    const INK = '#3D2F1F';
+    const RING = '#1A130C';
     
-    // Capitol icon - grand castle with towers and flags
-    const capitolSymbol = document.createElementNS('http://www.w3.org/2000/svg', 'symbol');
-    capitolSymbol.setAttribute('id', 'capitol-icon');
-    capitolSymbol.setAttribute('viewBox', '0 0 32 24');
-    capitolSymbol.innerHTML = `
-        <g fill="#3D2F1F">
-            <!-- Left tower -->
-            <rect x="1" y="10" width="6" height="14"/>
-            <rect x="0" y="8" width="8" height="3"/>
-            <rect x="0" y="6" width="1.5" height="2"/>
-            <rect x="3.25" y="6" width="1.5" height="2"/>
-            <rect x="6.5" y="6" width="1.5" height="2"/>
-            
-            <!-- Left wall -->
-            <rect x="7" y="16" width="4" height="8"/>
-            
-            <!-- Center keep -->
-            <rect x="11" y="8" width="10" height="16"/>
-            <rect x="10" y="5" width="12" height="4"/>
-            <rect x="10" y="3" width="2" height="2"/>
-            <rect x="14" y="3" width="4" height="2"/>
-            <rect x="20" y="3" width="2" height="2"/>
-            
-            <!-- Main tower/spire -->
-            <rect x="14.5" y="0" width="3" height="3"/>
-            <polygon points="16,0 14,3 18,3"/>
-            
-            <!-- Flag -->
-            <rect x="15.75" y="-4" width="0.5" height="4"/>
-            <polygon points="16.25,-4 16.25,-1.5 19,-2.75"/>
-            
-            <!-- Right wall -->
-            <rect x="21" y="16" width="4" height="8"/>
-            
-            <!-- Right tower -->
-            <rect x="25" y="10" width="6" height="14"/>
-            <rect x="24" y="8" width="8" height="3"/>
-            <rect x="24" y="6" width="1.5" height="2"/>
-            <rect x="27.25" y="6" width="1.5" height="2"/>
-            <rect x="30.5" y="6" width="1.5" height="2"/>
-            
-            <!-- Gate -->
-            <rect x="14" y="18" width="4" height="6" fill="#C4B998"/>
-            <path d="M14,18 Q16,15 18,18" fill="#3D2F1F"/>
-        </g>
-    `;
-    defs.appendChild(capitolSymbol);
+    // Marker sizes in WORLD space (the parent <g> applies viewport zoom,
+    // so these stay visually consistent across zoom levels — they grow
+    // with the map but the canvas marker layer compensates similarly).
+    const cityRadius   = 1.6;   // small dot
+    const capitolSize  = 5.0;   // star outer radius
     
-    // City icon - medieval town with church and buildings
-    const citySymbol = document.createElementNS('http://www.w3.org/2000/svg', 'symbol');
-    citySymbol.setAttribute('id', 'city-icon');
-    citySymbol.setAttribute('viewBox', '0 0 24 18');
-    citySymbol.innerHTML = `
-        <g fill="#3D2F1F">
-            <!-- Left small house -->
-            <rect x="0" y="12" width="5" height="6"/>
-            <polygon points="0,12 2.5,8 5,12"/>
-            
-            <!-- Left medium building -->
-            <rect x="5" y="10" width="4" height="8"/>
-            <polygon points="5,10 7,6 9,10"/>
-            
-            <!-- Church (center) -->
-            <rect x="9" y="8" width="6" height="10"/>
-            <polygon points="9,8 12,3 15,8"/>
-            <rect x="11.5" y="0" width="1" height="3"/>
-            <rect x="10.5" y="0.5" width="3" height="0.8"/>
-            
-            <!-- Right building -->
-            <rect x="15" y="11" width="4" height="7"/>
-            <polygon points="15,11 17,7 19,11"/>
-            
-            <!-- Right small house -->
-            <rect x="19" y="13" width="5" height="5"/>
-            <polygon points="19,13 21.5,9 24,13"/>
-        </g>
-    `;
-    defs.appendChild(citySymbol);
+    // Build a five-point star polygon centred at (0, 0) with the given
+    // outer radius and an inner radius of outerR * 0.42 (classic 5-point
+    // star proportions). Top point goes straight up.
+    const starPoints = (outerR) => {
+        const innerR = outerR * 0.42;
+        const pts = [];
+        for (let i = 0; i < 10; i++) {
+            const r = (i % 2 === 0) ? outerR : innerR;
+            const a = -Math.PI / 2 + i * Math.PI / 5;
+            pts.push(`${(Math.cos(a) * r).toFixed(2)},${(Math.sin(a) * r).toFixed(2)}`);
+        }
+        return pts.join(' ');
+    };
     
-    svg.appendChild(defs);
-    
-    // Create a group with transform
+    // Wrapper group that gets the viewport translation+zoom transform
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.setAttribute('transform', `translate(${this.viewport.x}, ${this.viewport.y}) scale(${zoom})`);
     
-    // Icon scale in world space
-    const capitolScale = 0.5;
-    const cityScale = 0.45;
-    
-    // Draw capitols
+    // ─── CAPITOLS — filled stars ───
     if (this.capitols && this.capitolNames) {
         for (let k = 0; k < this.kingdomCount; k++) {
             const capitolCell = this.capitols[k];
@@ -5076,19 +4720,17 @@ _updateCitySVG() {
             const x = this.points[capitolCell * 2];
             const y = this.points[capitolCell * 2 + 1];
             
-            const w = 32 * capitolScale;
-            const h = 24 * capitolScale;
+            const star = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+            star.setAttribute('points', starPoints(capitolSize));
+            star.setAttribute('transform', `translate(${x}, ${y})`);
+            star.setAttribute('fill', INK);
+            star.setAttribute('stroke', RING);
+            star.setAttribute('stroke-width', '0.4');
+            star.setAttribute('stroke-linejoin', 'round');
+            star.setAttribute('class', 'capitol-icon');
+            g.appendChild(star);
             
-            const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-            use.setAttribute('href', '#capitol-icon');
-            use.setAttribute('x', x - w / 2);
-            use.setAttribute('y', y - h + 2);
-            use.setAttribute('width', w);
-            use.setAttribute('height', h);
-            use.setAttribute('class', 'capitol-icon');
-            g.appendChild(use);
-            
-            // Add hit box for capitol icon
+            // Hit box matches a square inscribing the star
             if (this._labelHitBoxes) {
                 this._labelHitBoxes.push({
                     type: 'capital',
@@ -5097,17 +4739,17 @@ _updateCitySVG() {
                     kingdom: k,
                     name: this.capitolNames[k] || `Capitol ${k}`,
                     box: {
-                        left: x - w / 2 - 2,
-                        right: x + w / 2 + 2,
-                        top: y - h,
-                        bottom: y + 4
+                        left: x - capitolSize - 1,
+                        right: x + capitolSize + 1,
+                        top: y - capitolSize - 1,
+                        bottom: y + capitolSize + 1
                     }
                 });
             }
         }
     }
     
-    // Draw cities (only when zoomed in enough)
+    // ─── CITIES — filled circles ───
     if (zoom > 0.6 && this.cities && this.cityNames) {
         for (let i = 0; i < this.cities.length; i++) {
             const city = this.cities[i];
@@ -5116,19 +4758,16 @@ _updateCitySVG() {
             const x = this.points[city.cell * 2];
             const y = this.points[city.cell * 2 + 1];
             
-            const w = 24 * cityScale;
-            const h = 18 * cityScale;
+            const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            dot.setAttribute('cx', x);
+            dot.setAttribute('cy', y);
+            dot.setAttribute('r', cityRadius);
+            dot.setAttribute('fill', INK);
+            dot.setAttribute('stroke', RING);
+            dot.setAttribute('stroke-width', '0.3');
+            dot.setAttribute('class', 'city-icon');
+            g.appendChild(dot);
             
-            const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-            use.setAttribute('href', '#city-icon');
-            use.setAttribute('x', x - w / 2);
-            use.setAttribute('y', y - h + 1);
-            use.setAttribute('width', w);
-            use.setAttribute('height', h);
-            use.setAttribute('class', 'city-icon');
-            g.appendChild(use);
-            
-            // Add hit box for city icon
             if (this._labelHitBoxes) {
                 this._labelHitBoxes.push({
                     type: 'city',
@@ -5137,10 +4776,10 @@ _updateCitySVG() {
                     kingdom: city.kingdom,
                     name: this.cityNames[i] || `City ${i}`,
                     box: {
-                        left: x - w / 2 - 2,
-                        right: x + w / 2 + 2,
-                        top: y - h,
-                        bottom: y + 3
+                        left: x - cityRadius - 1,
+                        right: x + cityRadius + 1,
+                        top: y - cityRadius - 1,
+                        bottom: y + cityRadius + 1
                     }
                 });
             }
@@ -5192,16 +4831,21 @@ _updateLabelSVG() {
             
             if (!name || !cells || cells.length === 0) continue;
             
-            // Find label position
+            // Find label position. The algorithm returns the largest font
+            // size (from a fixed ladder of trial sizes) at which the label
+            // is guaranteed to fit inside the kingdom's interior. We use
+            // that as our upper bound, then take the min with a kingdom-
+            // size-based aesthetic preference so a tiny duchy with a small
+            // name doesn't get a giant font just because it geometrically
+            // could. Floor of 5pt as before.
             const labelPos = this._findBestKingdomLabelPosition(cells, k);
             if (!labelPos) continue;
             
-            const { centerX, centerY, spanWidth, regionHeight } = labelPos;
+            const { centerX, centerY, fontSize: maxFitFont } = labelPos;
             
-            // Calculate font size based on kingdom size (smaller overall)
             const sizeRatio = Math.sqrt(kingdom.size / maxSize);
-            const baseFontSize = 4 + (sizeRatio * 10);
-            const fontSize = Math.max(2.5, Math.min(baseFontSize, spanWidth * 0.08, regionHeight * 0.2));
+            const aestheticFontSize = 7 + (sizeRatio * 14);
+            const fontSize = Math.max(5, Math.min(maxFitFont, aestheticFontSize));
             
             // Parse name for display
             const { prefix, mainName } = this._parseKingdomName(name);
@@ -5210,11 +4854,22 @@ _updateLabelSVG() {
             // Calculate collision box for the entire label (including prefix)
             const estWidth = displayText.length * fontSize * 0.65;
             const totalHeight = prefix ? fontSize * 1.8 : fontSize;
+            
+            // Clamp center so the label's bounding box fits within the map.
+            // Without this, kingdoms whose pole-of-inaccessibility lies near
+            // a map edge (small or edge-hugging kingdoms — common with the
+            // isthmus preset where land runs off the edges) get labels with
+            // text that overflows the map and gets visually clipped.
+            const halfW = estWidth / 2 + 3;
+            const halfH = totalHeight / 2 + 3;
+            const labelX = Math.max(halfW, Math.min(this.width  - halfW, centerX));
+            const labelY = Math.max(halfH, Math.min(this.height - halfH, centerY));
+            
             const box = {
-                left: centerX - estWidth / 2 - 3,
-                right: centerX + estWidth / 2 + 3,
-                top: centerY - totalHeight / 2 - 3,
-                bottom: centerY + totalHeight / 2 + 3
+                left: labelX - halfW,
+                right: labelX + halfW,
+                top: labelY - halfH,
+                bottom: labelY + halfH
             };
             
             // Check collision
@@ -5231,20 +4886,20 @@ _updateLabelSVG() {
             
             // Create text element
             const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            text.setAttribute('x', centerX);
-            text.setAttribute('y', centerY);
+            text.setAttribute('x', labelX);
+            text.setAttribute('y', labelY);
             text.setAttribute('text-anchor', 'middle');
             text.setAttribute('dominant-baseline', 'middle');
             text.setAttribute('class', 'kingdom-label');
             text.setAttribute('font-size', fontSize);
-            text.setAttribute('letter-spacing', '0.2em');
+            text.setAttribute('letter-spacing', '0.12em');
             text.textContent = displayText;
             
             // Add prefix if exists
             if (prefix) {
                 const prefixText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                prefixText.setAttribute('x', centerX);
-                prefixText.setAttribute('y', centerY - fontSize * 0.9);
+                prefixText.setAttribute('x', labelX);
+                prefixText.setAttribute('y', labelY - fontSize * 0.9);
                 prefixText.setAttribute('text-anchor', 'middle');
                 prefixText.setAttribute('dominant-baseline', 'middle');
                 prefixText.setAttribute('class', 'kingdom-label');
@@ -5270,7 +4925,230 @@ _updateLabelSVG() {
         }
     }
     
-    // 2. Capitol names - positioned below the castle icon
+    // 2. Lake names — labeled inside the lake itself (italic, like real
+    // maps). Only lakes large enough to comfortably fit a small label
+    // get one; tiny ponds stay anonymous to avoid map clutter.
+    //
+    // The lake generator may produce multiple `lake` records that are
+    // physically adjacent (river-fed lake meeting an endorheic basin,
+    // multi-pit drainage merges, etc.) — visually they look like one
+    // body of water on the map. We don't want three names floating in
+    // the same lake, so before placing labels we group lakes whose
+    // cells touch into "clusters" via Voronoi adjacency, and label
+    // only the LARGEST lake in each cluster. The smaller adjacent
+    // lakes contribute their water to the cluster but don't get a
+    // name of their own.
+    if (this.lakes && this.lakes.length > 0 && this.lakeCells) {
+        // Build cell → lake-record-index lookup so we can ask "which
+        // lake does this neighbour belong to?" in O(1).
+        const cellToLakeIdx = new Map();
+        for (let li = 0; li < this.lakes.length; li++) {
+            const cells = this.lakes[li].cells;
+            if (!cells) continue;
+            for (const c of cells) cellToLakeIdx.set(c, li);
+        }
+        
+        // Union-find over lake records — merge any two lakes that have
+        // at least one pair of Voronoi-adjacent cells. After this pass,
+        // each connected body of water is one cluster regardless of
+        // how many lake records cover it.
+        const parent = new Array(this.lakes.length);
+        for (let i = 0; i < parent.length; i++) parent[i] = i;
+        const find = (x) => {
+            while (parent[x] !== x) {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            return x;
+        };
+        const union = (a, b) => {
+            const ra = find(a), rb = find(b);
+            if (ra !== rb) parent[ra] = rb;
+        };
+        for (let li = 0; li < this.lakes.length; li++) {
+            const cells = this.lakes[li].cells;
+            if (!cells) continue;
+            for (const c of cells) {
+                for (const n of this.voronoi.neighbors(c)) {
+                    const nLake = cellToLakeIdx.get(n);
+                    if (nLake !== undefined && nLake !== li) {
+                        union(li, nLake);
+                    }
+                }
+            }
+        }
+        
+        // Pick the representative lake of each cluster: the largest by
+        // cell count. That's the one whose name will be displayed.
+        const clusterRep = new Map();   // cluster root → { lakeIdx, size }
+        for (let li = 0; li < this.lakes.length; li++) {
+            const size = (this.lakes[li].cells && this.lakes[li].cells.length) || 0;
+            const root = find(li);
+            const cur = clusterRep.get(root);
+            if (!cur || size > cur.size) {
+                clusterRep.set(root, { lakeIdx: li, size });
+            }
+        }
+        
+        // Each cluster contributes its FULL set of cells to "valid label
+        // ground" (so the chosen name can sit anywhere in the connected
+        // water, not just inside the largest lake's specific cells).
+        const clusterCells = new Map();   // cluster root → Set of cell indices
+        for (let li = 0; li < this.lakes.length; li++) {
+            const root = find(li);
+            let set = clusterCells.get(root);
+            if (!set) { set = new Set(); clusterCells.set(root, set); }
+            for (const c of this.lakes[li].cells) set.add(c);
+        }
+        
+        // Build the placement list: one entry per cluster, sorted by
+        // total cluster size so big lakes get their labels placed first
+        // (and thus get priority if any geometry conflicts arise).
+        const placementList = [];
+        for (const [root, rep] of clusterRep) {
+            const lake = this.lakes[rep.lakeIdx];
+            if (!lake.name) continue;
+            const cells = clusterCells.get(root);
+            const totalSize = cells.size;
+            if (totalSize < 8) continue;   // tiny ponds stay anonymous
+            placementList.push({ lake, cells, totalSize });
+        }
+        placementList.sort((a, b) => b.totalSize - a.totalSize);
+        
+        for (const { lake, cells: clusterCellSet } of placementList) {
+            // Compute cluster bbox over ALL cells of all merged lakes
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (const cellIdx of clusterCellSet) {
+                const x = this.points[cellIdx * 2];
+                const y = this.points[cellIdx * 2 + 1];
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+            const w = maxX - minX, h = maxY - minY;
+            if (w <= 0 || h <= 0) continue;
+            
+            // Try several font sizes. Match the kingdom-label style:
+            // start big, shrink until the label rectangle fits inside the
+            // lake's interior. The required fit is sampled at a few key
+            // points along the rectangle perimeter.
+            const trialFonts = [9, 7, 5.5, 4.5];
+            const lakeName = lake.name;
+            let placedFontSize = 0;
+            let placedX = 0, placedY = 0;
+            let placedBox = null;
+            
+            for (const fontSize of trialFonts) {
+                const labelW = lakeName.length * fontSize * 0.5;  // italic, narrower than uppercase
+                const labelH = fontSize;
+                
+                // The rectangle must fit comfortably inside the lake bbox
+                // with some breathing room (the label needs to sit ON
+                // water, not tight against the shore).
+                const margin = fontSize * 0.6;
+                if (labelW + margin * 2 > w) continue;
+                if (labelH + margin * 2 > h) continue;
+                
+                // Search candidate positions on a coarse grid inside the
+                // bbox, picking the first one where the label rectangle
+                // fully covers lake cells (samples at corners + midpoints).
+                const searchSteps = 5;
+                const stepX = (w - labelW) / searchSteps;
+                const stepY = (h - labelH) / searchSteps;
+                
+                // Try centers nearest the bbox center first (label feels
+                // most natural when it's anchored toward the lake's middle)
+                const centerOrderX = [];
+                const centerOrderY = [];
+                for (let i = 0; i <= searchSteps; i++) {
+                    centerOrderX.push(i);
+                    centerOrderY.push(i);
+                }
+                const midI = searchSteps / 2;
+                centerOrderX.sort((a, b) => Math.abs(a - midI) - Math.abs(b - midI));
+                centerOrderY.sort((a, b) => Math.abs(a - midI) - Math.abs(b - midI));
+                
+                let found = false;
+                for (const iy of centerOrderY) {
+                    for (const ix of centerOrderX) {
+                        const cx = minX + labelW / 2 + ix * stepX;
+                        const cy = minY + labelH / 2 + iy * stepY;
+                        
+                        // Sample 9 points across the proposed label
+                        // rectangle (corners + midedges + center). All of
+                        // them must lie inside this lake CLUSTER — the
+                        // label may sit on water from any of the merged
+                        // lake records as long as it doesn't drift onto
+                        // land or into a separate body of water.
+                        const hw = labelW / 2 + margin / 2;
+                        const hh = labelH / 2 + margin / 2;
+                        let allInside = true;
+                        for (let dy = -1; dy <= 1; dy++) {
+                            for (let dx = -1; dx <= 1; dx++) {
+                                const sx = cx + dx * hw;
+                                const sy = cy + dy * hh;
+                                const cellIdx = this.delaunay.find(sx, sy);
+                                if (!clusterCellSet.has(cellIdx)) {
+                                    allInside = false;
+                                    break;
+                                }
+                            }
+                            if (!allInside) break;
+                        }
+                        if (!allInside) continue;
+                        
+                        // Provisional collision box including a small pad
+                        const padW = labelW / 2 + 2;
+                        const padH = labelH / 2 + 2;
+                        const box = {
+                            left: cx - padW,
+                            right: cx + padW,
+                            top: cy - padH,
+                            bottom: cy + padH
+                        };
+                        
+                        // Reject if it would collide with already-placed
+                        // labels (kingdoms placed before us).
+                        let collides = false;
+                        for (const placed of placedLabels) {
+                            if (box.left < placed.right && box.right > placed.left &&
+                                box.top < placed.bottom && box.bottom > placed.top) {
+                                collides = true;
+                                break;
+                            }
+                        }
+                        if (collides) continue;
+                        
+                        placedFontSize = fontSize;
+                        placedX = cx;
+                        placedY = cy;
+                        placedBox = box;
+                        found = true;
+                        break;
+                    }
+                    if (found) break;
+                }
+                if (found) break;
+            }
+            
+            if (placedFontSize === 0) continue;
+            
+            const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            text.setAttribute('x', placedX);
+            text.setAttribute('y', placedY);
+            text.setAttribute('text-anchor', 'middle');
+            text.setAttribute('dominant-baseline', 'middle');
+            text.setAttribute('class', 'lake-label');
+            text.setAttribute('font-size', placedFontSize);
+            text.textContent = lakeName;
+            g.appendChild(text);
+            
+            placedLabels.push(placedBox);
+        }
+    }
+    
+    // 3. Capitol names - positioned below the castle icon
     if (this.capitols && this.capitolNames) {
         const fontSize = 5.5;
         
@@ -5339,7 +5217,7 @@ _updateLabelSVG() {
         }
     }
     
-    // 3. City names (only when zoomed in) - positioned below icon
+    // 4. City names (only when zoomed in) - positioned below icon
     if (zoom > 1.2 && this.cities && this.cityNames) {
         const fontSize = 4.5;
         
@@ -5636,379 +5514,6 @@ _renderCoastline3D(ctx, bounds) {
     ctx.stroke();
 },
 
-/**
- * Render decorative wind rose / compass in corner of map
- */
-_renderWindrose(ctx) {
-    ctx.save();
-    
-    // Reset transform to draw in screen coordinates
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    
-    // Position in top-left corner
-    const size = 140;
-    const margin = 30;
-    const cx = margin + size/2;
-    const cy = margin + size/2;
-    
-    // Draw dashed lines extending from compass to edge of screen
-    ctx.strokeStyle = 'rgba(90, 74, 58, 0.25)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([8, 6]);
-    
-    const lineLength = Math.max(this.width, this.height) * 1.5;
-    const directions = [0, 45, 90, 135, 180, 225, 270, 315];
-    
-    for (const deg of directions) {
-        const rad = deg * Math.PI / 180;
-        const startDist = size/2 + 10;
-        ctx.beginPath();
-        ctx.moveTo(cx + Math.sin(rad) * startDist, cy - Math.cos(rad) * startDist);
-        ctx.lineTo(cx + Math.sin(rad) * lineLength, cy - Math.cos(rad) * lineLength);
-        ctx.stroke();
-    }
-    ctx.setLineDash([]);
-    
-    // Background circle (parchment colored)
-    ctx.beginPath();
-    ctx.arc(cx, cy, size/2 + 5, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(212, 196, 168, 0.9)';
-    ctx.fill();
-    ctx.strokeStyle = '#5a4a3a';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    
-    // Outer decorative rings
-    ctx.beginPath();
-    ctx.arc(cx, cy, size/2 - 2, 0, Math.PI * 2);
-    ctx.strokeStyle = '#5a4a3a';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    
-    ctx.beginPath();
-    ctx.arc(cx, cy, size/2 - 8, 0, Math.PI * 2);
-    ctx.setLineDash([3, 3]);
-    ctx.strokeStyle = '#7a6a5a';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.setLineDash([]);
-    
-    ctx.beginPath();
-    ctx.arc(cx, cy, size/2 - 14, 0, Math.PI * 2);
-    ctx.strokeStyle = '#5a4a3a';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    
-    // Degree tick marks
-    ctx.strokeStyle = '#5a4a3a';
-    for (let i = 0; i < 360; i += 10) {
-        const rad = i * Math.PI / 180;
-        const inner = i % 30 === 0 ? size/2 - 14 : size/2 - 10;
-        const outer = size/2 - 4;
-        ctx.lineWidth = i % 30 === 0 ? 1.5 : 0.8;
-        ctx.beginPath();
-        ctx.moveTo(cx + Math.sin(rad) * inner, cy - Math.cos(rad) * inner);
-        ctx.lineTo(cx + Math.sin(rad) * outer, cy - Math.cos(rad) * outer);
-        ctx.stroke();
-    }
-    
-    // Cardinal direction letters
-    ctx.font = 'bold 16px "Times New Roman", Georgia, serif';
-    ctx.fillStyle = '#3a2a1a';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('N', cx, cy - size/2 + 28);
-    ctx.fillText('S', cx, cy + size/2 - 28);
-    ctx.fillText('E', cx + size/2 - 28, cy);
-    ctx.fillText('W', cx - size/2 + 28, cy);
-    
-    // Intercardinal labels (smaller)
-    ctx.font = '10px "Times New Roman", Georgia, serif';
-    ctx.fillStyle = '#5a4a3a';
-    const offset = size/2 - 30;
-    const diagOffset = offset * 0.707;
-    ctx.fillText('NE', cx + diagOffset, cy - diagOffset);
-    ctx.fillText('SE', cx + diagOffset, cy + diagOffset);
-    ctx.fillText('SW', cx - diagOffset, cy + diagOffset);
-    ctx.fillText('NW', cx - diagOffset, cy - diagOffset);
-    
-    // Draw compass star points
-    const starRadius = size/2 - 35;
-    
-    // 8 small diagonal points (22.5 degree offsets)
-    ctx.fillStyle = '#8a7a6a';
-    ctx.strokeStyle = '#5a4a3a';
-    ctx.lineWidth = 0.5;
-    for (let i = 0; i < 8; i++) {
-        const angle = (22.5 + i * 45) * Math.PI / 180;
-        this._drawCompassPoint(ctx, cx, cy, angle, starRadius * 0.5, 3);
-    }
-    
-    // 4 intercardinal points (45, 135, 225, 315)
-    ctx.fillStyle = '#6a5a4a';
-    ctx.strokeStyle = '#4a3a2a';
-    ctx.lineWidth = 1;
-    for (let i = 0; i < 4; i++) {
-        const angle = (45 + i * 90) * Math.PI / 180;
-        this._drawCompassPoint(ctx, cx, cy, angle, starRadius * 0.7, 5);
-    }
-    
-    // 4 cardinal points (N, E, S, W)
-    // North - Red
-    ctx.fillStyle = '#8b0000';
-    ctx.strokeStyle = '#5a0000';
-    ctx.lineWidth = 1;
-    this._drawCompassPoint(ctx, cx, cy, 0, starRadius, 8);
-    
-    // South, East, West - Dark brown
-    ctx.fillStyle = '#4a3a2a';
-    ctx.strokeStyle = '#2a1a0a';
-    this._drawCompassPoint(ctx, cx, cy, Math.PI, starRadius, 8);
-    this._drawCompassPoint(ctx, cx, cy, Math.PI/2, starRadius, 8);
-    this._drawCompassPoint(ctx, cx, cy, -Math.PI/2, starRadius, 8);
-    
-    // Center decoration
-    ctx.beginPath();
-    ctx.arc(cx, cy, 12, 0, Math.PI * 2);
-    ctx.fillStyle = '#d4c4a8';
-    ctx.fill();
-    ctx.strokeStyle = '#5a4a3a';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    
-    ctx.beginPath();
-    ctx.arc(cx, cy, 7, 0, Math.PI * 2);
-    ctx.fillStyle = '#c4b393';
-    ctx.fill();
-    ctx.strokeStyle = '#6a5a4a';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    
-    ctx.beginPath();
-    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-    ctx.fillStyle = '#4a3a2a';
-    ctx.fill();
-    
-    ctx.restore();
-},
-
-/**
- * Draw a single compass point (triangle)
- */
-_drawCompassPoint(ctx, cx, cy, angle, length, width) {
-    const tipX = cx + Math.sin(angle) * length;
-    const tipY = cy - Math.cos(angle) * length;
-    const baseX = cx + Math.sin(angle) * 12;
-    const baseY = cy - Math.cos(angle) * 12;
-    
-    // Perpendicular offset for base width
-    const perpX = Math.cos(angle) * width;
-    const perpY = Math.sin(angle) * width;
-    
-    ctx.beginPath();
-    ctx.moveTo(tipX, tipY);
-    ctx.lineTo(baseX + perpX, baseY + perpY);
-    ctx.lineTo(cx, cy);
-    ctx.lineTo(baseX - perpX, baseY - perpY);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-},
-
-/**
- * Draw a single star point - kept for compatibility
- */
-_drawStarPoint(ctx, cx, cy, angle, length, width, color, filled) {
-    // No longer used but kept to avoid errors
-},
-
-/**
- * Render coordinate grid overlay
- */
-_renderCoordinateGrid(ctx, bounds) {
-    // Calculate km per pixel
-    const kmPerPixel = this.worldSizeKm / this.width;
-    
-    // Determine grid spacing based on zoom and world size
-    const viewWidthKm = (bounds.maxX - bounds.minX) * kmPerPixel;
-    
-    // Choose appropriate grid spacing in km
-    const spacingOptions = [5, 10, 25, 50, 100, 200, 250, 500, 1000, 2000];
-    let gridSpacingKm = spacingOptions[spacingOptions.length - 1];
-    for (const spacing of spacingOptions) {
-        const linesInView = viewWidthKm / spacing;
-        if (linesInView >= 3 && linesInView <= 10) {
-            gridSpacingKm = spacing;
-            break;
-        }
-    }
-    
-    // Convert to pixels
-    const gridSpacingPx = gridSpacingKm / kmPerPixel;
-    
-    // Skip if spacing is too small
-    if (gridSpacingPx < 20) return;
-    
-    // Calculate grid start points (align to grid, starting from 0)
-    const startX = Math.max(0, Math.floor(bounds.minX / gridSpacingPx) * gridSpacingPx);
-    const startY = Math.max(0, Math.floor(bounds.minY / gridSpacingPx) * gridSpacingPx);
-    const endX = Math.min(this.width, bounds.maxX);
-    const endY = Math.min(this.height, bounds.maxY);
-    
-    // Grid line style - more visible, dashed
-    ctx.save();
-    ctx.strokeStyle = 'rgba(60, 50, 40, 0.4)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([10, 6]);
-    
-    // Draw vertical lines
-    for (let x = startX; x <= endX; x += gridSpacingPx) {
-        if (x < 0) continue;
-        ctx.beginPath();
-        ctx.moveTo(x, Math.max(0, bounds.minY));
-        ctx.lineTo(x, Math.min(this.height, bounds.maxY));
-        ctx.stroke();
-    }
-    
-    // Draw horizontal lines
-    for (let y = startY; y <= endY; y += gridSpacingPx) {
-        if (y < 0) continue;
-        ctx.beginPath();
-        ctx.moveTo(Math.max(0, bounds.minX), y);
-        ctx.lineTo(Math.min(this.width, bounds.maxX), y);
-        ctx.stroke();
-    }
-    
-    ctx.setLineDash([]);
-    ctx.restore();
-    
-    // Draw coordinate labels in screen space
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    
-    const zoom = this.viewport.zoom;
-    const panX = this.viewport.x;
-    const panY = this.viewport.y;
-    
-    ctx.font = 'bold 12px "Times New Roman", Georgia, serif';
-    ctx.fillStyle = 'rgba(60, 45, 30, 0.85)';
-    
-    // X-axis labels along top edge
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    for (let x = startX; x <= endX; x += gridSpacingPx) {
-        if (x <= 0) continue;
-        const screenX = x * zoom + panX;
-        if (screenX < 50 || screenX > this.canvas.width - 50) continue;
-        const kmX = Math.round(x * kmPerPixel);
-        ctx.fillText(`${kmX}`, screenX, 10);
-    }
-    
-    // Y-axis labels along left edge
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    for (let y = startY; y <= endY; y += gridSpacingPx) {
-        if (y <= 0) continue;
-        const screenY = y * zoom + panY;
-        if (screenY < 50 || screenY > this.canvas.height - 50) continue;
-        const kmY = Math.round(y * kmPerPixel);
-        ctx.fillText(`${kmY}`, 10, screenY);
-    }
-    
-    ctx.restore();
-},
-
-/**
- * Render scale bar - centered at bottom, bigger design
- */
-_renderScaleBar(ctx) {
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    
-    // Calculate km per pixel based on current zoom
-    const kmPerPixel = this.worldSizeKm / this.width;
-    const effectiveKmPerPixel = kmPerPixel / this.viewport.zoom;
-    
-    // Target scale bar width in screen pixels (wider: 300-400px)
-    const targetWidthPx = 350;
-    const targetWidthKm = targetWidthPx * effectiveKmPerPixel;
-    
-    // Round to nice number
-    const niceNumbers = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000];
-    let scaleKm = niceNumbers[0];
-    for (const n of niceNumbers) {
-        if (n <= targetWidthKm * 1.3 && n >= targetWidthKm * 0.6) {
-            scaleKm = n;
-            break;
-        }
-        if (n > targetWidthKm) {
-            scaleKm = n;
-            break;
-        }
-    }
-    
-    // Calculate actual bar width in pixels
-    const barWidthPx = scaleKm / effectiveKmPerPixel;
-    
-    // Position centered at bottom
-    const barHeight = 8;
-    const margin = 30;
-    const x = (this.canvas.width - barWidthPx) / 2;
-    const y = this.canvas.height - margin - barHeight;
-    
-    // Draw scale bar - simple line with end ticks
-    ctx.strokeStyle = 'rgba(50, 40, 30, 0.8)';
-    ctx.fillStyle = 'rgba(50, 40, 30, 0.8)';
-    ctx.lineWidth = 2;
-    
-    // Main horizontal line
-    ctx.beginPath();
-    ctx.moveTo(x, y + barHeight / 2);
-    ctx.lineTo(x + barWidthPx, y + barHeight / 2);
-    ctx.stroke();
-    
-    // End ticks (vertical lines)
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    ctx.lineTo(x, y + barHeight);
-    ctx.moveTo(x + barWidthPx, y);
-    ctx.lineTo(x + barWidthPx, y + barHeight);
-    ctx.stroke();
-    
-    // Middle tick
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(x + barWidthPx / 2, y + 1);
-    ctx.lineTo(x + barWidthPx / 2, y + barHeight - 1);
-    ctx.stroke();
-    
-    // Quarter ticks
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(x + barWidthPx / 4, y + 2);
-    ctx.lineTo(x + barWidthPx / 4, y + barHeight - 2);
-    ctx.moveTo(x + barWidthPx * 3 / 4, y + 2);
-    ctx.lineTo(x + barWidthPx * 3 / 4, y + barHeight - 2);
-    ctx.stroke();
-    
-    // Labels - bigger
-    ctx.font = 'bold 14px "Times New Roman", Georgia, serif';
-    ctx.textBaseline = 'bottom';
-    
-    // "0" on left
-    ctx.textAlign = 'center';
-    ctx.fillText('0', x, y - 4);
-    
-    // Distance on right
-    ctx.fillText(`${scaleKm} km`, x + barWidthPx, y - 4);
-    
-    // Middle value
-    ctx.font = '11px "Times New Roman", Georgia, serif';
-    ctx.fillText(`${scaleKm / 2}`, x + barWidthPx / 2, y - 4);
-    
-    ctx.restore();
-},
 
 /**
  * Set hovered cell and re-render
