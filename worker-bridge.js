@@ -32,7 +32,9 @@ export class WorkerBridge {
     }
     
     /**
-     * Initialize the worker (lazy initialization)
+     * Spin up the underlying Worker. Lazy — calling generation methods
+     * before init() is fine, they trigger init() on demand. Safe to
+     * call repeatedly; subsequent calls are no-ops while a worker is alive.
      */
     init() {
         if (this.worker) return;
@@ -155,8 +157,21 @@ export class WorkerBridge {
     }
     
     /**
-     * Full generation pipeline (points + heightmap in one call)
-     * This is the most efficient option for initial generation.
+     * Full generation pipeline in one round-trip: points + heightmap.
+     * The most efficient option for initial generation — avoids the
+     * postMessage overhead of doing points and heightmap as separate
+     * worker calls.
+     *
+     * @param {Object} options
+     * @param {number} options.cellCount        Number of Voronoi cells.
+     * @param {number} options.width            Map width in world units.
+     * @param {number} options.height           Map height in world units.
+     * @param {number} options.seed             PRNG seed.
+     * @param {('random'|'jittered'|'poisson'|'relaxed')} [options.distribution='jittered']
+     * @param {number} [options.relaxIterations=2] Lloyd-relaxation passes (ignored for non-relaxed distributions).
+     * @param {Object} [options.heightmapOptions] Forwarded to generateHeightmap.
+     * @returns {Promise<{points:Float64Array, heights:Float32Array}>} Generated arrays,
+     *   transferred zero-copy from the worker.
      */
     async generateFull(options) {
         const {
@@ -222,7 +237,9 @@ export class WorkerBridge {
     }
     
     /**
-     * Terminate the worker (cleanup)
+     * Terminate the underlying worker and reject any pending callbacks.
+     * Safe to call when no worker is alive; the bridge can be reused
+     * after — the next generation call re-spins the worker via init().
      */
     terminate() {
         if (this.worker) {

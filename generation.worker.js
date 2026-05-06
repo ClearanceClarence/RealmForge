@@ -1,6 +1,18 @@
 /**
- * GENERATION WORKER - Phase 2 Implementation
- * Offloads heavy computation from main thread for responsive UI
+ * Background-thread generation worker.
+ *
+ * Mirror of the heavy generation steps from voronoi-generator.js,
+ * compiled into a single self-contained Web Worker so they don't
+ * block the UI thread. The main thread sends a message describing
+ * the work (`generatePoints`, `generateHeightmap`, `generateFull`),
+ * the worker computes, and posts back the result with `Transferable`
+ * arrays for zero-copy transfer.
+ *
+ * The PRNG and Noise implementations here are intentionally
+ * standalone (don't import the main-thread `prng.js` / `noise.js`)
+ * because the worker can't share modules with the main context — it
+ * sees `importScripts` only. Keep them in sync with the main-thread
+ * versions when changing the generation algorithms.
  */
 
 importScripts('https://cdn.jsdelivr.net/npm/d3-delaunay@6.0.4/dist/d3-delaunay.min.js');

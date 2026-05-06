@@ -22,7 +22,29 @@ import {
     POLITICAL_OCEAN, ELEVATION 
 } from './map-constants.js';
 
+/**
+ * Tile-based render cache for the canvas base layer of VoronoiGenerator.
+ *
+ * Splits the world into a grid of tiles (default 512×512 world units),
+ * pre-renders each tile per layer (terrain / political) as an off-screen
+ * canvas, and reuses those bitmaps during pan/zoom instead of redrawing
+ * every cell every frame. Offers three LOD levels (1×, 2×, 4×) so a
+ * zoomed-out view doesn't pay for full-resolution detail.
+ *
+ * Cache lifetime: invalidate on any change that affects per-cell pixels
+ * (heightmap regen, kingdom changes). Pan/zoom alone doesn't invalidate.
+ *
+ * Drop-in usage from VoronoiGenerator:
+ *   this.tileCache = new TileCache(this);
+ *   // after generate(): this.tileCache.invalidate();
+ *   // in render():      this.tileCache.render(ctx, viewport, bounds, 'political');
+ */
 export class TileCache {
+    /**
+     * @param {VoronoiGenerator} generator The owning generator.
+     * @param {Object} [options]
+     * @param {number} [options.tileSize=512] Tile edge length in world units.
+     */
     constructor(generator, options = {}) {
         this.generator = generator;
         
@@ -88,7 +110,12 @@ export class TileCache {
     }
     
     /**
-     * Invalidate all cached tiles (call after terrain/kingdom changes)
+     * Invalidate cached tiles. Call after any change that affects
+     * per-cell pixels — heightmap regen, kingdom assignment, color
+     * palette swap. Pan/zoom alone don't require invalidation.
+     *
+     * @param {string|null} [layer=null] Specific layer to invalidate
+     *   ('terrain' or 'political'); null clears all layers.
      */
     invalidate(layer = null) {
         if (layer) {
@@ -183,7 +210,18 @@ export class TileCache {
     }
     
     /**
-     * Main render function - draws cached tiles with LOD support
+     * Render the visible portion of the map by composing pre-rendered
+     * tile bitmaps. Picks an LOD based on viewport zoom (1×, 2×, or 4×)
+     * and lazily renders tiles that aren't cached yet.
+     *
+     * @param {CanvasRenderingContext2D} ctx Target context (already
+     *   transformed to world space by the caller).
+     * @param {Object} viewport The generator's current viewport
+     *   `{x, y, zoom}` — used to pick the LOD.
+     * @param {{left:number,top:number,right:number,bottom:number}} bounds
+     *   Visible world rect; tiles outside are skipped.
+     * @param {('terrain'|'political')} [layer='terrain'] Which cached
+     *   layer to draw.
      */
     render(ctx, viewport, bounds, layer = 'terrain') {
         const gen = this.generator;
@@ -253,7 +291,14 @@ export class TileCache {
     }
     
     /**
-     * Render a single tile with LOD support
+     * Render a single tile to an offscreen bitmap and store it in the
+     * tile cache. Called lazily by render() when a needed tile isn't
+     * cached yet.
+     *
+     * @param {number} tx Tile X coordinate (in tiles, not pixels).
+     * @param {number} ty Tile Y coordinate.
+     * @param {('terrain'|'political')} layer Which cell-fill style to use.
+     * @param {number} [lod=1] Level of detail (1, 2, or 4).
      */
     renderTile(tx, ty, layer, lod = 1) {
         const gen = this.generator;
@@ -311,14 +356,6 @@ export class TileCache {
         return this.cloneCanvas();
     }
     
-    /**
-     * Get simplification epsilon based on LOD level
-     * Only simplify when zoomed out (low LOD)
-     */
-    getSimplificationEpsilon(lod) {
-        if (lod >= 1) return 0;  // No simplification when zoomed in
-        return Math.round(1 / lod); // More simplification when more zoomed out
-    }
     
     /**
      * Get cell polygon, optionally simplified for LOD
@@ -550,22 +587,6 @@ export class TileCache {
         return clone;
     }
     
-    /**
-     * Get cache statistics
-     */
-    getStats() {
-        let totalCached = 0;
-        for (const cache of Object.values(this.cache)) {
-            totalCached += cache.size;
-        }
-        
-        return {
-            ...this.stats,
-            totalCached,
-            hitRate: this.stats.cacheHits / 
-                (this.stats.cacheHits + this.stats.cacheMisses) || 0
-        };
-    }
 }
 
 /**

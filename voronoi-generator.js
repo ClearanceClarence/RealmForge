@@ -15,7 +15,31 @@ import {
 import { renderingMethods } from './rendering-methods.js';
 import { TileCache } from './tile-cache.js';
 
+/**
+ * Procedural fantasy map generator built on Voronoi tessellation.
+ *
+ * Owns the world's geometry (points, Voronoi diagram), terrain
+ * (heights, precipitation, rivers, lakes), political layer (kingdoms,
+ * capitals, cities, roads, sea routes) and naming. Rendering methods
+ * are mixed in from `rendering-methods.js` via Object.assign on the
+ * prototype, which is why some methods in this file use class-method
+ * syntax (no commas) while rendering-methods.js uses object-method
+ * syntax (with commas).
+ *
+ * Typical usage from app.js:
+ *   const gen = new VoronoiGenerator(canvas);
+ *   gen.generate(50000, 'jittered', seed, heightmapOptions);
+ *   gen.generateRivers();
+ *   gen.generateKingdoms(12);
+ *   gen.render();
+ */
 export class VoronoiGenerator {
+    /**
+     * @param {HTMLCanvasElement} canvas - The canvas element the
+     *   generator will render its base layer into. The generator also
+     *   reads the canvas's parent dimensions during resize() to size
+     *   itself to the available area.
+     */
     constructor(canvas) {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
@@ -184,22 +208,6 @@ export class VoronoiGenerator {
         this.canvas.addEventListener('touchend', this._onTouchEnd);
     }
     
-    /**
-     * Remove event listeners (cleanup)
-     */
-    destroy() {
-        this.canvas.removeEventListener('wheel', this._onWheel);
-        this.canvas.removeEventListener('mousedown', this._onMouseDown);
-        window.removeEventListener('mousemove', this._onMouseMove);
-        window.removeEventListener('mouseup', this._onMouseUp);
-        this.canvas.removeEventListener('touchstart', this._onTouchStart);
-        this.canvas.removeEventListener('touchmove', this._onTouchMove);
-        this.canvas.removeEventListener('touchend', this._onTouchEnd);
-        if (this._wheelRafId !== null) {
-            cancelAnimationFrame(this._wheelRafId);
-            this._wheelRafId = null;
-        }
-    }
     
     /**
      * Mouse wheel zoom handler.
@@ -471,16 +479,6 @@ export class VoronoiGenerator {
         this._onZoomChange();
     }
     
-    /**
-     * Fit content to view
-     */
-    fitToView() {
-        this.viewport.x = 0;
-        this.viewport.y = 0;
-        this.viewport.zoom = 1;
-        this.render();
-        this._onZoomChange();
-    }
     
     /**
      * Get visible bounds in world coordinates
@@ -505,18 +503,16 @@ export class VoronoiGenerator {
         };
     }
     
-    /**
-     * Convert world coordinates to screen coordinates
-     */
-    worldToScreen(worldX, worldY) {
-        return {
-            x: worldX * this.viewport.zoom + this.viewport.x,
-            y: worldY * this.viewport.zoom + this.viewport.y
-        };
-    }
     
     /**
-     * Resize canvas to container
+     * Resize the canvas to its container's current size, scaling all
+     * stored world-space coordinates proportionally so the map keeps
+     * the same relative position on the new canvas. Without this
+     * scaling, a map generated for an old canvas size would sit in a
+     * sub-rectangle of the new one with an unmapped band along the
+     * grown edge.
+     *
+     * Triggers a fresh render. Safe to call before generate().
      */
     resize() {
         const rect = this.canvas.parentElement.getBoundingClientRect();
@@ -609,7 +605,27 @@ export class VoronoiGenerator {
     }
     
     /**
-     * Generate points with specified distribution
+     * Generate the base world: scatter `count` points across the canvas
+     * using the chosen distribution, build the Voronoi diagram, and
+     * (if `heightmapOptions` is supplied) generate the heightmap.
+     *
+     * This is the first call in the standard pipeline. Downstream
+     * generation (rivers, kingdoms, etc.) can run only after this
+     * succeeds.
+     *
+     * @param {number} count - Number of Voronoi cells. Practical range
+     *   1,000–100,000. Higher = more detail and slower generation.
+     * @param {('random'|'jittered'|'poisson'|'relaxed')} [distribution='jittered']
+     *   Point distribution algorithm. `jittered` is a good default;
+     *   `poisson` is more uniform but slower; `relaxed` runs Lloyd
+     *   relaxation on a jittered base.
+     * @param {number} [seed=12345] - PRNG seed; same seed + same
+     *   parameters always produce the same world.
+     * @param {Object|null} [heightmapOptions] - If provided, runs
+     *   `generateHeightmap(heightmapOptions)` immediately after points
+     *   are placed. Pass `null` to skip and call generateHeightmap
+     *   yourself later.
+     * @returns {Object} Performance metrics: `{ pointTime, heightmapTime }`.
      */
     generate(count, distribution = 'jittered', seed = 12345, heightmapOptions = null) {
         const start = performance.now();
@@ -680,7 +696,26 @@ export class VoronoiGenerator {
     }
     
     /**
-     * Generate heightmap using noise
+     * Generate the heightmap: assign an elevation to every cell using
+     * the chosen noise algorithm, apply a world-shape mask, optionally
+     * run hydraulic erosion, apply coastal noise, subdivide coastal
+     * cells for sub-cell detail, and smooth.
+     *
+     * @param {Object} [options]
+     * @param {number} [options.seed]              PRNG seed for noise.
+     * @param {string} [options.algorithm]         Noise algorithm: 'continental',
+     *   'eroded', 'warped', 'hills', 'valleys', 'plateaus', 'ridges', 'fbm'.
+     * @param {number} [options.frequency]         Noise frequency (lower = bigger features).
+     * @param {number} [options.octaves]           Octave count (more = finer detail).
+     * @param {number} [options.seaLevel]          Sea-level threshold (0..1).
+     * @param {string} [options.worldShape]        Falloff mask: 'continent',
+     *   'archipelago', 'two-continents', 'isthmus', 'pangaea', 'coastal',
+     *   'inland-sea', 'lake-world', 'peninsulas', 'atoll', 'radial', 'square', 'open'.
+     * @param {number} [options.maskStrength]      How strongly to enforce the world mask (0..1).
+     * @param {number} [options.smoothing]         Smoothing pass count.
+     * @param {number} [options.coastJaggedness]   Coastline irregularity (0..1).
+     * @param {number} [options.islandDensity]     Sprinkle density for small islands (0..1).
+     * @param {number} [options.erosionIterations] Hydraulic-erosion drop count.
      */
     generateHeightmap(options = {}) {
         const start = performance.now();
@@ -1569,43 +1604,6 @@ export class VoronoiGenerator {
         }
     }
     
-    /**
-     * Light smoothing pass after erosion to reduce harsh edges
-     */
-    _smoothErosionResults(iterations = 1, strength = 0.3) {
-        for (let iter = 0; iter < iterations; iter++) {
-            const newHeights = new Float32Array(this.cellCount);
-            
-            for (let i = 0; i < this.cellCount; i++) {
-                // Only smooth land cells
-                if (this.heights[i] < ELEVATION.SEA_LEVEL) {
-                    newHeights[i] = this.heights[i];
-                    continue;
-                }
-                
-                const neighbors = Array.from(this.voronoi.neighbors(i));
-                if (neighbors.length === 0) {
-                    newHeights[i] = this.heights[i];
-                    continue;
-                }
-                
-                let sum = this.heights[i];
-                let count = 1;
-                
-                for (const n of neighbors) {
-                    if (this.heights[n] >= ELEVATION.SEA_LEVEL) {
-                        sum += this.heights[n];
-                        count++;
-                    }
-                }
-                
-                const avg = sum / count;
-                newHeights[i] = this.heights[i] * (1 - strength) + avg * strength;
-            }
-            
-            this.heights.set(newHeights);
-        }
-    }
     
     /**
      * Fill small depressions/pits that were created by erosion
@@ -1990,9 +1988,26 @@ export class VoronoiGenerator {
     }
     
     /**
-     * Generate political kingdoms/states from land cells
-     * Uses competitive flood fill from random seed points
-     * Islands are assigned to nearest kingdom by distance
+     * Generate the political layer: kingdom territories, capitals,
+     * cities, populations, road network, and sea routes.
+     *
+     * Pipeline (in order):
+     *   1. Pick one culture per kingdom and generate culture-flavoured names.
+     *   2. Run weighted flood-fill from terrain-scored capital seeds to
+     *      partition land cells into territories.
+     *   3. Assign per-kingdom colours via graph-colouring so neighbours differ.
+     *   4. Place capitals (best terrain score per kingdom).
+     *   5. Place cities (port, lakeside, coastal, mountain, etc.) by terrain priority.
+     *   6. Compute populations.
+     *   7. Generate road network (continent MST trade routes + city feeders + consolidation).
+     *   8. Generate sea routes between coastal ports.
+     *
+     * Requires heightmap to be present. No-op with a warning if not.
+     *
+     * @param {number} [numKingdoms=12] Number of independent realms.
+     *   Practical range 3–30.
+     * @param {number} [roadDensity=5] Influences city density and how
+     *   aggressively roads connect interior settlements (0–10).
      */
     generateKingdoms(numKingdoms = 12, roadDensity = 5) {
         if (!this.heights) {
@@ -2269,75 +2284,6 @@ export class VoronoiGenerator {
         
     }
     
-    /**
-     * Fast capital selection using spatial distribution
-     */
-    _selectCapitalsFast(landCells, count) {
-        if (count <= 0 || landCells.length === 0) return [];
-        if (count === 1) return [landCells[Math.floor(landCells.length / 2)]];
-        
-        const capitals = [];
-        const cellSet = new Set(landCells);
-        
-        // Start with a random cell near center
-        let cx = 0, cy = 0;
-        for (const cell of landCells) {
-            cx += this.points[cell * 2];
-            cy += this.points[cell * 2 + 1];
-        }
-        cx /= landCells.length;
-        cy /= landCells.length;
-        
-        // Find cell nearest to centroid
-        let nearestToCentroid = landCells[0];
-        let nearestDist = Infinity;
-        for (const cell of landCells) {
-            const d = (this.points[cell * 2] - cx) ** 2 + (this.points[cell * 2 + 1] - cy) ** 2;
-            if (d < nearestDist) {
-                nearestDist = d;
-                nearestToCentroid = cell;
-            }
-        }
-        capitals.push(nearestToCentroid);
-        
-        // Add remaining capitals maximizing minimum distance to existing capitals
-        while (capitals.length < count) {
-            let bestCell = -1;
-            let bestMinDist = -1;
-            
-            // Sample cells for speed (don't check all)
-            const sampleSize = Math.min(500, landCells.length);
-            const step = Math.max(1, Math.floor(landCells.length / sampleSize));
-            
-            for (let i = 0; i < landCells.length; i += step) {
-                const cell = landCells[i];
-                if (capitals.includes(cell)) continue;
-                
-                const x = this.points[cell * 2];
-                const y = this.points[cell * 2 + 1];
-                
-                // Find minimum distance to any existing capital
-                let minDist = Infinity;
-                for (const cap of capitals) {
-                    const d = (this.points[cap * 2] - x) ** 2 + (this.points[cap * 2 + 1] - y) ** 2;
-                    if (d < minDist) minDist = d;
-                }
-                
-                if (minDist > bestMinDist) {
-                    bestMinDist = minDist;
-                    bestCell = cell;
-                }
-            }
-            
-            if (bestCell >= 0) {
-                capitals.push(bestCell);
-            } else {
-                break;
-            }
-        }
-        
-        return capitals;
-    }
     
     /**
      * Score a cell for capital suitability.
@@ -3820,127 +3766,6 @@ export class VoronoiGenerator {
         this.roads = newRoads;
     }
     
-    /**
-     * (Disabled.) The earlier snap-merge post-process broke the chain
-     * invariant — see comment in _generateRoads.
-     */
-    _mergeAdjacentRoads_disabled() {
-        if (!this.roads || this.roads.length < 2) return;
-        
-        const priority = { trade: 0, major: 1, minor: 2, pass: 3 };
-        // Sort a parallel index array; don't reorder this.roads itself
-        // because callers may have references that depend on its order.
-        const order = this.roads.map((_, i) => i)
-            .sort((a, b) => (priority[this.roads[a].type] || 9) - (priority[this.roads[b].type] || 9));
-        
-        // Snap radius in WORLD units. ~5× cell spacing — generous enough
-        // to catch parallel paths that drift up to 4-5 cells apart even
-        // when A* picks substantially different routes despite the
-        // road-bonus. Prior values (1.8×, 3×) were leaving visible gaps
-        // near label-placement areas where the second pathfind chose to
-        // detour around a cluster of cells.
-        const avgCellSpacing = Math.sqrt((this.width * this.height) / Math.max(1, this.cellCount));
-        const snapRadius = avgCellSpacing * 5.0;
-        const snapRadius2 = snapRadius * snapRadius;
-        
-        // Spatial hash: bucket world space into cells of size = snapRadius.
-        // Querying for "nearest locked cell" then visits only the 3×3
-        // bucket neighbourhood around the query point (constant time)
-        // instead of scanning every locked cell. Without this the merge
-        // pass alone was an O(roads × cellsPerRoad × totalLockedCells)
-        // operation that quickly dominated render time.
-        const bucketSize = snapRadius;
-        const lockedBuckets = new Map();   // "bx,by" → [cellIdx, ...]
-        const bucketKey = (bx, by) => `${bx},${by}`;
-        const addToBuckets = (cellIdx) => {
-            const x = this.points[cellIdx * 2];
-            const y = this.points[cellIdx * 2 + 1];
-            const bx = Math.floor(x / bucketSize);
-            const by = Math.floor(y / bucketSize);
-            const k = bucketKey(bx, by);
-            let arr = lockedBuckets.get(k);
-            if (!arr) { arr = []; lockedBuckets.set(k, arr); }
-            arr.push(cellIdx);
-        };
-        const queryNearest = (px, py) => {
-            const bx = Math.floor(px / bucketSize);
-            const by = Math.floor(py / bucketSize);
-            let best = -1;
-            let bestD = snapRadius2;
-            for (let dy = -1; dy <= 1; dy++) {
-                for (let dx = -1; dx <= 1; dx++) {
-                    const arr = lockedBuckets.get(bucketKey(bx + dx, by + dy));
-                    if (!arr) continue;
-                    for (const lc of arr) {
-                        const lx = this.points[lc * 2];
-                        const ly = this.points[lc * 2 + 1];
-                        const d = (lx - px) ** 2 + (ly - py) ** 2;
-                        if (d < bestD) { bestD = d; best = lc; }
-                    }
-                }
-            }
-            return best;
-        };
-        
-        const seenBucketed = new Set();   // dedupe so we don't bucket a cell twice
-        for (const idx of order) {
-            const road = this.roads[idx];
-            if (!road.path || road.path.length < 2) continue;
-            
-            // road.path is an array of {x, y, cell} objects (from
-            // _findRoadPath). For each step we look at the cell index,
-            // try to snap it onto a locked cell, and emit a fresh
-            // {x, y, cell} triple referring to whatever cell we ended up
-            // pointing at. That keeps the path shape consistent with
-            // what the renderer expects and what _markRoadCells walked.
-            const newPath = [];
-            for (const point of road.path) {
-                const cellIdx = point.cell;
-                if (cellIdx === undefined || cellIdx < 0) {
-                    // Defensive: leave malformed entries alone
-                    if (newPath.length === 0 || newPath[newPath.length - 1] !== point) {
-                        newPath.push(point);
-                    }
-                    continue;
-                }
-                const px = this.points[cellIdx * 2];
-                const py = this.points[cellIdx * 2 + 1];
-                
-                const snapTo = queryNearest(px, py);
-                const finalCell = snapTo >= 0 ? snapTo : cellIdx;
-                
-                // Collapse consecutive duplicates — a snapped path that
-                // visits the same cell several times in a row would
-                // render as a zero-length segment.
-                const last = newPath[newPath.length - 1];
-                if (!last || last.cell !== finalCell) {
-                    newPath.push({
-                        x: this.points[finalCell * 2],
-                        y: this.points[finalCell * 2 + 1],
-                        cell: finalCell
-                    });
-                }
-            }
-            
-            road.path = newPath;
-            // Refresh cells array if present (callers like
-            // pruneRoadsAcrossLakes use this)
-            road.path.cells = newPath.map(p => p.cell);
-            
-            // After this road is laid down, its cells become "locked"
-            // for subsequent snap targets.
-            for (const p of newPath) {
-                if (p.cell === undefined || p.cell < 0) continue;
-                if (!seenBucketed.has(p.cell)) {
-                    seenBucketed.add(p.cell);
-                    addToBuckets(p.cell);
-                }
-            }
-        }
-        
-        // Drop roads that collapsed to <2 cells
-        this.roads = this.roads.filter(r => r.path && r.path.length >= 2);
-    }
     
     /**
      * Remove any road that crosses through a lake cell.
@@ -4755,271 +4580,9 @@ export class VoronoiGenerator {
         };
     }
     
-    /**
-     * Calculate border costs - rivers and mountains make natural borders
-     */
-    _calculateBorderCosts() {
-        const edgeCost = new Map();
-        
-        // Check if we have rivers
-        const hasRivers = this.rivers && this.rivers.length > 0;
-        
-        // Build set of river edges for fast lookup
-        const riverEdges = new Set();
-        if (hasRivers) {
-            for (const river of this.rivers) {
-                const path = river.path;
-                for (let i = 0; i < path.length - 1; i++) {
-                    const c1 = path[i].cell;
-                    const c2 = path[i + 1].cell;
-                    const key = c1 < c2 ? `${c1}-${c2}` : `${c2}-${c1}`;
-                    riverEdges.add(key);
-                }
-            }
-        }
-        
-        // Calculate cost for each edge between land cells
-        for (let i = 0; i < this.cellCount; i++) {
-            if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
-            
-            for (const neighbor of this.voronoi.neighbors(i)) {
-                if (this.heights[neighbor] < ELEVATION.SEA_LEVEL) continue;
-                if (neighbor < i) continue; // Only process each edge once
-                
-                const key = `${i}-${neighbor}`;
-                let cost = 1.0; // Base cost
-                
-                // River crossing - high cost (makes good border)
-                if (riverEdges.has(key)) {
-                    cost = 10.0;
-                }
-                
-                // Mountain/elevation difference - medium cost
-                const elevDiff = Math.abs(this.heights[i] - this.heights[neighbor]);
-                if (elevDiff > 100) { // Use absolute elevation (meters)
-                    cost = Math.max(cost, 3.0 + elevDiff * 0.01);
-                }
-                
-                // High elevation (mountains) - slightly higher cost
-                const avgElev = (this.heights[i] + this.heights[neighbor]) / 2;
-                if (avgElev > ELEVATION.SEA_LEVEL + 800) {
-                    cost = Math.max(cost, 2.0);
-                }
-                
-                edgeCost.set(key, cost);
-            }
-        }
-        
-        return edgeCost;
-    }
     
-    /**
-     * Smooth kingdom borders - reduce jaggedness
-     */
-    _smoothKingdomBorders(iterations = 3) {
-        for (let iter = 0; iter < iterations; iter++) {
-            const changes = [];
-            
-            for (let i = 0; i < this.cellCount; i++) {
-                const myKingdom = this.kingdoms[i];
-                if (myKingdom < 0) continue;
-                
-                // Count neighboring kingdoms (LAND cells only)
-                const neighborCounts = new Map();
-                let totalNeighbors = 0;
-                
-                for (const neighbor of this.voronoi.neighbors(i)) {
-                    const nk = this.kingdoms[neighbor];
-                    // Only count land cells with assigned kingdoms
-                    if (nk >= 0 && this.heights[neighbor] >= ELEVATION.SEA_LEVEL) {
-                        neighborCounts.set(nk, (neighborCounts.get(nk) || 0) + 1);
-                        totalNeighbors++;
-                    }
-                }
-                
-                if (totalNeighbors === 0) continue;
-                
-                // If majority of neighbors are different kingdom, consider switching
-                const myCount = neighborCounts.get(myKingdom) || 0;
-                
-                // Find most common neighbor kingdom
-                let maxCount = 0;
-                let dominantKingdom = myKingdom;
-                for (const [kingdom, count] of neighborCounts) {
-                    if (count > maxCount) {
-                        maxCount = count;
-                        dominantKingdom = kingdom;
-                    }
-                }
-                
-                // Switch if surrounded by other kingdom (>= 2/3 of neighbors)
-                if (dominantKingdom !== myKingdom && maxCount >= totalNeighbors * 0.67) {
-                    // Don't switch capitals
-                    if (!this.kingdomCapitals.includes(i)) {
-                        changes.push({ cell: i, newKingdom: dominantKingdom });
-                    }
-                }
-            }
-            
-            // Apply changes
-            for (const { cell, newKingdom } of changes) {
-                this.kingdoms[cell] = newKingdom;
-            }
-            
-            if (changes.length === 0) break;
-        }
-    }
     
-    /**
-     * Remove small exclaves - isolated cells of a kingdom
-     * Reassigns disconnected cells to nearest appropriate kingdom
-     */
-    _removeKingdomExclaves() {
-        // Limit iterations - some small exclaves are acceptable
-        const maxIterations = 3;
-        let iteration = 0;
-        let totalRemoved = 0;
-        
-        while (iteration < maxIterations) {
-            let removedThisPass = 0;
-            
-            // For each kingdom, find connected components
-            for (let k = 0; k < this.kingdomCapitals.length; k++) {
-                const capital = this.kingdomCapitals[k];
-                if (capital < 0 || this.kingdoms[capital] !== k) continue;
-                
-                // BFS from capital to find main body
-                // Uses head pointer instead of .shift() (which is O(N) per call)
-                const mainBody = new Set();
-                const queue = [capital];
-                let qHead = 0;
-                mainBody.add(capital);
-                
-                while (qHead < queue.length) {
-                    const current = queue[qHead++];
-                    
-                    for (const neighbor of this.voronoi.neighbors(current)) {
-                        if (this.kingdoms[neighbor] === k && !mainBody.has(neighbor)) {
-                            mainBody.add(neighbor);
-                            queue.push(neighbor);
-                        }
-                    }
-                }
-                
-                // Find all exclave cells (not connected to capital)
-                const exclaveCells = [];
-                for (let i = 0; i < this.cellCount; i++) {
-                    if (this.kingdoms[i] === k && !mainBody.has(i)) {
-                        exclaveCells.push(i);
-                    }
-                }
-                
-                // Reassign each exclave cell to best neighboring kingdom
-                for (const i of exclaveCells) {
-                    // Find most common neighboring kingdom (LAND cells only)
-                    const neighborCounts = new Map();
-                    for (const neighbor of this.voronoi.neighbors(i)) {
-                        const nk = this.kingdoms[neighbor];
-                        if (nk >= 0 && nk !== k && this.heights[neighbor] >= ELEVATION.SEA_LEVEL) {
-                            neighborCounts.set(nk, (neighborCounts.get(nk) || 0) + 1);
-                        }
-                    }
-                    
-                    let maxCount = 0;
-                    let bestKingdom = -1;
-                    for (const [kingdom, count] of neighborCounts) {
-                        if (count > maxCount) {
-                            maxCount = count;
-                            bestKingdom = kingdom;
-                        }
-                    }
-                    
-                    // If no land neighbors from other kingdoms, just unassign the cell
-                    // (Skip expensive O(n²) nearest-cell search)
-                    if (bestKingdom >= 0) {
-                        this.kingdoms[i] = bestKingdom;
-                        removedThisPass++;
-                    }
-                }
-            }
-            
-            totalRemoved += removedThisPass;
-            iteration++;
-            
-            // Stop if no exclaves were removed this pass
-            if (removedThisPass === 0) break;
-        }
-        
-        if (totalRemoved > 0) {
-        }
-    }
     
-    /**
-     * Select kingdom capital locations - spread across land (legacy - kept for compatibility)
-     */
-    _selectKingdomCapitals(landCells, count, existingCapitals = []) {
-        // Shuffle land cells
-        const shuffled = [...landCells];
-        for (let i = shuffled.length - 1; i > 0; i--) {
-            const j = Math.floor(PRNG.random() * (i + 1));
-            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-        }
-        
-        // Minimum distance between capitals
-        const totalCount = count + existingCapitals.length;
-        const minDistSq = (this.width / Math.sqrt(totalCount * 2)) ** 2;
-        
-        const capitals = [];
-        for (const cell of shuffled) {
-            if (capitals.length >= count) break;
-            
-            const x = this.points[cell * 2];
-            const y = this.points[cell * 2 + 1];
-            
-            // Check distance from existing capitals (both new and passed-in)
-            let tooClose = false;
-            
-            // Check against newly selected capitals
-            for (const existing of capitals) {
-                const ex = this.points[existing * 2];
-                const ey = this.points[existing * 2 + 1];
-                const distSq = (x - ex) ** 2 + (y - ey) ** 2;
-                if (distSq < minDistSq) {
-                    tooClose = true;
-                    break;
-                }
-            }
-            
-            // Check against passed-in existing capitals
-            if (!tooClose) {
-                for (const existing of existingCapitals) {
-                    const ex = this.points[existing * 2];
-                    const ey = this.points[existing * 2 + 1];
-                    const distSq = (x - ex) ** 2 + (y - ey) ** 2;
-                    if (distSq < minDistSq) {
-                        tooClose = true;
-                        break;
-                    }
-                }
-            }
-            
-            if (!tooClose) {
-                capitals.push(cell);
-            }
-        }
-        
-        // If we couldn't find enough spread capitals, just take what we can
-        if (capitals.length < count) {
-            for (const cell of shuffled) {
-                if (capitals.length >= count) break;
-                if (!capitals.includes(cell)) {
-                    capitals.push(cell);
-                }
-            }
-        }
-        
-        return capitals;
-    }
     
     /**
      * Fill depressions using Priority-Flood algorithm
@@ -5260,21 +4823,6 @@ export class VoronoiGenerator {
         }
     }
     
-    /**
-     * Carve a river into the heightmap
-     */
-    _carveRiver(river, depth) {
-        for (const point of river.path) {
-            if (point.cell < 0) continue;
-            if (this.heights[point.cell] < ELEVATION.SEA_LEVEL) continue;  // Don't carve ocean
-            if (this.lakeCells && this.lakeCells.has(point.cell)) continue;  // Don't carve lakes
-            
-            // Carve depth based on flow (more flow = deeper carving)
-            const flowFactor = Math.min(2, 1 + point.flow);
-            const carveAmount = depth * flowFactor;
-            this.heights[point.cell] -= carveAmount;
-        }
-    }
     
     /**
      * Fill inland seas - convert ocean cells not connected to map edge to land
@@ -5327,8 +4875,19 @@ export class VoronoiGenerator {
     }
     
     /**
-     * Generate rivers based on terrain and precipitation
-     * Water flows downhill, accumulating into rivers and lakes
+     * Generate the river network. Steepest-descent drainage on a
+     * depression-filled heightmap; flow accumulates from precipitation;
+     * paths above the flow threshold become rivers; endorheic basins
+     * become lakes. Each river is named.
+     *
+     * Requires both heightmap and precipitation to be present. No-op
+     * with a warning if either is missing.
+     *
+     * @param {Object} [options]
+     * @param {number} [options.flowThreshold]  Minimum accumulated flow
+     *   to be considered a river (lower = more, smaller rivers).
+     * @param {number} [options.minLength]      Minimum river length in
+     *   cells; shorter paths are dropped.
      */
     generateRivers(options = {}) {
         if (!this.heights || !this.precipitation || this.cellCount === 0) {
@@ -5889,86 +5448,6 @@ export class VoronoiGenerator {
         return generated;
     }
     
-    /**
-     * High-level entry point: generate ALL lakes and integrate them with the
-     * world state.
-     *
-     * Call AFTER drainage but BEFORE kingdoms (so kingdoms see lake cells in
-     * their edge-cost calculations).
-     *
-     * @param {Object} options
-     *   density       - 0..1 lake count multiplier
-     *   minDepth      - 0..1 normalized; small (more lakes) to large (fewer, deeper)
-     *   maxSize       - cells per lake (caps individual lake size)
-     */
-    generateLakes(options = {}) {
-        if (!this.heights || !this.voronoi) return;
-        
-        // Reset lake state
-        this.lakes = [];
-        this.lakeCells = new Set();
-        this.lakeDepths = new Map();
-        
-        const density = Math.max(0, Math.min(1, options.density ?? 0.5));
-        if (density === 0) return;
-        
-        // minDepth slider value 0..1 maps to actual depth threshold in meters.
-        // Low slider = lots of small shallow lakes (15m). High slider = few
-        // big deep lakes (120m).
-        const sliderDepth = Math.max(0, Math.min(1, options.minDepth ?? 0.3));
-        const minDepthMeters = 15 + sliderDepth * 105;
-        
-        // maxSize: similar mapping. Slider 0 -> 30 cells, slider 1 -> 200 cells.
-        const sliderSize = Math.max(0, Math.min(1, options.minDepth ?? 0.3));
-        const maxSizeCells = Math.round(30 + sliderSize * 170);
-        
-        // Phase A: endorheic basins
-        const endorheic = this.detectEndorheicLakes({
-            density,
-            minDepth: minDepthMeters,
-            maxSize: maxSizeCells
-        });
-        for (const lake of endorheic) lake.type = 'endorheic';
-        
-        // Phase B: river-fed lakes
-        // Need to populate this.lakeCells before river-fed pass so it doesn't
-        // overlap with endorheic ones already created
-        for (const lake of endorheic) {
-            for (const c of lake.cells) this.lakeCells.add(c);
-        }
-        
-        const riverFed = this.detectRiverFedLakes({
-            density: density * 0.7,   // a bit fewer river-fed than endorheic
-            minDepth: minDepthMeters * 0.8,
-            maxSize: Math.round(maxSizeCells * 0.8)
-        });
-        for (const lake of riverFed) lake.type = 'river-fed';
-        
-        // Combine
-        const allLakes = [...endorheic, ...riverFed];
-        
-        // Name each lake
-        if (this.nameGenerator && typeof this.nameGenerator.generateLakeName === 'function') {
-            for (const lake of allLakes) {
-                lake.name = this.nameGenerator.generateLakeName();
-            }
-        }
-        
-        // Populate generator state
-        this.lakes = allLakes;
-        for (const lake of allLakes) {
-            for (const cell of lake.cells) {
-                this.lakeCells.add(cell);
-                // Store water depth at this cell
-                this.lakeDepths.set(cell, lake.surfaceElevation - this.heights[cell]);
-            }
-        }
-        
-        // Invalidate caches that depend on lake/water layout
-        this._coastlineCache = null;
-        this._contourCache = null;
-        if (this.tileCache) this.tileCache.invalidate();
-    }
     
     /**
      * Trace a river from start cell to ocean/lake
@@ -6400,22 +5879,7 @@ export class VoronoiGenerator {
         }
     }
     
-    /**
-     * Legacy function for compatibility
-     */
-    _getHeightColor(height, seaLevel) {
-        // Convert 0-1 height to elevation if using legacy format
-        const elevation = this._normalizedToElevation(height);
-        return this._getElevationColor(elevation);
-    }
     
-    /**
-     * Convert normalized height (0-1) to elevation in meters
-     */
-    _normalizedToElevation(normalizedHeight) {
-        // Map 0-1 to MIN-MAX range
-        return ELEVATION.MIN + normalizedHeight * ELEVATION.RANGE;
-    }
     
     /**
      * Convert elevation in meters to normalized height (0-1)
@@ -6424,24 +5888,6 @@ export class VoronoiGenerator {
         return (elevation - ELEVATION.MIN) / ELEVATION.RANGE;
     }
     
-    /**
-     * Linear interpolate between two hex colors
-     */
-    _lerpColor(color1, color2, t) {
-        const r1 = parseInt(color1.slice(1, 3), 16);
-        const g1 = parseInt(color1.slice(3, 5), 16);
-        const b1 = parseInt(color1.slice(5, 7), 16);
-        
-        const r2 = parseInt(color2.slice(1, 3), 16);
-        const g2 = parseInt(color2.slice(3, 5), 16);
-        const b2 = parseInt(color2.slice(5, 7), 16);
-        
-        const r = Math.round(r1 + (r2 - r1) * t);
-        const g = Math.round(g1 + (g2 - g1) * t);
-        const b = Math.round(b1 + (b2 - b1) * t);
-        
-        return `rgb(${r},${g},${b})`;
-    }
     
     /**
      * Get grayscale color for elevation (maps -4000 to 6000 -> 0 to 255)
@@ -6485,87 +5931,6 @@ export class VoronoiGenerator {
         }
     }
     
-    /**
-     * Generate land probability map for biased distribution.
-     *
-     * Builds a 32x32 grid that approximates the heightmap. Cells with
-     * higher probability get more sample points, so an archipelago preset
-     * actually places points in clusters (not uniformly across empty sea).
-     *
-     * Mirrors the same noise + world-mask pipeline used by generateHeightmap()
-     * so the bias matches what the user will eventually see.
-     */
-    _generateLandProbabilityMap(seed, heightmapOptions) {
-        const {
-            algorithm = 'continental',
-            frequency = 3,
-            octaves = 6,
-            seaLevel = 0.4,
-            falloff = 'radial',
-            falloffStrength = 0.7
-        } = heightmapOptions || {};
-        
-        Noise.init(seed);
-        
-        const margin = 1;
-        const w = this.width - margin * 2;
-        const h = this.height - margin * 2;
-        
-        const gridSize = 32;
-        const landProb = new Float32Array(gridSize * gridSize);
-        
-        for (let gy = 0; gy < gridSize; gy++) {
-            for (let gx = 0; gx < gridSize; gx++) {
-                const x = margin + (gx + 0.5) * (w / gridSize);
-                const y = margin + (gy + 0.5) * (h / gridSize);
-                
-                const nx = x / this.width;
-                const ny = y / this.height;
-                
-                // Get base noise value matching the heightmap algorithm
-                let noiseVal;
-                switch (algorithm) {
-                    case 'continental':
-                        noiseVal = Noise.continental(nx, ny, { frequency, octaves });
-                        break;
-                    case 'ridged':
-                        noiseVal = Noise.ridged(nx, ny, { frequency, octaves }) * 0.5;
-                        break;
-                    case 'warped':
-                        noiseVal = Noise.warped(nx, ny, { frequency, octaves, warpStrength: 0.4 });
-                        break;
-                    case 'eroded':
-                        noiseVal = Noise.eroded(nx, ny, { frequency, octaves, erosionStrength: 0.5 });
-                        break;
-                    case 'multiwarp':
-                        noiseVal = Noise.multiWarp(nx, ny, { frequency, octaves, warpIterations: 3, warpStrength: 0.5 });
-                        break;
-                    case 'swiss':
-                        noiseVal = Noise.swiss(nx, ny, { frequency, octaves, warpStrength: 0.35 });
-                        break;
-                    case 'valleys':
-                        noiseVal = Noise.valleys(nx, ny, { frequency, octaves, sharpness: 1.5, depth: 0.7 });
-                        break;
-                    case 'terraced':
-                        noiseVal = Noise.terraced(nx, ny, { frequency, octaves, levels: 10, sharpness: 0.6 });
-                        break;
-                    default:
-                        noiseVal = Noise.fbm(nx, ny, { frequency, octaves });
-                }
-                
-                // Mirror the heightmap pipeline: -1..1 -> 0..1, then apply world mask
-                let hVal = (noiseVal + 1) / 2;
-                hVal = this._applyWorldMask(hVal, x, y, falloff, falloffStrength);
-                
-                // Probability of being land = how far above sea level this cell is
-                // Above seaLevel -> high prob, below -> low prob (with smooth transition)
-                const prob = this._smoothstep(seaLevel - 0.08, seaLevel + 0.08, hVal);
-                landProb[gy * gridSize + gx] = prob;
-            }
-        }
-        
-        return { data: landProb, gridSize };
-    }
     
     /**
      * Get density at a point based on land probability map
@@ -6960,32 +6325,8 @@ export class VoronoiGenerator {
         return this.delaunay.find(world.x, world.y);
     }
     
-    /**
-     * Find cell at world coordinates (no transform)
-     */
-    findCellWorld(worldX, worldY) {
-        if (!this.delaunay) return -1;
-        return this.delaunay.find(worldX, worldY);
-    }
     
-    /**
-     * Get cell polygon by index
-     */
-    getCellPolygon(index) {
-        if (!this.voronoi || index < 0 || index >= this.cellCount) return null;
-        return this.voronoi.cellPolygon(index);
-    }
     
-    /**
-     * Get cell center point
-     */
-    getCellCenter(index) {
-        if (index < 0 || index >= this.cellCount) return null;
-        return {
-            x: this.points[index * 2],
-            y: this.points[index * 2 + 1]
-        };
-    }
     
     /**
      * Get cell height

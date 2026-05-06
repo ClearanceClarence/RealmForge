@@ -1,43 +1,35 @@
 /**
- * Advanced Procedural Fantasy Name Generator
- * 
- * Features:
- * - Multiple generation strategies (Markov chains, syllable-based, compound, affixed)
- * - Extensive cultural phonologies with proper linguistic rules
- * - Consonant cluster and vowel harmony rules
- * - Regional consistency for cohesive naming
- * - 20+ name types (places, people, features, organizations, items)
- * - Cultural blending for border regions
- * - Etymological tracking
- * 
- * @author RealmForge
- * @version 2.0.0
+ * Procedural fantasy name generator.
+ *
+ * Generates names for kingdoms, settlements, rivers, lakes, seas,
+ * and mountains using a per-culture pipeline of Markov chains over
+ * cultural syllable patterns and compound/affix rules. Each culture
+ * (germanic, norse, celtic, romance, slavic, hellenic, arabic,
+ * eastasian, mesoamerican, african, elvish, dwarven, orcish) carries
+ * its own phonology, title pool, city-prefix pool, and weight in the
+ * culture distribution.
+ *
+ * Used by VoronoiGenerator: one instance per generation, with one
+ * culture picked per kingdom and threaded through all settlement
+ * names within that kingdom so a realm reads consistently.
  */
 
 export class NameGenerator {
+    /**
+     * @param {number} [seed=Date.now()] PRNG seed; same seed always
+     *   produces the same sequence of names. Used to drive both the
+     *   internal `_random()` stream and the Markov sampler.
+     */
     constructor(seed = Date.now()) {
         this.seed = seed;
         this.initialSeed = seed;
         this.usedNames = new Set();
-        this.nameCache = new Map();
         this.markovCache = new Map();
         
         this._initializePhonology();
         this._initializeCultures();
         this._initializeNameComponents();
         this._buildMarkovModels();
-    }
-    
-    /**
-     * Reset the generator state for fresh name generation
-     * Clears used names but keeps configuration
-     */
-    reset(newSeed) {
-        if (newSeed !== undefined) {
-            this.seed = newSeed;
-        }
-        this.usedNames.clear();
-        this.nameCache.clear();
     }
     
     /**
@@ -571,19 +563,13 @@ export class NameGenerator {
     // ============================================================
 
     /**
-     * Reset generator state
+     * Reset name-tracking state. Clears the set of used names so the
+     * next batch of generation can repeat any previously-used name.
+     * Configuration (seed, cultures) is preserved.
      */
     reset() {
         this.usedNames.clear();
         this.seed = this.initialSeed;
-    }
-
-    /**
-     * Set new seed
-     */
-    setSeed(seed) {
-        this.seed = seed;
-        this.initialSeed = seed;
     }
 
     /**
@@ -609,21 +595,6 @@ export class NameGenerator {
         return arr[Math.floor(this._random() * arr.length)];
     }
 
-    /**
-     * Pick multiple unique random elements
-     */
-    _pickMultiple(arr, count) {
-        const result = [];
-        const available = [...arr];
-        const n = Math.min(count, available.length);
-        
-        for (let i = 0; i < n; i++) {
-            const idx = Math.floor(this._random() * available.length);
-            result.push(available.splice(idx, 1)[0]);
-        }
-        
-        return result;
-    }
 
     /**
      * Weighted random selection
@@ -864,22 +835,25 @@ export class NameGenerator {
         return name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
     }
 
-    /**
-     * Clean up name
-     */
-    _cleanName(name) {
-        return name
-            .replace(/(.)\1{2,}/gi, '$1$1')  // Max 2 consecutive same letters
-            .replace(/\s+/g, ' ')              // Single spaces
-            .trim();
-    }
 
     // ============================================================
     // MAIN GENERATION METHODS
     // ============================================================
 
     /**
-     * Generate a kingdom/nation name
+     * Generate a kingdom/realm name. Picks a base name from the
+     * culture's Markov-driven pipeline, then prefixes a culture-
+     * specific title ("Tsardom of", "Jarldom of", "Tuath of", etc.)
+     * pulled from `culture.titles`. Without a culture, falls back to
+     * the universal `governmentTypes` pool.
+     *
+     * In ~15% of calls (or when `style: 'simple'` is passed), returns
+     * just the base name with no title — bare-name realms add variety.
+     *
+     * @param {Object} [options]
+     * @param {string} [options.culture] Culture name (e.g. 'norse').
+     * @param {('simple')} [options.style] Force a bare-name result.
+     * @returns {string} The generated kingdom name.
      */
     generateKingdomName(options = {}) {
         const { culture: cultureName, style } = options;
@@ -908,7 +882,26 @@ export class NameGenerator {
     }
 
     /**
-     * Generate a settlement/city name
+     * Generate a settlement (city, town, capital) name. Optionally
+     * adds a culture-specific contextual prefix based on the
+     * settlement's terrain — a coastal Norse town might get "Sjø",
+     * a Romance highland one gets "Alta", a Slavic lowland one gets
+     * "Pol", etc. Pulled from `culture.cityPrefixes` when culture is
+     * known; falls back to a generic pool otherwise.
+     *
+     * @param {Object} [options]
+     * @param {string} [options.culture]      Culture name.
+     * @param {('large'|'medium'|'small')} [options.size='medium']
+     *   Larger settlements have a higher base chance of getting a prefix.
+     * @param {boolean|null} [options.hasPrefix=null] Force prefix on/off,
+     *   overriding the size-based probability.
+     * @param {boolean} [options.isCoastal=false] Bias prefix selection
+     *   toward coastal terms (Port, Bay, Sjø, Porto, etc.).
+     * @param {boolean} [options.isHighland=false] Bias toward highland
+     *   terms (High, Mount, Berg, Alta, etc.).
+     * @param {number}  [options.elevation=0] If low, biases toward
+     *   lowland prefixes (Mill, Ford, Dal, Vall, etc.).
+     * @returns {string} The generated settlement name.
      */
     generateSettlementName(options = {}) {
         const { culture: cultureName, size = 'medium', hasPrefix = null, isCoastal = false, isHighland = false, elevation = 0 } = options;
@@ -987,7 +980,15 @@ export class NameGenerator {
     }
 
     /**
-     * Generate a river name
+     * Generate a river name. Picks a base name from the culture
+     * pipeline and optionally suffixes a "river" word per culture
+     * (Romance "Riu", Norse "Elv", Germanic "Bach", etc.).
+     *
+     * @param {Object} [options]
+     * @param {string} [options.culture]
+     * @param {boolean} [options.abbreviated=false] Trim long suffixes
+     *   to abbreviations ("R." instead of "River") for cramped labels.
+     * @returns {string}
      */
     generateRiverName(options = {}) {
         const { culture: cultureName, abbreviated = false } = options;
@@ -1020,7 +1021,14 @@ export class NameGenerator {
     }
 
     /**
-     * Generate a mountain name
+     * Generate a mountain or mountain-range name.
+     *
+     * @param {Object} [options]
+     * @param {string} [options.culture]
+     * @param {boolean} [options.isRange=false] If true, returns a name
+     *   suited to a multi-peak range ("The Skyfangs", "Aldheim Range")
+     *   rather than a single peak ("Mt. Aldheim").
+     * @returns {string}
      */
     generateMountainName(options = {}) {
         const { culture: cultureName, isRange = false } = options;
@@ -1088,7 +1096,13 @@ export class NameGenerator {
     }
 
     /**
-     * Generate a sea/ocean name
+     * Generate a sea, ocean, or coastal-feature name.
+     *
+     * @param {Object} [options]
+     * @param {string} [options.culture]
+     * @param {string} [options.type='any'] Force a specific water type
+     *   ("Sea", "Ocean", "Bay", etc.); 'any' picks one randomly.
+     * @returns {string}
      */
     generateSeaName(options = {}) {
         const { culture: cultureName, type = 'any' } = options;
@@ -1114,7 +1128,13 @@ export class NameGenerator {
     }
 
     /**
-     * Generate a lake name
+     * Generate a lake name. Mixes culture-flavoured base names with
+     * lake terms (Mere, Lagoon, Pond, Loch, Tarn) and the occasional
+     * "The Golden ..." style descriptive prefix.
+     *
+     * @param {Object} [options]
+     * @param {string} [options.culture]
+     * @returns {string}
      */
     generateLakeName(options = {}) {
         const { culture: cultureName } = options;
@@ -1451,7 +1471,17 @@ export class NameGenerator {
     // ============================================================
 
     /**
-     * Generate multiple unique names
+     * Generate a batch of unique names of a given type. Internally
+     * dispatches to the type-specific generator (kingdom, settlement,
+     * river, etc.) and tracks generated names against the de-dup set
+     * so the batch is uniqueness-guaranteed (within the cap).
+     *
+     * @param {number} count Number of names wanted.
+     * @param {('settlement'|'kingdom'|'river'|'lake'|'sea'|'mountain')} [type='settlement']
+     * @param {Object} [options] Forwarded to the underlying generator
+     *   (e.g. `{ culture, isCoastal }` for settlement names).
+     * @returns {string[]} Up to `count` unique names. May return fewer
+     *   if the de-dup retry budget is exhausted.
      */
     generateNames(count, type = 'settlement', options = {}) {
         const names = [];
@@ -1495,54 +1525,8 @@ export class NameGenerator {
         return names;
     }
 
-    /**
-     * Generate a cohesive set of names for a region (all same culture)
-     */
-    generateRegionalNames(options = {}) {
-        const {
-            culture: cultureName,
-            kingdoms = 1,
-            settlements = 5,
-            rivers = 2,
-            mountains = 1,
-            forests = 1,
-            lakes = 1
-        } = options;
-        
-        const { name: cName } = cultureName 
-            ? { name: cultureName }
-            : this._pickCulture();
-        
-        const cultureOpts = { culture: cName };
-        
-        return {
-            culture: cName,
-            kingdoms: this.generateNames(kingdoms, 'kingdom', cultureOpts),
-            settlements: this.generateNames(settlements, 'settlement', cultureOpts),
-            rivers: this.generateNames(rivers, 'river', cultureOpts),
-            mountains: this.generateNames(mountains, 'mountain', cultureOpts),
-            forests: this.generateNames(forests, 'forest', cultureOpts),
-            lakes: this.generateNames(lakes, 'lake', cultureOpts)
-        };
-    }
 
-    /**
-     * Get all available cultures
-     */
-    getCultures() {
-        return Object.keys(this.cultures);
-    }
 
-    /**
-     * Get all available name types
-     */
-    getNameTypes() {
-        return [
-            'kingdom', 'settlement', 'city', 'region', 'river', 'mountain',
-            'forest', 'sea', 'lake', 'inn', 'house', 'ship', 'person',
-            'artifact', 'deity', 'battle', 'guild', 'base'
-        ];
-    }
 }
 
 // Default export

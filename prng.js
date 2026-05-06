@@ -1,23 +1,22 @@
 /**
- * VORONOI MAP GENERATOR - PRNG
- * Seedable pseudorandom number generator (Mulberry32)
- * Fast and provides good distribution for map generation
+ * Mulberry32-based seedable PRNG.
+ *
+ * Used as the foundation for all reproducible randomness in the
+ * generator: noise field seeding (via `Noise.init`), point jitter,
+ * culture picking, name generation. Same seed -> identical output.
+ *
+ * Module-level singleton — the entire generation pipeline shares one
+ * stream, so the order of operations matters for reproducibility.
  */
-
 export const PRNG = {
     seed: 12345,
     
-    /**
-     * Set the seed for reproducible generation
-     */
+    /** Set the seed (clamped to unsigned 32-bit). */
     setSeed(seed) {
-        this.seed = seed >>> 0; // Ensure unsigned 32-bit
+        this.seed = seed >>> 0;
     },
     
-    /**
-     * Mulberry32 PRNG - fast and good quality
-     * Returns value in [0, 1)
-     */
+    /** Mulberry32 step. Returns a value in [0, 1). */
     random() {
         let t = this.seed += 0x6D2B79F5;
         t = Math.imul(t ^ t >>> 15, t | 1);
@@ -25,46 +24,17 @@ export const PRNG = {
         return ((t ^ t >>> 14) >>> 0) / 4294967296;
     },
     
-    /**
-     * Random float in range [min, max)
-     */
+    /** Random float in [min, max). */
     range(min, max) {
         return min + this.random() * (max - min);
     },
     
-    /**
-     * Random integer in range [min, max]
-     */
+    /** Random integer in [min, max] (inclusive). */
     int(min, max) {
         return Math.floor(this.range(min, max + 1));
     },
     
-    /**
-     * Gaussian (normal) distribution using Box-Muller transform
-     * mean: center of distribution
-     * stdDev: standard deviation
-     */
-    gaussian(mean = 0, stdDev = 1) {
-        const u1 = this.random();
-        const u2 = this.random();
-        const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
-        return z0 * stdDev + mean;
-    },
-    
-    /**
-     * Shuffle array in place using Fisher-Yates
-     */
-    shuffle(array) {
-        for (let i = array.length - 1; i > 0; i--) {
-            const j = this.int(0, i);
-            [array[i], array[j]] = [array[j], array[i]];
-        }
-        return array;
-    },
-    
-    /**
-     * Pick random element from array
-     */
+    /** Pick a uniformly random element from `array`. */
     pick(array) {
         return array[this.int(0, array.length - 1)];
     }

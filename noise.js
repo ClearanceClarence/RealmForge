@@ -1,7 +1,14 @@
 /**
- * VORONOI MAP GENERATOR - NOISE
- * Uses simplex-noise.js library (https://github.com/jwagner/simplex-noise.js)
- * for fast, high-quality 2D simplex noise
+ * Noise field library for terrain generation.
+ *
+ * Wraps simplex-noise.js with a seeded PRNG so all noise output is
+ * reproducible from a seed. Provides three independent noise channels
+ * (primary, secondary, tertiary) used together for domain warping
+ * and multi-octave compound functions like ridged, swiss, eroded,
+ * valleys, and multi-warp. Each compound function takes (x, y) plus
+ * an options object and returns a value in roughly [-1, 1].
+ *
+ * Always call `Noise.init(seed)` before sampling.
  */
 
 import { createNoise2D } from 'https://cdn.jsdelivr.net/npm/simplex-noise@4.0.1/+esm';
@@ -469,41 +476,6 @@ const HeightmapGenerator = {
         return heights;
     },
     
-    /**
-     * Classify cells as land or water based on height
-     */
-    classifyTerrain(heights, seaLevel = 0.4) {
-        const terrain = new Uint8Array(heights.length);
-        
-        for (let i = 0; i < heights.length; i++) {
-            terrain[i] = heights[i] > seaLevel ? 1 : 0; // 1 = land, 0 = water
-        }
-        
-        return terrain;
-    },
     
-    /**
-     * Get grayscale color for height value
-     */
-    heightToGray(height) {
-        const gray = Math.floor(height * 255);
-        return `rgb(${gray},${gray},${gray})`;
-    },
     
-    /**
-     * Get color with sea level distinction
-     */
-    heightToColor(height, seaLevel = 0.4) {
-        if (height <= seaLevel) {
-            // Water - blue tones
-            const t = height / seaLevel;
-            const v = Math.floor(40 + t * 60);
-            return `rgb(${v * 0.3},${v * 0.5},${v})`;
-        } else {
-            // Land - grayscale
-            const t = (height - seaLevel) / (1 - seaLevel);
-            const v = Math.floor(80 + t * 175);
-            return `rgb(${v},${v},${v})`;
-        }
-    }
 };

@@ -1,6 +1,18 @@
 /**
- * VORONOI MAP GENERATOR - APPLICATION
- * UI controller and event handling
+ * Application entry point — UI controller, event wiring, and
+ * coordination between the sidebar controls, the canvas, and the
+ * VoronoiGenerator.
+ *
+ * Architecture:
+ *   - Constructs a single VoronoiGenerator bound to the main canvas.
+ *   - Constructs a WorkerBridge for offloading heavy generation.
+ *   - Wires every sidebar slider/button/checkbox to the matching
+ *     generator field or method, with live updates.
+ *   - Owns the click/hover handlers for the map (info-panel popups,
+ *     hovered-cell tooltip).
+ *   - Owns the two visual overlay layers (elevation, sea depth) —
+ *     these have their own canvases and CSS-transform pan/zoom that
+ *     piggybacks on the generator's viewport.
  */
 
 import { VoronoiGenerator } from './voronoi-generator.js';
@@ -172,6 +184,15 @@ const generator = new VoronoiGenerator(canvas);
 // DEBOUNCE UTILITY
 // ========================================
 
+/**
+ * Wrap `func` so successive calls within `wait` ms collapse into a
+ * single delayed invocation. Used to prevent slider drag events from
+ * triggering one full regeneration per frame.
+ *
+ * @param {Function} func The function to debounce.
+ * @param {number} wait Quiet period in ms before func actually runs.
+ * @returns {Function} The debounced wrapper.
+ */
 function debounce(func, wait) {
     let timeout;
     return function executedFunction(...args) {
@@ -385,6 +406,13 @@ randomSeedBtn.addEventListener('click', () => {
 // HEIGHTMAP
 // ========================================
 
+/**
+ * Sidebar handler: regenerate the heightmap from current sidebar
+ * settings (noise type, scale, world shape, jaggedness, etc.) on
+ * the existing point set. Fast path that avoids re-scattering points,
+ * so it keeps cell positions stable across regenerations of just
+ * the terrain.
+ */
 function generateHeightmap() {
     if (!generator.points || generator.cellCount === 0) return;
     
@@ -460,6 +488,12 @@ depositionRate.addEventListener('input', (e) => {
     depositionRateValue.textContent = parseFloat(e.target.value).toFixed(2);
 });
 
+/**
+ * Sidebar handler: run hydraulic erosion over the existing heightmap
+ * with the current Erosion-section slider settings. Mutates heights
+ * in place (downhill carving + sediment deposition), so calling this
+ * multiple times stacks the effect.
+ */
 function applyErosion() {
     if (!generator.heights) {
         alert('Generate terrain first');
@@ -551,6 +585,11 @@ lakeSizeSlider.addEventListener('change', (e) => {
     }
 });
 
+/**
+ * Sidebar handler: simulate precipitation across the world based on
+ * wind direction + strength. Switches the render mode to
+ * 'precipitation' so the user sees the result immediately.
+ */
 function generatePrecipitation() {
     if (!generator.heights || generator.cellCount === 0) {
         alert('Generate heightmap first!');
@@ -579,6 +618,12 @@ function generatePrecipitation() {
 
 generatePrecipBtn.addEventListener('click', generatePrecipitation);
 
+/**
+ * Sidebar handler: trace rivers from drainage on the current
+ * heightmap. Auto-generates precipitation first if it hasn't been
+ * computed yet (rivers need rainfall to flow). Generates lakes in
+ * the same step (endorheic basins + river-fed bodies).
+ */
 function generateRivers() {
     if (!generator.heights || generator.cellCount === 0) {
         alert('Generate heightmap first!');
@@ -638,6 +683,12 @@ roadDensitySlider.addEventListener('change', (e) => {
     }
 });
 
+/**
+ * Sidebar handler: generate the political layer. Picks a culture
+ * per kingdom, partitions land cells via flood-fill, places capitals
+ * + cities, generates the road network and sea routes. Switches the
+ * render mode to 'political' so the user sees it.
+ */
 function generateKingdoms() {
     if (!generator.heights) {
         alert('Generate heightmap first');
@@ -784,6 +835,13 @@ if (toggleHeightmapBtn && heightmapOverlay) {
     });
 }
 
+/**
+ * Repaint the elevation overlay canvas. Iterates only land cells
+ * and shades each by height, dark at sea level to bright at peaks.
+ * Uses `mix-blend-mode: hard-light` in CSS so the shading reads as
+ * relief over whatever map mode is below. Pan/zoom between repaints
+ * is handled by applyOverlayTransform().
+ */
 function renderHeightmapOverlay() {
     if (!heightmapOverlay || !heightmapCtx) return;
     if (!generator.heights || !generator.voronoi) return;
@@ -924,6 +982,13 @@ if (toggleDepthBtn && depthOverlay) {
     });
 }
 
+/**
+ * Repaint the sea-depth overlay canvas. Iterates only water cells
+ * (ocean and lakes) and shades each by depth, ramping pale icy blue
+ * at the shore to navy at the abyss. The canvas is rendered at the
+ * generator's current viewport transform; pan/zoom is handled by
+ * applyOverlayTransform() in between full repaints.
+ */
 function renderDepthOverlay() {
     if (!depthOverlay || !depthCtx) return;
     if (!generator.heights || !generator.voronoi) return;
@@ -1154,6 +1219,17 @@ canvas.addEventListener('click', (e) => {
     infoPanel.classList.remove('visible');
 });
 
+/**
+ * Build and show the info panel for a clicked map label.
+ * Dispatches by the hit's type (kingdom / capital / city / lake)
+ * and renders the appropriate layout into `#info-panel-content`.
+ *
+ * Kingdom panels use the wider layout with coat of arms +
+ * settlements/ports tables; other panels use the compact layout.
+ *
+ * @param {Object} labelHit Result from generator.hitTestLabel()
+ *   carrying at minimum `{type, index}`.
+ */
 function showInfoPanel(labelHit) {
     let html = '';
     
