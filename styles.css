@@ -1455,6 +1455,27 @@ select:focus { outline: none; border-color: var(--accent); }
     opacity: 0.8;
 }
 
+/* Sea-depth overlay sits in the same z-stack as the heightmap
+   overlay but uses a different blend mode tuned for water cells.
+   Multiply works well over the pale ocean fills — it deepens the
+   blue progressively as the sample height drops. */
+#depth-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    opacity: 0;
+    mix-blend-mode: multiply;
+    transition: opacity 0.3s ease;
+    z-index: 5;
+    will-change: transform;
+    transform-origin: 0 0;
+}
+
+#depth-overlay.active {
+    opacity: 0.85;
+}
+
 /* Overlay toggle buttons */
 .overlay-toggles {
     position: absolute;
@@ -1852,6 +1873,250 @@ select:focus { outline: none; border-color: var(--accent); }
     margin-bottom: 8px;
 }
 
+/* ============================================================
+   KINGDOM POPUP — coat of arms + summary + tables
+   
+   Used only when the info panel is showing a kingdom (the panel
+   widens to give the table room, and the header gains a coat-of-
+   arms slot on the left). City and capital popups still use the
+   compact 280px layout above.
+   ============================================================ */
+
+.info-panel:has(.ip-kingdom-header) {
+    width: 360px;
+    max-height: calc(100vh - 40px);
+    display: flex;
+    flex-direction: column;
+}
+
+/* When the kingdom panel is too short for the viewport, let the
+   inner content scroll as a whole — independent of the per-table
+   scroll above. The two scroll regions cooperate: each table caps
+   at a sensible row count (so the structure stays readable), and
+   if the SUM of sections still overflows, the outer content scrolls. */
+.info-panel:has(.ip-kingdom-header) .info-panel-content {
+    overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.info-panel-content .ip-kingdom-header {
+    display: flex;
+    align-items: stretch;
+    gap: 14px;
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+    border-bottom: 2px solid var(--ink-medium);
+}
+
+/* Coat of arms slot. The Armoria API returns an SVG sized to the
+   slot. If the request fails, the slot stays empty rather than
+   showing a tinted placeholder background. */
+.info-panel-content .ip-coat {
+    flex: 0 0 72px;
+    width: 72px;
+    height: 88px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+.info-panel-content .ip-coat img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+.info-panel-content .ip-kingdom-titles {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.info-panel-content .ip-culture {
+    font-size: 11px;
+    color: var(--ink-light);
+    font-style: italic;
+    text-transform: none;
+    letter-spacing: 0.02em;
+}
+
+/* Summary block — couple of high-level stat rows shown directly
+   under the header. Quieter than the old ip-stat layout. */
+.info-panel-content .ip-kingdom-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 14px;
+}
+
+.info-panel-content .ip-summary-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: 12px;
+    padding: 3px 0;
+}
+
+.info-panel-content .ip-summary-label {
+    color: var(--ink-light);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    font-size: 10.5px;
+}
+
+.info-panel-content .ip-summary-value {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--ink-dark);
+    font-size: 12.5px;
+}
+
+.info-panel-content .ip-summary-aside {
+    font-family: var(--font-body);
+    font-weight: 400;
+    color: var(--ink-light);
+    font-style: italic;
+    font-size: 11px;
+}
+
+/* Section block (Settlements / Ports) — title above a table. */
+.info-panel-content .ip-section {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--parchment-dark);
+}
+
+.info-panel-content .ip-section:first-of-type {
+    border-top: none;
+    padding-top: 0;
+    margin-top: 0;
+}
+
+/* Settlements / ports table */
+.info-panel-content .ip-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 0;
+    font-size: 12px;
+}
+
+/* Scrollable wrapper around each table. Caps the visible row count
+   per table so a kingdom with 30 cities doesn't push the popup past
+   the viewport. The header stays pinned via position:sticky on the
+   <th> elements (sticky on <thead> doesn't work cross-browser). */
+.info-panel-content .ip-table-scroll {
+    max-height: 220px;
+    overflow-y: auto;
+    margin-top: 6px;
+    /* Subtle inner shadow at the top/bottom hints there's more
+       content when the table is mid-scroll. */
+    background:
+        linear-gradient(var(--parchment) 30%, rgba(232, 220, 200, 0)),
+        linear-gradient(rgba(232, 220, 200, 0), var(--parchment) 70%) 0 100%,
+        radial-gradient(farthest-side at 50% 0, rgba(58, 42, 26, 0.15), rgba(58, 42, 26, 0)),
+        radial-gradient(farthest-side at 50% 100%, rgba(58, 42, 26, 0.15), rgba(58, 42, 26, 0)) 0 100%;
+    background-color: var(--parchment);
+    background-repeat: no-repeat;
+    background-size: 100% 24px, 100% 24px, 100% 8px, 100% 8px;
+    background-attachment: local, local, scroll, scroll;
+}
+
+/* Slim parchment-coloured scrollbar */
+.info-panel-content .ip-table-scroll::-webkit-scrollbar {
+    width: 6px;
+}
+.info-panel-content .ip-table-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+.info-panel-content .ip-table-scroll::-webkit-scrollbar-thumb {
+    background: var(--parchment-dark);
+    border-radius: 3px;
+}
+.info-panel-content .ip-table-scroll::-webkit-scrollbar-thumb:hover {
+    background: var(--ink-faded);
+}
+
+.info-panel-content .ip-table thead th {
+    text-align: left;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--ink-faded);
+    font-weight: 500;
+    padding: 4px 6px 6px;
+    border-bottom: 1px solid var(--parchment-dark);
+    /* Keep headers visible while the table body scrolls. Sticky
+       lives on each <th>; a sticky <thead> isn't reliable across
+       browsers when the table is the scrolling container. */
+    position: sticky;
+    top: 0;
+    background: var(--parchment);
+    z-index: 1;
+}
+
+.info-panel-content .ip-table tbody td {
+    padding: 5px 6px;
+    border-bottom: 1px dotted var(--parchment-dark);
+    vertical-align: middle;
+}
+
+.info-panel-content .ip-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.info-panel-content .ip-table tbody tr:hover {
+    background: var(--parchment-light);
+}
+
+.info-panel-content .ip-tbl-name {
+    color: var(--ink-dark);
+    font-weight: 500;
+    width: auto;
+}
+
+.info-panel-content .ip-tbl-pop {
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--ink);
+    width: 80px;
+    white-space: nowrap;
+}
+
+.info-panel-content .ip-tbl-tag {
+    text-align: right;
+    width: 88px;
+    white-space: nowrap;
+}
+
+/* Inline pill tags ("Capital", "Port") used in the settlements
+   table to mark special entries. */
+.info-panel-content .ip-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+    line-height: 1.4;
+    border: 1px solid currentColor;
+}
+
+.info-panel-content .ip-tag-capital {
+    color: #8b6914;
+}
+
+.info-panel-content .ip-tag-port {
+    color: var(--ink-medium);
+}
+
 /* ========================================
    RESPONSIVE
    ======================================== */
@@ -1860,4 +2125,3 @@ select:focus { outline: none; border-color: var(--accent); }
     .sidebar { width: 220px; }
     .brand-name { display: none; }
 }
-

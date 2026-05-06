@@ -8,6 +8,7 @@ import {
     POLITICAL_COLORS, POLITICAL_OCEAN, POLITICAL_BORDER,
     ELEVATION 
 } from './map-constants.js';
+import { Noise } from './noise.js';
 export const renderingMethods = {
 render() {
     const start = performance.now();
@@ -1490,9 +1491,10 @@ _buildSmoothCoastlineLoops() {
         }
     }
     
-    // Coastline is now naturally jagged via cell-level coastal noise applied
-    // during heightmap generation (see _applyCoastalNoise in voronoi-generator.js).
-    // No render-time subdivision — what you see is what's actually in the cell graph.
+    // Coastline detail comes from cell-level subdivision performed
+    // during heightmap generation (see _subdivideCoastlineCells in
+    // voronoi-generator.js) — the rendered loops just trace the
+    // resulting cell graph honestly.
     return loops;
 },
 
@@ -3098,14 +3100,17 @@ _drawStraightKingdomText(ctx, name, centerX, centerY, fontSize, angle, zoom) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     
-    // Always use two-line layout: smaller italic prefix above, larger name below
+    // Two-line layout when there's a prefix; single-line centred when
+    // the kingdom is a bare-name realm (no title).
     const prefixFontSize = fontSize * 0.42;
     const prefixY = -fontSize * 0.5;
-    const mainY = fontSize * 0.32;
+    const mainY = prefix ? fontSize * 0.32 : 0;
     
-    // Draw prefix (smaller, italic)
-    ctx.font = `italic ${prefixFontSize}px 'IM Fell English', Georgia, serif`;
-    this._drawMapText(ctx, prefix, 0, prefixY, zoom, false);
+    // Draw prefix (smaller, italic) only if present
+    if (prefix) {
+        ctx.font = `italic ${prefixFontSize}px 'IM Fell English', Georgia, serif`;
+        this._drawMapText(ctx, prefix, 0, prefixY, zoom, false);
+    }
     
     // Draw main name (larger, uppercase with Cinzel)
     ctx.font = `500 ${fontSize}px 'Cinzel', 'IM Fell English', Georgia, serif`;
@@ -3174,8 +3179,17 @@ _drawMapText(ctx, text, x, y, zoom, isMain) {
  * Parse kingdom name to extract prefix and main name
  */
 _parseKingdomName(name) {
-    // Sorted by length (longest first) to avoid partial matches
+    // Sorted by length (longest first) to avoid partial matches.
+    //
+    // This list must include EVERY title used by the name generator,
+    // including the per-culture titles (Tsardom, Jarldom, Tuath, etc.)
+    // — otherwise this parser falls through to the "Realm of" default
+    // and we end up with double-titled labels like
+    // "Realm of Tsardom of Polek". When new cultures are added to
+    // name-generator.js, their titles must also be added here.
     const prefixes = [
+        // Multi-word universals (must come before single-word matches
+        // that are substrings of them)
         'Grand Duchy of',
         'Principality of',
         'Confederation of',
@@ -3187,25 +3201,55 @@ _parseKingdomName(name) {
         'Federation of',
         'Electorate of',
         'Archduchy of',
+        // Per-culture (sorted longest-first within length-tier)
+        'Voivodeship of',
+        'Konungriki of',
+        'Stronghold of',
+        'Hegemony of',
+        'Archonate of',
         'Sultanate of',
         'Caliphate of',
         'Shogunate of',
+        'Tlatoani of',
+        'Altepetl of',
+        'Chiefdom of',
+        'Knyazdom of',
+        'Basileia of',
         'Republic of',
         'Dominion of',
         'Province of',
+        'Emirate of',
+        'Tsardom of',
+        'Jarldom of',
         'Kingdom of',
         'Khanate of',
+        'Satrapy of',
         'County of',
         'Barony of',
         'Empire of',
         'Throne of',
+        'Warband of',
+        'Oblast of',
+        'League of',
+        'Tyranny of',
+        'Domain of',
+        'Haven of',
+        'Horde of',
+        'Tuath of',
         'Duchy of',
         'Realm of',
         'March of',
         'Union of',
         'Crown of',
         'Lands of',
-        'House of'
+        'House of',
+        'Krai of',
+        'Hird of',
+        'Hold of',
+        'Wood of',
+        'Clan of',
+        'Tribe of',
+        'Ri of'
     ];
     
     for (const prefix of prefixes) {
@@ -3217,8 +3261,10 @@ _parseKingdomName(name) {
         }
     }
     
-    // Fallback: if no prefix found, use "Realm of" as default
-    return { prefix: 'Realm of', mainName: name };
+    // Fallback: bare-name kingdom (the generator emits these ~15% of
+    // the time via style: 'simple'). Render with no prefix at all
+    // rather than tacking on a generic "Realm of".
+    return { prefix: '', mainName: name };
 },
 
 /**
@@ -3265,39 +3311,41 @@ _drawCurvedKingdomText(ctx, name, centerX, centerY, fontSize, spanWidth, zoom, c
         return Math.atan2(dy, dx);
     };
     
-    // Draw prefix above main text at center
-    const prefixFontSize = fontSize * 0.42;
-    ctx.font = `italic ${prefixFontSize}px 'IM Fell English', Georgia, serif`;
-    
-    const centerPos = getBezierPoint(0.5);
-    const centerAngle = getBezierAngle(0.5);
-    const prefixOffsetY = -fontSize * 0.85;
-    
-    const prefixPerpX = Math.cos(centerAngle + Math.PI/2) * prefixOffsetY;
-    const prefixPerpY = Math.sin(centerAngle + Math.PI/2) * prefixOffsetY;
-    
-    ctx.save();
-    ctx.translate(centerPos.x + prefixPerpX, centerPos.y + prefixPerpY);
-    ctx.rotate(centerAngle);
-    
-    // Elegant halo effect for prefix
-    const shadowLayers = [
-        { blur: 4, alpha: 0.3 },
-        { blur: 2, alpha: 0.5 },
-        { blur: 1, alpha: 0.7 }
-    ];
-    for (const layer of shadowLayers) {
-        ctx.shadowColor = `rgba(255, 252, 245, ${layer.alpha})`;
-        ctx.shadowBlur = layer.blur;
-        ctx.fillStyle = 'rgba(255, 252, 245, 0.85)';
+    // Draw prefix above main text at center (skipped for bare-name kingdoms)
+    if (prefix) {
+        const prefixFontSize = fontSize * 0.42;
+        ctx.font = `italic ${prefixFontSize}px 'IM Fell English', Georgia, serif`;
+        
+        const centerPos = getBezierPoint(0.5);
+        const centerAngle = getBezierAngle(0.5);
+        const prefixOffsetY = -fontSize * 0.85;
+        
+        const prefixPerpX = Math.cos(centerAngle + Math.PI/2) * prefixOffsetY;
+        const prefixPerpY = Math.sin(centerAngle + Math.PI/2) * prefixOffsetY;
+        
+        ctx.save();
+        ctx.translate(centerPos.x + prefixPerpX, centerPos.y + prefixPerpY);
+        ctx.rotate(centerAngle);
+        
+        // Elegant halo effect for prefix
+        const shadowLayers = [
+            { blur: 4, alpha: 0.3 },
+            { blur: 2, alpha: 0.5 },
+            { blur: 1, alpha: 0.7 }
+        ];
+        for (const layer of shadowLayers) {
+            ctx.shadowColor = `rgba(255, 252, 245, ${layer.alpha})`;
+            ctx.shadowBlur = layer.blur;
+            ctx.fillStyle = 'rgba(255, 252, 245, 0.85)';
+            ctx.fillText(prefix, 0, 0);
+        }
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#2C2416';
         ctx.fillText(prefix, 0, 0);
+        
+        ctx.restore();
     }
-    ctx.shadowColor = 'transparent';
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = '#2C2416';
-    ctx.fillText(prefix, 0, 0);
-    
-    ctx.restore();
     
     // Draw main name - character by character along curve
     ctx.font = `500 ${fontSize}px 'Cinzel', 'IM Fell English', Georgia, serif`;
@@ -4749,7 +4797,46 @@ _updateCitySVG() {
         }
     }
     
-    // ─── CITIES — filled circles ───
+    // ─── CITIES — filled circles, or squares-with-anchor for ports ───
+    //
+    // A "port" city is any non-capital city that sits at the endpoint of
+    // a sea route. We collect those cells once up front by scanning the
+    // consolidated sea routes for waypoints flagged port:true (those are
+    // the settlement-coordinate waypoints prepended/appended in
+    // _consolidateSeaRoutes — never an ocean cell).
+    const portCells = new Set();
+    if (this.seaRoutes && this.seaRoutes.length) {
+        for (const route of this.seaRoutes) {
+            if (!route.path) continue;
+            for (const p of route.path) {
+                if (p && p.port && typeof p.cell === 'number') {
+                    portCells.add(p.cell);
+                }
+            }
+        }
+    }
+    
+    // Geometry for the port marker. Square is sized so its inscribed
+    // circle roughly matches the regular city dot's diameter — the
+    // square reads as a clear "different shape" without being visually
+    // heavier than other cities.
+    const portHalf = cityRadius * 1.55;     // half-side of the square
+    
+    // A minimal anchor glyph drawn as a single SVG path. Coordinates
+    // are in a [-1, 1] design space; we scale and translate at render
+    // time. Stem runs vertically, crossbar at top, curved hook at the
+    // bottom that ends with little flared tips.
+    const anchorPath =
+        // Top ring (small circle)
+        'M 0 -0.85 m -0.22 0 a 0.22 0.22 0 1 0 0.44 0 a 0.22 0.22 0 1 0 -0.44 0 ' +
+        // Vertical stem
+        'M 0 -0.62 L 0 0.55 ' +
+        // Crossbar
+        'M -0.45 -0.32 L 0.45 -0.32 ' +
+        // Curved hook (semi-circle-ish)
+        'M -0.55 0.30 Q -0.55 0.72 0 0.72 Q 0.55 0.72 0.55 0.30';
+    const anchorScale = portHalf * 0.78;     // anchor sits inside the square
+    
     if (zoom > 0.6 && this.cities && this.cityNames) {
         for (let i = 0; i < this.cities.length; i++) {
             const city = this.cities[i];
@@ -4758,30 +4845,76 @@ _updateCitySVG() {
             const x = this.points[city.cell * 2];
             const y = this.points[city.cell * 2 + 1];
             
-            const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-            dot.setAttribute('cx', x);
-            dot.setAttribute('cy', y);
-            dot.setAttribute('r', cityRadius);
-            dot.setAttribute('fill', INK);
-            dot.setAttribute('stroke', RING);
-            dot.setAttribute('stroke-width', '0.3');
-            dot.setAttribute('class', 'city-icon');
-            g.appendChild(dot);
+            const isPort = portCells.has(city.cell);
             
-            if (this._labelHitBoxes) {
-                this._labelHitBoxes.push({
-                    type: 'city',
-                    index: i,
-                    cell: city.cell,
-                    kingdom: city.kingdom,
-                    name: this.cityNames[i] || `City ${i}`,
-                    box: {
-                        left: x - cityRadius - 1,
-                        right: x + cityRadius + 1,
-                        top: y - cityRadius - 1,
-                        bottom: y + cityRadius + 1
-                    }
-                });
+            if (isPort) {
+                // Filled square + anchor glyph for port cities
+                const square = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                square.setAttribute('x', x - portHalf);
+                square.setAttribute('y', y - portHalf);
+                square.setAttribute('width', portHalf * 2);
+                square.setAttribute('height', portHalf * 2);
+                square.setAttribute('fill', INK);
+                square.setAttribute('stroke', RING);
+                square.setAttribute('stroke-width', '0.3');
+                square.setAttribute('class', 'city-icon port-icon');
+                g.appendChild(square);
+                
+                const anchor = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                anchor.setAttribute('d', anchorPath);
+                anchor.setAttribute(
+                    'transform',
+                    `translate(${x}, ${y}) scale(${anchorScale})`
+                );
+                anchor.setAttribute('fill', 'none');
+                anchor.setAttribute('stroke', '#F4ECD9');   // parchment-light, contrasts on dark fill
+                anchor.setAttribute('stroke-width', 0.32 / anchorScale);
+                anchor.setAttribute('stroke-linecap', 'round');
+                anchor.setAttribute('stroke-linejoin', 'round');
+                anchor.setAttribute('class', 'port-anchor');
+                g.appendChild(anchor);
+                
+                if (this._labelHitBoxes) {
+                    this._labelHitBoxes.push({
+                        type: 'city',
+                        index: i,
+                        cell: city.cell,
+                        kingdom: city.kingdom,
+                        name: this.cityNames[i] || `City ${i}`,
+                        box: {
+                            left: x - portHalf - 1,
+                            right: x + portHalf + 1,
+                            top: y - portHalf - 1,
+                            bottom: y + portHalf + 1
+                        }
+                    });
+                }
+            } else {
+                const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                dot.setAttribute('cx', x);
+                dot.setAttribute('cy', y);
+                dot.setAttribute('r', cityRadius);
+                dot.setAttribute('fill', INK);
+                dot.setAttribute('stroke', RING);
+                dot.setAttribute('stroke-width', '0.3');
+                dot.setAttribute('class', 'city-icon');
+                g.appendChild(dot);
+                
+                if (this._labelHitBoxes) {
+                    this._labelHitBoxes.push({
+                        type: 'city',
+                        index: i,
+                        cell: city.cell,
+                        kingdom: city.kingdom,
+                        name: this.cityNames[i] || `City ${i}`,
+                        box: {
+                            left: x - cityRadius - 1,
+                            right: x + cityRadius + 1,
+                            top: y - cityRadius - 1,
+                            bottom: y + cityRadius + 1
+                        }
+                    });
+                }
             }
         }
     }
@@ -5766,23 +5899,62 @@ getKingdomStats(kingdomIndex) {
     const cells = this.kingdomCells[kingdomIndex] || [];
     const name = this.kingdomNames ? this.kingdomNames[kingdomIndex] : `Kingdom ${kingdomIndex}`;
     const capitalName = this.capitolNames ? this.capitolNames[kingdomIndex] : null;
+    const culture = this.kingdomCultures ? this.kingdomCultures[kingdomIndex] : null;
     
     // Get population
     const population = this.kingdomPopulations ? this.kingdomPopulations[kingdomIndex] : 0;
     
-    // Count cities in this kingdom
-    let cityCount = 0;
-    if (this.cities) {
-        for (const city of this.cities) {
-            if (city.kingdom === kingdomIndex) cityCount++;
+    // Build the set of port cells (cells that sit at a sea-route endpoint).
+    // Port flag is attached only to settlement-coordinate waypoints in
+    // _consolidateSeaRoutes — the cell field there points back at the
+    // settlement, so we can intersect cleanly with this kingdom's cities.
+    const portCells = new Set();
+    if (this.seaRoutes) {
+        for (const route of this.seaRoutes) {
+            if (!route.path) continue;
+            for (const p of route.path) {
+                if (p && p.port && typeof p.cell === 'number') portCells.add(p.cell);
+            }
         }
     }
     
-    // Calculate approximate area (using average cell size)
-    const avgCellArea = (this.width * this.height) / this.cellCount;
-    const areaKm2 = Math.round(cells.length * avgCellArea / 100); // Arbitrary scale
+    // Walk this kingdom's cities, splitting into ports and non-port
+    // settlements. Each entry carries the name + population so the
+    // popup can render proper tables.
+    const settlements = [];   // non-port cities only
+    const ports = [];         // port cities only
+    if (this.cities) {
+        for (let i = 0; i < this.cities.length; i++) {
+            const city = this.cities[i];
+            if (!city || city.kingdom !== kingdomIndex) continue;
+            const cName = (this.cityNames && this.cityNames[i]) || `City ${i + 1}`;
+            const entry = {
+                name: cName,
+                population: city.population || 0
+            };
+            if (portCells.has(city.cell)) {
+                ports.push(entry);
+            } else {
+                settlements.push(entry);
+            }
+        }
+    }
     
-    // Calculate terrain breakdown
+    // Sort each table by population descending so the most significant
+    // settlement leads each section.
+    settlements.sort((a, b) => b.population - a.population);
+    ports.sort((a, b) => b.population - a.population);
+    
+    // Capital info — its name + population live separately from the
+    // settlements/ports tables (rendered as the headline row in the
+    // popup), and we expose isPort so the popup can mark the capital
+    // with an anchor when applicable.
+    const capitalCell = this.capitols ? this.capitols[kingdomIndex] : -1;
+    const capitalIsPort = capitalCell >= 0 && portCells.has(capitalCell);
+    const capitalPopulation = (this.capitalPopulations && this.capitalPopulations[kingdomIndex]) || 0;
+    
+    // Calculate terrain breakdown (still computed in case it's used
+    // elsewhere; the popup itself no longer renders Territory).
     let mountains = 0, highlands = 0, lowlands = 0, coastal = 0;
     for (const cellIdx of cells) {
         const height = this.heights[cellIdx];
@@ -5802,10 +5974,14 @@ getKingdomStats(kingdomIndex) {
     return {
         name,
         capitalName,
+        capitalIsPort,
+        capitalPopulation,
+        culture,
         population,
         cellCount: cells.length,
-        cityCount,
-        areaKm2,
+        cityCount: settlements.length + ports.length,
+        settlements,    // non-port cities only, [{name, population}]
+        ports,          // port cities only, [{name, population}]
         terrain: {
             mountains: Math.round(mountains / cells.length * 100),
             highlands: Math.round(highlands / cells.length * 100),

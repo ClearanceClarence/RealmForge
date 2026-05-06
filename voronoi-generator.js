@@ -812,9 +812,29 @@ export class VoronoiGenerator {
             this._applyCoastalNoise(seed, jagged);
         }
         
-        // Apply smoothing passes if requested
+        // Subdivide coastal cells into finer ones. This adds new
+        // Voronoi seed points along the existing land/water boundary
+        // so the cell graph becomes dense at the coast — and
+        // therefore CAN have more detailed coastlines once we
+        // perturb the new finer cells.
+        if (jagged > 0) {
+            this._subdivideCoastalCells(seed, jagged);
+        }
+        
+        // Apply smoothing passes if requested. Runs BEFORE the final
+        // coastal-noise pass so smoothing can't erase the new detail.
         if (smoothing > 0) {
             this.smoothHeights(smoothing, smoothingStrength);
+        }
+        
+        // Re-apply coastal noise on the new finer graph, at a HIGHER
+        // frequency so adjacent fine cells don't all sample the same
+        // noise value. Without the frequency boost, every small cell
+        // would shift by roughly the same amount and the coastline
+        // wouldn't gain detail at the new scale. This pass runs LAST
+        // so smoothing can't erase its work.
+        if (jagged > 0) {
+            this._applyCoastalNoise(seed + 999, jagged * 0.85, 4.0);
         }
         
         // Clear contour cache so it regenerates with new heights
@@ -1017,7 +1037,7 @@ export class VoronoiGenerator {
      * @param {number} seed - world seed (offset for independent noise channel)
      * @param {number} jaggedness - 0..1, how strongly to displace coastal cells
      */
-    _applyCoastalNoise(seed, jaggedness) {
+    _applyCoastalNoise(seed, jaggedness, frequencyScale = 1) {
         if (!this.heights || !this.voronoi || jaggedness <= 0) return;
         
         // Independent noise channel so coastline noise doesn't correlate with
@@ -1075,8 +1095,14 @@ export class VoronoiGenerator {
             const ny = y / this.height;
             
             // Multi-octave high-freq noise. Higher freq = smaller-scale jaggedness.
-            const n1 = Noise.simplex2(nx * 22.0,        ny * 22.0);
-            const n2 = Noise.simplex2(nx * 55.0 + 17.3, ny * 55.0 + 7.7) * 0.5;
+            // frequencyScale lets a follow-up pass on a finer cell graph
+            // sample at a HIGHER frequency so adjacent small cells actually
+            // differ from each other (otherwise they all sample the same
+            // noise value and the coastline doesn't gain new detail).
+            const f1 = 22.0 * frequencyScale;
+            const f2 = 55.0 * frequencyScale;
+            const n1 = Noise.simplex2(nx * f1,        ny * f1);
+            const n2 = Noise.simplex2(nx * f2 + 17.3, ny * f2 + 7.7) * 0.5;
             const sample = (n1 + n2) / 1.5;  // -1..1
             
             // Taper by ring distance: ring 1 = full strength, ring N = falls off
@@ -1092,6 +1118,169 @@ export class VoronoiGenerator {
         }
         
         // 4) Invalidate caches that depend on coastline geometry
+        this._coastlineCache = null;
+        this._contourCache = null;
+    }
+    
+    /**
+     * Subdivide coastal cells: insert new Voronoi seed points along the
+     * land/water boundary so the cell graph becomes dense at the coast
+     * (and stays at original density inland and out to sea). This gives
+     * the coastline actual sub-cell detail when paired with a fresh pass
+     * of coastal noise on the finer graph.
+     *
+     * Strategy:
+     *  1. Identify coastal cells (any cell with at least one neighbour
+     *     of opposite land/water status).
+     *  2. For each coastal cell, scatter K extra points within its
+     *     polygon. Density scales with `jaggedness`.
+     *  3. Build a fresh points array (old + new), rebuild the Voronoi.
+     *  4. Use the OLD delaunay to look up each new cell's parent — its
+     *     height is inherited from the parent so the underlying terrain
+     *     shape is preserved. Caller follows up with another coastal-
+     *     noise pass to actually perturb the new cells.
+     *
+     * Must run BEFORE kingdoms/cities/rivers/lakes are generated, since
+     * cell indices change. Currently called from generateHeightmap right
+     * after the first _applyCoastalNoise pass.
+     */
+    _subdivideCoastalCells(seed, jaggedness) {
+        if (!this.heights || !this.voronoi || jaggedness <= 0) return;
+        if (this.cellCount > 80000) return;   // skip on already-dense maps
+        
+        // 1) Find coastal cells (at least one neighbour of opposite type).
+        const coastalSet = new Set();
+        for (let i = 0; i < this.cellCount; i++) {
+            const isLand = this.heights[i] >= ELEVATION.SEA_LEVEL;
+            for (const n of this.voronoi.neighbors(i)) {
+                if ((this.heights[n] >= ELEVATION.SEA_LEVEL) !== isLand) {
+                    coastalSet.add(i);
+                    break;
+                }
+            }
+        }
+        if (coastalSet.size === 0) return;
+        
+        // 2) Decide how many extra points each coastal cell gets.
+        // At jagged=1.0 we add 6 extra points per coastal cell. The
+        // higher density (vs the previous 3) is what visibly turns
+        // existing cell-grid coasts into a finer-resolution coastline.
+        const extraPerCell = Math.max(2, Math.round(jaggedness * 6));
+        
+        // Use a small dedicated PRNG sequence so subdivision is
+        // deterministic for a given seed, but doesn't disturb the main
+        // PRNG stream.
+        let rngState = (seed | 0) ^ 0xc0a51eaf;
+        const rand = () => {
+            // xorshift32 — fast, deterministic, good enough for jitter
+            rngState ^= rngState << 13;
+            rngState ^= rngState >>> 17;
+            rngState ^= rngState << 5;
+            return ((rngState >>> 0) / 0xffffffff);
+        };
+        
+        // 3) Scatter new points within each coastal cell's polygon.
+        // We use rejection sampling against the cell's bounding box —
+        // simple, robust, and the cells are convex so ~50% acceptance.
+        // Fall back to placing near the cell center if rejection fails.
+        const newPoints = [];
+        for (const cellIdx of coastalSet) {
+            const poly = this.voronoi.cellPolygon(cellIdx);
+            if (!poly || poly.length < 3) continue;
+            
+            // Bounding box of polygon
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const v of poly) {
+                if (v[0] < minX) minX = v[0];
+                if (v[1] < minY) minY = v[1];
+                if (v[0] > maxX) maxX = v[0];
+                if (v[1] > maxY) maxY = v[1];
+            }
+            
+            const cx = this.points[cellIdx * 2];
+            const cy = this.points[cellIdx * 2 + 1];
+            
+            // Point-in-polygon test (ray casting)
+            const inPoly = (px, py) => {
+                let inside = false;
+                for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+                    const xi = poly[i][0], yi = poly[i][1];
+                    const xj = poly[j][0], yj = poly[j][1];
+                    const intersect = ((yi > py) !== (yj > py)) &&
+                        (px < (xj - xi) * (py - yi) / ((yj - yi) || 1e-9) + xi);
+                    if (intersect) inside = !inside;
+                }
+                return inside;
+            };
+            
+            for (let k = 0; k < extraPerCell; k++) {
+                let px = cx, py = cy;
+                let placed = false;
+                for (let attempt = 0; attempt < 8; attempt++) {
+                    const tx = minX + rand() * (maxX - minX);
+                    const ty = minY + rand() * (maxY - minY);
+                    if (inPoly(tx, ty)) {
+                        px = tx; py = ty;
+                        placed = true;
+                        break;
+                    }
+                }
+                // Fallback: jitter near the cell center
+                if (!placed) {
+                    const r = 0.3 * Math.min(maxX - minX, maxY - minY);
+                    px = cx + (rand() - 0.5) * r;
+                    py = cy + (rand() - 0.5) * r;
+                }
+                newPoints.push(px, py);
+            }
+        }
+        
+        if (newPoints.length === 0) return;
+        
+        // 4) Save the OLD delaunay before we rebuild — we use it to look
+        // up the parent cell of each cell in the new diagram.
+        const oldDelaunay = this.delaunay;
+        const oldHeights = this.heights;
+        const oldCellCount = this.cellCount;
+        
+        // 5) Build the merged points array and rebuild the diagram.
+        const oldLen = this.points.length;
+        const merged = new Float64Array(oldLen + newPoints.length);
+        merged.set(this.points, 0);
+        for (let i = 0; i < newPoints.length; i++) {
+            merged[oldLen + i] = newPoints[i];
+        }
+        this.points = merged;
+        this.cellCount = merged.length / 2;
+        this.updateDiagram();
+        
+        // 6) Inherit heights for every cell in the new diagram from the
+        // nearest OLD cell at that position. For cells that already
+        // existed (the first oldCellCount entries) the parent IS them
+        // and the height is unchanged. New cells inherit from whichever
+        // old cell their position fell into.
+        const newHeights = new Float32Array(this.cellCount);
+        for (let i = 0; i < this.cellCount; i++) {
+            if (i < oldCellCount) {
+                newHeights[i] = oldHeights[i];
+            } else {
+                const px = this.points[i * 2];
+                const py = this.points[i * 2 + 1];
+                const parent = oldDelaunay.find(px, py);
+                newHeights[i] = (parent >= 0 && parent < oldCellCount)
+                    ? oldHeights[parent]
+                    : 0;
+            }
+        }
+        this.heights = newHeights;
+        
+        // Reclassify terrain to match new heights
+        this.terrain = new Uint8Array(this.cellCount);
+        for (let i = 0; i < this.cellCount; i++) {
+            this.terrain[i] = this.heights[i] >= ELEVATION.SEA_LEVEL ? 1 : 0;
+        }
+        
+        // Invalidate caches
         this._coastlineCache = null;
         this._contourCache = null;
     }
@@ -2035,9 +2224,38 @@ export class VoronoiGenerator {
             };
         }
         
-        // Generate names for all kingdoms
+        // Generate names for all kingdoms.
+        //
+        // Each kingdom gets its own culture, picked once and stored on
+        // the generator. Culture is then threaded through every
+        // settlement name within that kingdom (capital, cities) so all
+        // names within a single realm share linguistic identity —
+        // Romance kingdoms have Italian-flavoured towns, Norse kingdoms
+        // have skaldic ones, etc. We bias slightly toward repeating
+        // cultures across the map so neighbouring realms occasionally
+        // share heritage (which is more world-flavoured than maximum
+        // diversity), but each kingdom still rolls independently.
         this.nameGenerator.reset();
-        this.kingdomNames = this.nameGenerator.generateNames(this.kingdomCount, 'kingdom');
+        this.kingdomCultures = [];
+        this.kingdomNames = [];
+        for (let k = 0; k < this.kingdomCount; k++) {
+            const culture = this.nameGenerator.pickCulture();
+            this.kingdomCultures.push(culture);
+            // The name generator handles uniqueness internally — we
+            // call generateKingdomName until we get something fresh.
+            let name = '';
+            for (let attempt = 0; attempt < 20; attempt++) {
+                const candidate = this.nameGenerator.generateKingdomName({ culture });
+                const key = candidate.toLowerCase();
+                if (!this.nameGenerator.usedNames.has(key)) {
+                    this.nameGenerator.usedNames.add(key);
+                    name = candidate;
+                    break;
+                }
+            }
+            if (!name) name = `Kingdom ${k + 1}`;
+            this.kingdomNames.push(name);
+        }
         
         
         // Generate capitols for each kingdom
@@ -2509,8 +2727,14 @@ export class VoronoiGenerator {
                 const x = this.points[cellIdx * 2];
                 const y = this.points[cellIdx * 2 + 1];
                 
-                // Skip water cells
+                // Skip water cells. This means ocean (height below sea
+                // level) AND lake cells (which sit at terrain height
+                // but are flagged as water in this.lakeCells). Without
+                // the lake check, capitals can spawn directly on top
+                // of inland lakes — visible in the map as a star
+                // floating in the middle of a blue waterbody.
                 if (height < ELEVATION.SEA_LEVEL) continue;
+                if (this.lakeCells && this.lakeCells.has(cellIdx)) continue;
                 
                 // Check distance to already placed capitols - skip if too close
                 let tooCloseToCapitol = false;
@@ -2664,6 +2888,7 @@ export class VoronoiGenerator {
             
             const elevation = this.heights[capitolCell];
             const name = this.nameGenerator.generateSettlementName({
+                culture: this.kingdomCultures ? this.kingdomCultures[k] : undefined,
                 isCoastal: isCoastal,
                 isHighland: elevation > 1200,
                 elevation: elevation,
@@ -3072,6 +3297,7 @@ export class VoronoiGenerator {
         this.cityNames = [];
         for (const city of this.cities) {
             const name = this.nameGenerator.generateSettlementName({
+                culture: this.kingdomCultures ? this.kingdomCultures[city.kingdom] : undefined,
                 isCoastal: city.isCoastal,
                 isHighland: city.elevation > 1200,
                 elevation: city.elevation
@@ -3878,7 +4104,15 @@ export class VoronoiGenerator {
             this.seaRoutes.push({
                 cells: oceanPath.slice(),
                 from: pair.s1,
-                to: pair.s2
+                to: pair.s2,
+                // Remember which port sits at each endpoint of this
+                // ocean path. After consolidation, the visible polyline
+                // endpoints are exactly the "approach" cells closest to
+                // a port — we use this map to extend each endpoint's
+                // render path with a stub that actually reaches the
+                // port settlement, instead of stopping in open water.
+                startPort: pair.s1,
+                endPort: pair.s2
             });
             
             markSettlementUsed(pair.s1.cell);
@@ -3910,9 +4144,25 @@ export class VoronoiGenerator {
         const edgeSeen = new Set();
         const adj = new Map();   // cell → [neighbour cells]
         
+        // Map ocean-cell → array of port settlements that started/ended
+        // at this cell. After we walk polylines, each polyline's two
+        // endpoints will be looked up in this map so we can extend the
+        // visible path from open water all the way to the port.
+        const portsAtCell = new Map();
+        const recordPort = (cell, port) => {
+            if (!port || cell === undefined) return;
+            let list = portsAtCell.get(cell);
+            if (!list) { list = []; portsAtCell.set(cell, list); }
+            // De-dupe by settlement cell index
+            if (!list.some(p => p.cell === port.cell)) list.push(port);
+        };
+        
         for (const route of this.seaRoutes) {
             const cells = route.cells;
             if (!cells || cells.length < 2) continue;
+            // Endpoints of this raw route map to its two ports
+            recordPort(cells[0], route.startPort);
+            recordPort(cells[cells.length - 1], route.endPort);
             for (let i = 1; i < cells.length; i++) {
                 const a = cells[i - 1], b = cells[i];
                 if (a === b) continue;
@@ -3964,6 +4214,10 @@ export class VoronoiGenerator {
         // Apply path thinning + build {x, y} render path per run.
         // Thinning here uses a fixed stride based on each run's length so
         // long polylines get fewer waypoints and short ones stay dense.
+        // After thinning, if either endpoint of the run sits at an
+        // ocean cell that originally launched a route from a port, we
+        // prepend/append the port's actual coordinates so the visible
+        // line reaches the city instead of stopping in the water.
         const newRoutes = [];
         for (const run of runs) {
             const targetWaypoints = 40;
@@ -3978,6 +4232,24 @@ export class VoronoiGenerator {
                 y: this.points[c * 2 + 1],
                 cell: c
             }));
+            
+            // Extend with port stubs at each end. We pick the FIRST
+            // port registered at the endpoint cell — there can be
+            // more than one if a junction was promoted to a port-cell,
+            // but in practice consolidation places junctions at degree
+            // ≥3 cells which have no port (degree-1 endpoints are the
+            // port approaches).
+            const startPorts = portsAtCell.get(run[0]);
+            if (startPorts && startPorts.length > 0) {
+                const p = startPorts[0];
+                path.unshift({ x: p.x, y: p.y, cell: p.cell, port: true });
+            }
+            const endPorts = portsAtCell.get(run[run.length - 1]);
+            if (endPorts && endPorts.length > 0) {
+                const p = endPorts[0];
+                path.push({ x: p.x, y: p.y, cell: p.cell, port: true });
+            }
+            
             newRoutes.push({ path, cells: run });
         }
         
@@ -4176,17 +4448,27 @@ export class VoronoiGenerator {
         const getCost = (from, to) => {
             const toHeight = this.heights[to];
             
-            // Water is completely impassable. Both ocean (below sea level)
-            // and lakes (above sea level but flagged as water in this.lakeCells)
-            // count as water for road purposes.
+            // Ocean is completely impassable for roads.
             if (toHeight < ELEVATION.SEA_LEVEL) return Infinity;
-            if (this.lakeCells && this.lakeCells.has(to)) return Infinity;
             
             const x1 = this.points[from * 2];
             const y1 = this.points[from * 2 + 1];
             const x2 = this.points[to * 2];
             const y2 = this.points[to * 2 + 1];
             const baseDist = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+            
+            // Lakes can be crossed but at a steep cost — this represents a
+            // ferry / barge crossing. Treating lakes as fully impassable
+            // (the previous behaviour) caused entire kingdoms to silently
+            // generate zero roads when a lake split the capital from the
+            // rest of the realm: A* couldn't find ANY land-only path so
+            // every feeder call returned null. With a high-but-finite
+            // lake cost, A* still strongly prefers land detours when one
+            // exists, and only crosses water when there's no alternative.
+            let lakeCost = 1;
+            if (this.lakeCells && this.lakeCells.has(to)) {
+                lakeCost = 25;
+            }
             
             // Rivers can be crossed but with high cost (represents bridges)
             let riverCost = 1;
@@ -4229,7 +4511,7 @@ export class VoronoiGenerator {
                 roadBonus = 0.5;
             }
             
-            return baseDist * elevCost * mountainPenalty * riverBonus * roadBonus * riverCost;
+            return baseDist * elevCost * mountainPenalty * riverBonus * roadBonus * riverCost * lakeCost;
         };
         
         gScore.set(startCell, 0);

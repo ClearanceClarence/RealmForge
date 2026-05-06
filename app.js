@@ -151,6 +151,8 @@ const zoomLevelDisplay = document.getElementById('zoom-level');
 // DOM Elements - Overlays
 const heightmapOverlay = document.getElementById('heightmap-overlay');
 const toggleHeightmapBtn = document.getElementById('toggle-heightmap');
+const depthOverlay = document.getElementById('depth-overlay');
+const toggleDepthBtn = document.getElementById('toggle-depth');
 
 // DOM Elements - Export
 const exportJsonBtn = document.getElementById('export-json');
@@ -858,7 +860,7 @@ function renderHeightmapOverlay() {
 }
 
 function applyOverlayTransform() {
-    if (!heightmapOverlay || !heightmapOverlayActive) return;
+    if (!heightmapOverlay && !depthOverlay) return;
     
     const last = lastOverlayViewport;
     const curr = generator.viewport;
@@ -868,18 +870,141 @@ function applyOverlayTransform() {
     const dx = curr.x - last.x * scale;
     const dy = curr.y - last.y * scale;
     
-    heightmapOverlay.style.transformOrigin = '0 0';
-    heightmapOverlay.style.transform = `translate(${dx}px, ${dy}px) scale(${scale})`;
+    const cssTransform = `translate(${dx}px, ${dy}px) scale(${scale})`;
+    if (heightmapOverlayActive && heightmapOverlay) {
+        heightmapOverlay.style.transformOrigin = '0 0';
+        heightmapOverlay.style.transform = cssTransform;
+    }
+    if (depthOverlayActive && depthOverlay) {
+        depthOverlay.style.transformOrigin = '0 0';
+        depthOverlay.style.transform = cssTransform;
+    }
 }
 
 function resetOverlayTransform() {
-    if (!heightmapOverlay) return;
-    heightmapOverlay.style.transform = '';
+    if (heightmapOverlay) heightmapOverlay.style.transform = '';
+    if (depthOverlay) depthOverlay.style.transform = '';
     lastOverlayViewport = {
         x: generator.viewport.x,
         y: generator.viewport.y,
         zoom: generator.viewport.zoom
     };
+}
+
+// ─── Sea-depth overlay ───
+// Mirror of the heightmap-overlay machinery, but it draws WATER cells
+// shaded by depth (light blue near the coast, deep blue far below sea
+// level). Independent of the elevation overlay — both can be on at
+// once and the user gets a layered view of land elevation + sea depth.
+let depthOverlayActive = false;
+let depthCtx = null;
+
+if (toggleDepthBtn && depthOverlay) {
+    depthCtx = depthOverlay.getContext('2d');
+    
+    toggleDepthBtn.addEventListener('click', () => {
+        depthOverlayActive = !depthOverlayActive;
+        toggleDepthBtn.classList.toggle('active', depthOverlayActive);
+        depthOverlay.classList.toggle('active', depthOverlayActive);
+        
+        if (depthOverlayActive) {
+            // Sync viewport reference if depth is the FIRST overlay
+            // turned on (so its transform math matches the live map);
+            // if heightmap is already on, lastOverlayViewport is
+            // already correct.
+            if (!heightmapOverlayActive) {
+                lastOverlayViewport = {
+                    x: generator.viewport.x,
+                    y: generator.viewport.y,
+                    zoom: generator.viewport.zoom
+                };
+            }
+            renderDepthOverlay();
+        }
+    });
+}
+
+function renderDepthOverlay() {
+    if (!depthOverlay || !depthCtx) return;
+    if (!generator.heights || !generator.voronoi) return;
+    
+    const dpr = generator.dpr || window.devicePixelRatio || 1;
+    depthOverlay.width = generator.width * dpr;
+    depthOverlay.height = generator.height * dpr;
+    depthOverlay.style.width = generator.width + 'px';
+    depthOverlay.style.height = generator.height + 'px';
+    
+    depthCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    depthCtx.clearRect(0, 0, generator.width, generator.height);
+    
+    depthCtx.save();
+    depthCtx.translate(generator.viewport.x, generator.viewport.y);
+    depthCtx.scale(generator.viewport.zoom, generator.viewport.zoom);
+    
+    const heights = generator.heights;
+    const numCells = generator.cellCount;
+    
+    // Heights: sea level = 0, ocean floor = roughly -4000m. Draw water
+    // cells (and lake cells, which carry water-class but positive
+    // height in this.lakeCells — we cover those by also reading
+    // lakeCells if present).
+    const minDepth = -4000;
+    const lakeCells = generator.lakeCells || null;
+    
+    depthCtx.lineWidth = 1.5 / generator.viewport.zoom;
+    depthCtx.lineJoin = 'round';
+    
+    for (let i = 0; i < numCells; i++) {
+        const h = heights[i];
+        const isLake = lakeCells && lakeCells.has(i);
+        // Skip non-water cells. Water = ocean (h<0) or lake.
+        if (h >= 0 && !isLake) continue;
+        
+        let polygon;
+        try {
+            polygon = generator.voronoi.cellPolygon(i);
+        } catch (e) {
+            continue;
+        }
+        if (!polygon || polygon.length < 3) continue;
+        
+        // Depth in 0..1: 0 = at sea level (lightest), 1 = deepest.
+        // Lake cells get treated as shallow water.
+        let depth01;
+        if (isLake) {
+            depth01 = 0.15;
+        } else {
+            depth01 = Math.min(1, Math.max(0, h / minDepth));
+        }
+        
+        // Contrast curve so the gradient leans toward shallow tones —
+        // most ocean is "deep" so without bending the curve, the whole
+        // sea reads as one flat dark blue and you can't see the
+        // continental shelf.
+        const contrast = Math.pow(depth01, 0.55);
+        
+        // Blue ramp: shallow = pale icy blue, deep = navy.
+        // RGB interpolation between (210,232,242) and (28,52,98).
+        const sr = 210, sg = 232, sb = 242;
+        const dr =  28, dg =  52, db =  98;
+        const r = Math.round(sr + (dr - sr) * contrast);
+        const g = Math.round(sg + (dg - sg) * contrast);
+        const b = Math.round(sb + (db - sb) * contrast);
+        const color = `rgb(${r}, ${g}, ${b})`;
+        
+        depthCtx.fillStyle = color;
+        depthCtx.strokeStyle = color;
+        depthCtx.beginPath();
+        depthCtx.moveTo(polygon[0][0], polygon[0][1]);
+        for (let j = 1; j < polygon.length; j++) {
+            depthCtx.lineTo(polygon[j][0], polygon[j][1]);
+        }
+        depthCtx.closePath();
+        depthCtx.fill();
+        depthCtx.stroke();
+    }
+    
+    depthCtx.restore();
 }
 
 // Update overlay when map is re-rendered (full render)
@@ -890,13 +1015,17 @@ generator.render = function(...args) {
         resetOverlayTransform();
         renderHeightmapOverlay();
     }
+    if (depthOverlayActive) {
+        resetOverlayTransform();
+        renderDepthOverlay();
+    }
 };
 
 // Apply CSS transform during low-res render (interaction)
 const originalRenderLowRes = generator.renderLowRes.bind(generator);
 generator.renderLowRes = function(...args) {
     originalRenderLowRes(...args);
-    if (heightmapOverlayActive) {
+    if (heightmapOverlayActive || depthOverlayActive) {
         applyOverlayTransform();
     }
 };
@@ -1031,37 +1160,153 @@ function showInfoPanel(labelHit) {
     if (labelHit.type === 'kingdom') {
         const stats = generator.getKingdomStats(labelHit.index);
         if (stats) {
+            const cultureDisplay = stats.culture
+                ? stats.culture.charAt(0).toUpperCase() + stats.culture.slice(1)
+                : null;
+            
+            const esc = (s) => String(s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            
+            // Round population to nearest 100 for display. The internal
+            // values stay precise — only the popup smooths them.
+            const round100 = (n) => Math.round((n || 0) / 100) * 100;
+            const fmtPop = (n) => round100(n).toLocaleString();
+            
+            // Build the settlements table (capital row first, then
+            // non-port cities sorted by population desc — ports are
+            // EXCLUDED from this table per the design and shown in
+            // their own table below).
+            const settlementRows = [];
+            // Capital always leads, with a ★ marker. If the capital
+            // happens to also be a port, that's still fine to show
+            // here as the headline of the kingdom — ports table will
+            // not duplicate it.
+            const capStar = '<span class="ip-tag ip-tag-capital">Capital</span>';
+            const capPort = stats.capitalIsPort
+                ? ' <span class="ip-tag ip-tag-port">⚓ Port</span>'
+                : '';
+            settlementRows.push(`
+                <tr>
+                    <td class="ip-tbl-name">${esc(stats.capitalName || 'Unknown')}</td>
+                    <td class="ip-tbl-pop">${fmtPop(stats.capitalPopulation)}</td>
+                    <td class="ip-tbl-tag">${capStar}${capPort}</td>
+                </tr>
+            `);
+            for (const s of stats.settlements) {
+                settlementRows.push(`
+                    <tr>
+                        <td class="ip-tbl-name">${esc(s.name)}</td>
+                        <td class="ip-tbl-pop">${fmtPop(s.population)}</td>
+                        <td class="ip-tbl-tag"></td>
+                    </tr>
+                `);
+            }
+            
+            // Ports table — only rendered if there are non-capital ports.
+            // (The capital can be a port and is marked above; we don't
+            // re-list it here.)
+            const portsTable = stats.ports.length > 0 ? `
+                <div class="ip-section">
+                    <div class="ip-section-title">Ports</div>
+                    <div class="ip-table-scroll">
+                        <table class="ip-table">
+                            <thead>
+                                <tr>
+                                    <th class="ip-tbl-name">Name</th>
+                                    <th class="ip-tbl-pop">Population</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${stats.ports.map(p => `
+                                    <tr>
+                                        <td class="ip-tbl-name">⚓ ${esc(p.name)}</td>
+                                        <td class="ip-tbl-pop">${fmtPop(p.population)}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            ` : '';
+            
+            // Coat of arms via Armoria API.
+            // https://armoria.vercel.app/api/svg/{size}/{seed}?shield={shape}
+            //
+            // The seed (kingdom name) drives all procedural choices —
+            // tinctures, ordinaries, charges — so each kingdom has a
+            // stable, unique coat of arms. The shield SHAPE is then
+            // overridden per culture so the silhouette carries cultural
+            // signal: Norse round shields, Tolkien-elf noldor crests,
+            // Polish szczyt for slavic realms, etc.
+            //
+            // Fallback: if the culture isn't recognised, no `shield`
+            // override is sent and Armoria uses its default (heater).
+            const cultureShields = {
+                germanic:     'hessen',
+                norse:        'targe',         // round was unsupported; targe reads similar
+                celtic:       'targe2',
+                romance:      'french',        // oldFrench was unsupported; modern french heater
+                slavic:       'polish',
+                hellenic:     'boeotian',
+                arabic:       'kite',
+                eastasian:    'square',
+                mesoamerican: 'wedged',        // roman was unsupported; wedged is the closest broad-bottomed shape
+                african:      'oval',
+                elvish:       'gondor',        // noldor was unsupported; gondor is also Tolkien-elven
+                dwarven:      'erebor',
+                orcish:       'urukHai'
+            };
+            const shieldShape = cultureShields[stats.culture] || null;
+            
+            const coaSeed = encodeURIComponent(stats.name);
+            const coaUrl = shieldShape
+                ? `https://armoria.vercel.app/api/svg/200/${coaSeed}?shield=${shieldShape}`
+                : `https://armoria.vercel.app/api/svg/200/${coaSeed}`;
+            
             html = `
-                <div class="ip-header">
-                    <span class="ip-icon">🏰</span>
-                    <div>
-                        <div class="ip-title">${stats.name}</div>
-                        <div class="ip-subtitle">Kingdom</div>
+                <div class="ip-kingdom-header">
+                    <div class="ip-coat" aria-label="Coat of arms">
+                        <img src="${coaUrl}" alt="" loading="lazy"
+                             onerror="this.style.display='none'">
+                    </div>
+                    <div class="ip-kingdom-titles">
+                        <div class="ip-title">${esc(stats.name)}</div>
+                        <div class="ip-subtitle">
+                            ${cultureDisplay ? `<span class="ip-culture">${cultureDisplay}</span>` : ''}
+                        </div>
                     </div>
                 </div>
-                <div class="ip-stats">
-                    <div class="ip-stat">
-                        <span class="ip-stat-label">Population</span>
-                        <span class="ip-stat-value">${stats.population.toLocaleString()}</span>
+                
+                <div class="ip-kingdom-summary">
+                    <div class="ip-summary-row">
+                        <span class="ip-summary-label">Population</span>
+                        <span class="ip-summary-value">${fmtPop(stats.population)}</span>
                     </div>
-                    <div class="ip-stat">
-                        <span class="ip-stat-label">Capital</span>
-                        <span class="ip-stat-value">${stats.capitalName || 'Unknown'}</span>
+                    <div class="ip-summary-row">
+                        <span class="ip-summary-label">Cities</span>
+                        <span class="ip-summary-value">${stats.cityCount}${stats.ports.length > 0 ? ` <span class="ip-summary-aside">(${stats.ports.length} ${stats.ports.length === 1 ? 'port' : 'ports'})</span>` : ''}</span>
                     </div>
-                    <div class="ip-stat">
-                        <span class="ip-stat-label">Cities</span>
-                        <span class="ip-stat-value">${stats.cityCount}</span>
-                    </div>
-                    <div class="ip-stat">
-                        <span class="ip-stat-label">Territory</span>
-                        <span class="ip-stat-value">${stats.cellCount.toLocaleString()} cells</span>
-                    </div>
-                    ${stats.terrain.coastalCells > 0 ? `
-                    <div class="ip-stat">
-                        <span class="ip-stat-label">Coastal</span>
-                        <span class="ip-stat-value">Yes</span>
-                    </div>` : ''}
                 </div>
+                
+                <div class="ip-section">
+                    <div class="ip-section-title">Settlements</div>
+                    <div class="ip-table-scroll">
+                        <table class="ip-table">
+                            <thead>
+                                <tr>
+                                    <th class="ip-tbl-name">Name</th>
+                                    <th class="ip-tbl-pop">Population</th>
+                                    <th class="ip-tbl-tag"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${settlementRows.join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                ${portsTable}
             `;
         }
     } else if (labelHit.type === 'capital') {

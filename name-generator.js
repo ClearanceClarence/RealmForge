@@ -116,6 +116,12 @@ export class NameGenerator {
                 prefixes: ['Ald', 'All', 'Ash', 'Berg', 'Black', 'Bran', 'Bright', 'Cold', 'Dark', 'Deep', 'Dun', 'East', 'Eld', 'Ever', 'Fair', 'Far', 'Fell', 'Frost', 'Gold', 'Grand', 'Grey', 'Grim', 'Hale', 'Hard', 'High', 'Holt', 'Horn', 'Iron', 'Long', 'Low', 'Mid', 'Mist', 'Moon', 'Nether', 'New', 'North', 'Old', 'Rain', 'Red', 'Rock', 'Sea', 'Shadow', 'Silver', 'Stark', 'Star', 'Steel', 'Stone', 'Storm', 'Strong', 'Sun', 'Swift', 'Thorn', 'Thunder', 'True', 'West', 'White', 'Wild', 'Wind', 'Winter', 'Wolf', 'Wood'],
                 suffixes: ['ard', 'ax', 'bane', 'berg', 'born', 'brand', 'burg', 'by', 'dale', 'dor', 'fall', 'fell', 'feld', 'firth', 'ford', 'gard', 'garth', 'gate', 'grave', 'hall', 'ham', 'haven', 'heim', 'helm', 'hold', 'holm', 'holt', 'keep', 'land', 'leigh', 'mark', 'mead', 'mere', 'mond', 'moor', 'mund', 'ness', 'port', 'reach', 'ridge', 'rock', 'shire', 'shore', 'side', 'stead', 'sted', 'stone', 'thorp', 'ton', 'vale', 'wall', 'ward', 'watch', 'water', 'way', 'wick', 'wood', 'worth', 'wrath', 'wyn'],
                 titles: ['Kingdom', 'Realm', 'Duchy', 'March', 'Hold', 'Dominion', 'Throne'],
+                cityPrefixes: {
+                    coastal:  ['Port', 'Salt', 'Sea', 'Bay', 'Cape', 'Wharf', 'Harbor', 'Tide', 'Storm', 'White', 'Anchor'],
+                    highland: ['High', 'Stone', 'Iron', 'Eagle', 'Hawk', 'Ridge', 'Crag', 'Peak', 'Frost', 'Cloud'],
+                    lowland:  ['Mill', 'Ford', 'Bridge', 'Meadow', 'Green', 'Long', 'Low', 'Mead'],
+                    generic:  ['Old', 'New', 'East', 'West', 'North', 'South', 'King\'s', 'Queen\'s', 'Castle', 'Tower', 'Black', 'Grey', 'Wolf', 'Raven', 'Thorn']
+                },
                 nameStyle: 'compound'
             },
 
@@ -131,6 +137,12 @@ export class NameGenerator {
                 prefixes: ['Arn', 'Asg', 'Bjorn', 'Brag', 'Eid', 'Ey', 'Fjar', 'Frost', 'Gald', 'Gjal', 'Grim', 'Guld', 'Gunn', 'Haf', 'Heid', 'Hel', 'Hrafn', 'Hrim', 'Is', 'Jarn', 'Jot', 'Kald', 'Kval', 'Mid', 'Mjol', 'Mork', 'Nid', 'Nif', 'Nord', 'Rag', 'Sig', 'Skald', 'Skar', 'Skjold', 'Sno', 'Storm', 'Sval', 'Svar', 'Thor', 'Ulf', 'Val', 'Van', 'Vin', 'Yr'],
                 suffixes: ['ard', 'borg', 'by', 'dal', 'fell', 'fjall', 'fjord', 'foss', 'gard', 'grund', 'hall', 'haug', 'heim', 'hild', 'hof', 'holm', 'hus', 'kar', 'lund', 'mark', 'mund', 'nes', 'rid', 'rik', 'stad', 'stein', 'strom', 'thorp', 'tun', 'und', 'vag', 'vald', 'vang', 'var', 'vik', 'voll', 'vor'],
                 titles: ['Jarldom', 'Konungriki', 'Hold', 'Clan', 'Hird'],
+                cityPrefixes: {
+                    coastal:  ['Stor', 'Hav', 'Sjø', 'Vik', 'Nor', 'Frost', 'Ulf', 'Skip', 'Sild'],
+                    highland: ['Berg', 'Fjeld', 'Hrim', 'Frost', 'Sten', 'Klipp', 'Granit', 'Glims'],
+                    lowland:  ['Dal', 'Eng', 'Mose', 'Sval', 'Lund'],
+                    generic:  ['Old', 'Nord', 'Sval', 'Mid', 'Skar', 'Mork', 'Storm', 'Var', 'Yng', 'Skjold']
+                },
                 nameStyle: 'compound'
             },
 
@@ -146,6 +158,12 @@ export class NameGenerator {
                 prefixes: ['Aber', 'Ard', 'Bal', 'Ban', 'Bel', 'Ben', 'Blair', 'Bran', 'Bren', 'Caer', 'Carn', 'Ceann', 'Cill', 'Cnoc', 'Conn', 'Cor', 'Craig', 'Cul', 'Dal', 'Derry', 'Drum', 'Dun', 'Eil', 'Fal', 'Fin', 'Glen', 'Gorm', 'Gwyn', 'Inver', 'Kel', 'Ken', 'Kil', 'Kin', 'Knock', 'Lach', 'Lan', 'Leth', 'Lis', 'Loch', 'Lon', 'Mal', 'Mor', 'Mull', 'Nev', 'Owen', 'Pen', 'Rath', 'Ros', 'Shan', 'Sil', 'Strath', 'Tal', 'Tir', 'Tor', 'Tull', 'Ty', 'Wyn'],
                 suffixes: ['ach', 'agh', 'aine', 'an', 'ane', 'ar', 'ard', 'awn', 'dale', 'dhu', 'dor', 'dun', 'ell', 'enn', 'gan', 'glas', 'glen', 'gorm', 'gwen', 'ian', 'ich', 'iel', 'in', 'ine', 'ish', 'lin', 'linn', 'loch', 'lyn', 'mere', 'mor', 'more', 'moor', 'ness', 'och', 'oran', 'owen', 'pool', 'rath', 'reen', 'rick', 'ros', 'vale', 'wen', 'wick', 'wyn', 'wood'],
                 titles: ['Kingdom', 'Tuath', 'Ri', 'Clan', 'Province'],
+                cityPrefixes: {
+                    coastal:  ['Aber', 'Inver', 'Bal', 'Cean', 'Mor', 'Salt', 'Loch', 'Bay'],
+                    highland: ['Ben', 'Ard', 'Carn', 'Cnoc', 'Craig', 'Tor', 'Tul', 'Drum', 'Pen'],
+                    lowland:  ['Glen', 'Strath', 'Dal', 'Lan', 'Ros', 'Mead', 'Lis'],
+                    generic:  ['Old', 'New', 'Caer', 'Dun', 'Cill', 'Ty', 'Bran', 'Gwyn', 'Fin', 'Mal']
+                },
                 nameStyle: 'flowing'
             },
 
@@ -161,6 +179,12 @@ export class NameGenerator {
                 prefixes: ['Al', 'Alta', 'Aqua', 'Aran', 'Aur', 'Bel', 'Bell', 'Bran', 'Cal', 'Cara', 'Cas', 'Clar', 'Cor', 'Costa', 'Del', 'Dor', 'Fal', 'Fer', 'Fior', 'Flor', 'Font', 'Gran', 'Leon', 'Lor', 'Luc', 'Luna', 'Mar', 'Mel', 'Mir', 'Mont', 'Mor', 'Nov', 'Pal', 'Per', 'Pont', 'Port', 'Prim', 'Ros', 'Sal', 'San', 'Ser', 'Sil', 'Sol', 'Stella', 'Ter', 'Tor', 'Val', 'Var', 'Ver', 'Vir', 'Vit'],
                 suffixes: ['a', 'aine', 'ana', 'anno', 'anto', 'ara', 'azza', 'ella', 'ello', 'ena', 'enne', 'ento', 'enza', 'era', 'erre', 'essa', 'este', 'esto', 'etta', 'etto', 'eux', 'fort', 'ia', 'ica', 'ina', 'ino', 'io', 'ise', 'issa', 'ista', 'ita', 'ium', 'mar', 'mont', 'ola', 'olo', 'ona', 'one', 'onne', 'ora', 'orre', 'osa', 'oso', 'pont', 'sol', 'ura', 'val', 'zia'],
                 titles: ['Kingdom', 'Republic', 'Principality', 'Duchy', 'Province', 'Empire'],
+                cityPrefixes: {
+                    coastal:  ['Porto', 'Costa', 'Mar', 'Bella', 'Pont', 'San', 'Lido', 'Riva', 'Capo'],
+                    highland: ['Alta', 'Monte', 'Cima', 'Pico', 'Roca', 'Castel', 'Forte'],
+                    lowland:  ['Vall', 'Prato', 'Fontana', 'Borgo', 'Campo', 'Piano'],
+                    generic:  ['San', 'Santa', 'Nova', 'Vecchia', 'Bella', 'Gran', 'Alta', 'Mira', 'Sole']
+                },
                 nameStyle: 'melodic'
             },
 
@@ -176,6 +200,12 @@ export class NameGenerator {
                 prefixes: ['Bel', 'Bez', 'Blag', 'Bol', 'Bor', 'Bran', 'Cher', 'Dob', 'Dol', 'Dor', 'Drag', 'Gor', 'Grad', 'Grom', 'Jar', 'Kar', 'Kras', 'Kur', 'Mal', 'Mir', 'Morav', 'Nov', 'Pol', 'Prav', 'Rad', 'Ros', 'Siv', 'Slav', 'Smo', 'Star', 'Stol', 'Straz', 'Svet', 'Tver', 'Vel', 'Ver', 'Vlad', 'Vol', 'Vor', 'Vos', 'Vysh', 'Yar', 'Zar', 'Zel', 'Zol', 'Zor'],
                 suffixes: ['ac', 'ak', 'ansk', 'av', 'ava', 'berg', 'dor', 'ec', 'ek', 'ev', 'evka', 'evo', 'gor', 'gorod', 'grad', 'holm', 'ice', 'ik', 'in', 'insk', 'itz', 'mir', 'nov', 'ok', 'ov', 'ova', 'ovka', 'pol', 'sk', 'ska', 'sko', 'slav', 'uk', 'vor', 'yn'],
                 titles: ['Tsardom', 'Knyazdom', 'Voivodeship', 'Oblast', 'Krai'],
+                cityPrefixes: {
+                    coastal:  ['Beloye', 'More', 'Volna', 'Solnyy', 'Pristan'],
+                    highland: ['Gor', 'Vys', 'Kamen', 'Skala', 'Verkh'],
+                    lowland:  ['Pol', 'Lug', 'Tikhi', 'Reka', 'Dol'],
+                    generic:  ['Stary', 'Novy', 'Vel', 'Mal', 'Beloye', 'Krasny', 'Cherny', 'Svyat']
+                },
                 nameStyle: 'consonantal'
             },
 
@@ -191,6 +221,12 @@ export class NameGenerator {
                 prefixes: ['Acro', 'Aeg', 'Agath', 'Alc', 'Alex', 'Andr', 'Ant', 'Apol', 'Arc', 'Arg', 'Ath', 'Chal', 'Chry', 'Del', 'Dem', 'Dion', 'Dor', 'Eph', 'Hel', 'Her', 'Hip', 'Kal', 'Kar', 'Kor', 'Leon', 'Lyc', 'Mac', 'Meg', 'Myr', 'Nek', 'Nik', 'Olym', 'Pal', 'Pel', 'Per', 'Phil', 'Plat', 'Pol', 'Pyth', 'Rho', 'Sal', 'Soph', 'Spar', 'Stag', 'Theb', 'Ther', 'Thes', 'Tyr', 'Xan', 'Zak', 'Zen'],
                 suffixes: ['a', 'aia', 'an', 'ane', 'andria', 'andros', 'ara', 'as', 'dros', 'ea', 'eia', 'ene', 'eon', 'era', 'es', 'ia', 'ias', 'ikos', 'ine', 'ion', 'ios', 'is', 'kos', 'nos', 'on', 'one', 'onia', 'opia', 'ora', 'os', 'polis', 'ros', 'sos', 'thos', 'tos', 'um', 'us'],
                 titles: ['Empire', 'League', 'Hegemony', 'Archonate', 'Tyranny', 'Basileia'],
+                cityPrefixes: {
+                    coastal:  ['Para', 'Thalassi', 'Limen', 'Akro', 'Halia', 'Pelag'],
+                    highland: ['Acro', 'Hyper', 'Mega', 'Olym', 'Petr', 'Oros'],
+                    lowland:  ['Pedi', 'Helio', 'Argy', 'Demos'],
+                    generic:  ['Neo', 'Palai', 'Mega', 'Mikra', 'Agia', 'Hagia', 'Chrys']
+                },
                 nameStyle: 'classical'
             },
 
@@ -206,6 +242,12 @@ export class NameGenerator {
                 prefixes: ['Al', 'Ash', 'Bab', 'Bah', 'Dar', 'Fah', 'Gha', 'Haz', 'Ibn', 'Isf', 'Jab', 'Jaz', 'Kaf', 'Kha', 'Mah', 'Mar', 'Mir', 'Nah', 'Nur', 'Qaf', 'Qar', 'Rah', 'Saf', 'Sah', 'Sal', 'Sam', 'Sar', 'Sha', 'Sul', 'Tab', 'Taj', 'Tar', 'Zaf', 'Zah', 'Zam', 'Zar'],
                 suffixes: ['a', 'abad', 'ad', 'ah', 'am', 'an', 'and', 'ar', 'as', 'at', 'az', 'dar', 'en', 'er', 'esh', 'id', 'in', 'iq', 'ir', 'is', 'istan', 'khan', 'mar', 'nar', 'pur', 'un', 'ur', 'var', 'zar'],
                 titles: ['Sultanate', 'Emirate', 'Caliphate', 'Khanate', 'Satrapy'],
+                cityPrefixes: {
+                    coastal:  ['Bandar', 'Mina', 'Ras', 'Sahil', 'Bahr'],
+                    highland: ['Jabal', 'Qaf', 'Tal', 'Hisn', 'Burj'],
+                    lowland:  ['Wadi', 'Bustan', 'Marj', 'Sahra'],
+                    generic:  ['Al', 'New', 'Old', 'Dar', 'Bait', 'Madinat', 'Qasr']
+                },
                 nameStyle: 'ornate'
             },
 
@@ -221,6 +263,12 @@ export class NameGenerator {
                 prefixes: ['Aka', 'Aki', 'Ama', 'Ao', 'Ara', 'Asa', 'Chi', 'Dai', 'Fuku', 'Fuji', 'Hana', 'Haru', 'Haya', 'Hika', 'Hiro', 'Ishi', 'Kage', 'Kai', 'Kama', 'Kawa', 'Kaze', 'Kiku', 'Kiri', 'Kita', 'Kumo', 'Kuro', 'Masa', 'Mina', 'Miya', 'Mizu', 'Mori', 'Naga', 'Naka', 'Nami', 'Niwa', 'Rei', 'Riku', 'Ryu', 'Saku', 'Shima', 'Shin', 'Shiro', 'Sora', 'Taka', 'Taki', 'Tama', 'Tani', 'Tora', 'Tsuki', 'Umi', 'Yama', 'Yasu', 'Yuki', 'Yume'],
                 suffixes: ['an', 'chi', 'da', 'en', 'fu', 'ga', 'gawa', 'hara', 'ji', 'ka', 'kawa', 'ko', 'kuni', 'kura', 'ma', 'mae', 'mori', 'moto', 'mura', 'nami', 'no', 'oka', 'ra', 'ri', 'saki', 'shima', 'shiro', 'ta', 'tani', 'to', 'ya', 'yama', 'zaki', 'zan'],
                 titles: ['Shogunate', 'Empire', 'Province', 'Domain', 'Clan'],
+                cityPrefixes: {
+                    coastal:  ['Umi', 'Hama', 'Minato', 'Kawa', 'Iso'],
+                    highland: ['Yama', 'Taka', 'Mine', 'Iwa', 'Take'],
+                    lowland:  ['Hara', 'Naka', 'Sato', 'Tani', 'Mura'],
+                    generic:  ['Shin', 'Kita', 'Mina', 'Higashi', 'Nishi', 'O', 'Ko', 'Yuki']
+                },
                 nameStyle: 'syllabic'
             },
 
@@ -236,6 +284,12 @@ export class NameGenerator {
                 prefixes: ['Acatl', 'Atl', 'Chal', 'Chi', 'Coat', 'Cuauh', 'Huitz', 'Itz', 'Ix', 'Maz', 'Mex', 'Mict', 'Nex', 'Oce', 'Ollin', 'Pop', 'Quetz', 'Tecu', 'Ten', 'Teot', 'Tepe', 'Tex', 'Tez', 'Tlal', 'Tlax', 'Toch', 'Ton', 'Xal', 'Xil', 'Xoch', 'Yao', 'Zac'],
                 suffixes: ['al', 'an', 'atl', 'cal', 'can', 'catl', 'co', 'huac', 'hua', 'ic', 'il', 'in', 'itz', 'ix', 'lan', 'man', 'mec', 'nah', 'pan', 'pec', 'tec', 'tepec', 'titlan', 'tl', 'tlan', 'tzin', 'yan'],
                 titles: ['Empire', 'Altepetl', 'Tlatoani', 'Confederation'],
+                cityPrefixes: {
+                    coastal:  ['Atl', 'Hue', 'Tla', 'Mizt'],
+                    highland: ['Tepe', 'Cuauh', 'Popoca', 'Iztac'],
+                    lowland:  ['Xal', 'Mex', 'Mil', 'Xoch'],
+                    generic:  ['Yan', 'Tla', 'Hue', 'Mict', 'Quetz', 'Tonal']
+                },
                 nameStyle: 'agglutinative'
             },
 
@@ -251,6 +305,12 @@ export class NameGenerator {
                 prefixes: ['Aba', 'Aka', 'Bama', 'Bula', 'Bwana', 'Duma', 'Fari', 'Goma', 'Haki', 'Imba', 'Jali', 'Kali', 'Kasi', 'Lamu', 'Maji', 'Mbwa', 'Nchi', 'Ngoma', 'Nyota', 'Pori', 'Radi', 'Saba', 'Simba', 'Tamu', 'Uji', 'Vuma', 'Wazi', 'Zuri'],
                 suffixes: ['a', 'ala', 'ana', 'anga', 'ani', 'ari', 'asi', 'ata', 'awa', 'ele', 'eni', 'era', 'eza', 'i', 'ia', 'ika', 'ila', 'ima', 'ini', 'ira', 'isha', 'isi', 'ita', 'o', 'ola', 'ona', 'u', 'ula', 'uma', 'ura', 'uzi'],
                 titles: ['Kingdom', 'Chiefdom', 'Empire', 'Federation', 'Union'],
+                cityPrefixes: {
+                    coastal:  ['Bahari', 'Pwani', 'Mji', 'Mwambao'],
+                    highland: ['Mlima', 'Kilima', 'Juu'],
+                    lowland:  ['Bonde', 'Shamba', 'Pori', 'Maji'],
+                    generic:  ['Nya', 'Kwa', 'Ki', 'M', 'Pa', 'Mji', 'Sim']
+                },
                 nameStyle: 'vowel-rich'
             },
 
@@ -266,6 +326,12 @@ export class NameGenerator {
                 prefixes: ['Ael', 'Aer', 'Ald', 'Ar', 'Cel', 'Dir', 'Dor', 'El', 'End', 'Er', 'Fae', 'Fin', 'Gal', 'Gil', 'Glor', 'Il', 'Ith', 'Lam', 'Lin', 'Lir', 'Lor', 'Loth', 'Mel', 'Mir', 'Mor', 'Nar', 'Nil', 'Nor', 'Quel', 'Ril', 'Rim', 'Ser', 'Sil', 'Sul', 'Tal', 'Tar', 'Tel', 'Thal', 'Thil', 'Thir', 'Tir', 'Val', 'Vir', 'Wen'],
                 suffixes: ['a', 'ael', 'aer', 'al', 'an', 'and', 'ar', 'ath', 'dil', 'dor', 'drim', 'duin', 'el', 'ell', 'en', 'eth', 'ia', 'ien', 'il', 'in', 'ion', 'ir', 'is', 'ith', 'las', 'lin', 'linn', 'lond', 'lor', 'los', 'mir', 'moth', 'nor', 'ond', 'or', 'oth', 'ril', 'rim', 'rin', 'rond', 'ros', 'thil', 'thir', 'wen', 'weth'],
                 titles: ['Realm', 'Dominion', 'Kingdom', 'Wood', 'Haven'],
+                cityPrefixes: {
+                    coastal:  ['Mith', 'Loth', 'Edhel', 'Sirio', 'Cair', 'Lond'],
+                    highland: ['Caradh', 'Orod', 'Aman', 'Min', 'Eryn'],
+                    lowland:  ['Imladris', 'Lothlor', 'Eryn', 'Galadh', 'Nan'],
+                    generic:  ['Ann', 'El', 'Mith', 'Tar', 'Glor', 'Sil', 'Quel']
+                },
                 nameStyle: 'ethereal'
             },
 
@@ -281,6 +347,12 @@ export class NameGenerator {
                 prefixes: ['Amon', 'Bar', 'Bol', 'Bor', 'Dal', 'Dar', 'Dol', 'Dor', 'Drak', 'Dun', 'Dur', 'Fal', 'Gal', 'Gim', 'Glim', 'Glor', 'Gol', 'Grim', 'Gund', 'Hald', 'Iron', 'Kal', 'Kar', 'Khaz', 'Khel', 'Kol', 'Mith', 'Mor', 'Nol', 'Nor', 'Rak', 'Ril', 'Rok', 'Stone', 'Thal', 'Thor', 'Thrak', 'Thror', 'Tor', 'Val', 'Zar', 'Zul'],
                 suffixes: ['ad', 'ak', 'ald', 'an', 'and', 'ar', 'ard', 'az', 'barak', 'dal', 'dan', 'dar', 'daz', 'din', 'dol', 'dor', 'drak', 'drek', 'drin', 'drol', 'drum', 'dun', 'dur', 'gard', 'grim', 'grod', 'grok', 'grom', 'gul', 'gund', 'had', 'hal', 'hold', 'in', 'kar', 'kazad', 'lin', 'lund', 'mak', 'mar', 'mok', 'mond', 'mun', 'nak', 'nir', 'ok', 'ol', 'on', 'or', 'rim', 'rin', 'rok', 'rum', 'thak', 'thal', 'thor', 'thul', 'ul', 'und', 'ur', 'zad', 'zak', 'zar', 'zul'],
                 titles: ['Hold', 'Kingdom', 'Realm', 'Clan', 'Stronghold'],
+                cityPrefixes: {
+                    coastal:  ['Salt', 'Deep', 'Tide'],
+                    highland: ['Khazad', 'Iron', 'Stone', 'Gold', 'Anvil', 'Forge', 'Hammer', 'Mount', 'Deep'],
+                    lowland:  ['Hold', 'Hall', 'Gate', 'Mine'],
+                    generic:  ['Old', 'Iron', 'Stone', 'Ash', 'Smoke', 'Hammer', 'Forge', 'Anvil']
+                },
                 nameStyle: 'runic'
             },
 
@@ -296,6 +368,12 @@ export class NameGenerator {
                 prefixes: ['Brak', 'Drak', 'Ghar', 'Glob', 'Gork', 'Grag', 'Grak', 'Grim', 'Grob', 'Grom', 'Gruk', 'Krag', 'Krosh', 'Mak', 'Mok', 'Mork', 'Nag', 'Nazg', 'Og', 'Ork', 'Rok', 'Shak', 'Skrag', 'Snak', 'Snot', 'Thrak', 'Ulag', 'Urg', 'Vrak', 'Wagh', 'Zag', 'Zog', 'Zug'],
                 suffixes: ['ab', 'ad', 'ag', 'ak', 'ash', 'ath', 'az', 'bag', 'bul', 'dak', 'dug', 'dush', 'gab', 'gash', 'gath', 'ghul', 'glob', 'gob', 'gosh', 'grat', 'grob', 'grod', 'grog', 'grub', 'gruk', 'gul', 'gur', 'kul', 'lug', 'mok', 'nob', 'nog', 'nok', 'og', 'ok', 'rak', 'rot', 'ruk', 'shak', 'thak', 'trog', 'ub', 'ug', 'uk', 'ul', 'um', 'ur', 'ush', 'uz', 'zag', 'zog', 'zug'],
                 titles: ['Horde', 'Warband', 'Clan', 'Tribe'],
+                cityPrefixes: {
+                    coastal:  ['Bone', 'Reek', 'Salt', 'Drown'],
+                    highland: ['Skull', 'Fang', 'Tooth', 'Black', 'Cleaver'],
+                    lowland:  ['Mud', 'Rot', 'Ash', 'Pit'],
+                    generic:  ['Black', 'Bloody', 'Red', 'Skull', 'Bone', 'Iron', 'Burnt', 'Charred']
+                },
                 nameStyle: 'guttural'
             }
         };
@@ -573,6 +651,15 @@ export class NameGenerator {
         }
         return { name: 'germanic', culture: this.cultures.germanic };
     }
+    
+    /**
+     * Pick a culture name (string) using the weighted distribution.
+     * Public companion to _pickCulture; the voronoi generator uses this
+     * to assign one culture per kingdom.
+     */
+    pickCulture() {
+        return this._pickCulture().name;
+    }
 
     /**
      * Get specific culture by name
@@ -799,12 +886,23 @@ export class NameGenerator {
         
         const baseName = this._generateBaseName(cultureName);
         
-        // Sometimes just return the name
+        // Sometimes just return the name (some cultures historically have
+        // bare-name realms, and a fraction looks better in mixed maps)
         if (style === 'simple' || this._random() < 0.15) {
             return baseName;
         }
         
-        // Add government type
+        // Prefer the culture's own title pool ("Tsardom", "Sultanate",
+        // "Jarldom", "Tuath" etc.) over the universal governmentTypes
+        // pool — this is what ties the realm name to the culture. We
+        // fall back to the universal pool if the culture is unknown
+        // or its titles array is missing for some reason.
+        const culture = cultureName ? this.cultures[cultureName] : null;
+        if (culture && Array.isArray(culture.titles) && culture.titles.length > 0) {
+            const title = this._pick(culture.titles);
+            return `${title} of ${baseName}`;
+        }
+        
         const gov = this._pickWeighted(this.governmentTypes);
         return `${gov.prefix} ${baseName}`;
     }
@@ -823,21 +921,31 @@ export class NameGenerator {
             : this._random() < (size === 'large' ? 0.3 : 0.15);
         
         if (addPrefix) {
-            let prefix;
+            // Pull from the culture's own prefix pools when available.
+            // Each culture defines coastal/highland/lowland/generic
+            // prefix arrays so a Norse port reads "Stor Foo" while a
+            // Romance one reads "Porto Foo" — the prefix carries the
+            // same cultural signal as the rest of the name.
+            const culture = cultureName ? this.cultures[cultureName] : null;
+            const cp = culture && culture.cityPrefixes ? culture.cityPrefixes : null;
             
-            // Context-aware prefix selection
+            let prefix;
             if (isCoastal && this._random() < 0.7) {
-                // Coastal cities get port-related prefixes
-                prefix = this._pick(['Port', 'Harbor', 'Bay', 'Cape', 'Cove', 'Wharf', 'Anchor', 'Tide', 'Salt', 'Sea']);
+                prefix = cp && cp.coastal && cp.coastal.length
+                    ? this._pick(cp.coastal)
+                    : this._pick(['Port', 'Harbor', 'Bay', 'Cape', 'Cove', 'Wharf', 'Anchor', 'Tide', 'Salt', 'Sea']);
             } else if (isHighland && this._random() < 0.7) {
-                // Highland cities get mountain-related prefixes
-                prefix = this._pick(['High', 'Upper', 'Peak', 'Summit', 'Ridge', 'Crest', 'Mount', 'Stone', 'Eagle', 'Cloud']);
+                prefix = cp && cp.highland && cp.highland.length
+                    ? this._pick(cp.highland)
+                    : this._pick(['High', 'Upper', 'Peak', 'Summit', 'Ridge', 'Crest', 'Mount', 'Stone', 'Eagle', 'Cloud']);
             } else if (elevation < 200 && this._random() < 0.5) {
-                // Low-lying cities
-                prefix = this._pick(['Low', 'Lower', 'Meadow', 'Green', 'Mill', 'Ford', 'Bridge', 'Market']);
+                prefix = cp && cp.lowland && cp.lowland.length
+                    ? this._pick(cp.lowland)
+                    : this._pick(['Low', 'Lower', 'Meadow', 'Green', 'Mill', 'Ford', 'Bridge', 'Market']);
             } else {
-                // Generic prefixes (excluding coastal/highland specific ones)
-                prefix = this._pick(['Fort', 'New', 'Old', 'East', 'West', 'North', 'South', 'Greater', 'Lesser', 'Saint', 'Castle', 'Tower', 'King\'s', 'Queen\'s']);
+                prefix = cp && cp.generic && cp.generic.length
+                    ? this._pick(cp.generic)
+                    : this._pick(['Fort', 'New', 'Old', 'East', 'West', 'North', 'South', 'Greater', 'Lesser', 'Saint', 'Castle', 'Tower', 'King\'s', 'Queen\'s']);
             }
             return `${prefix} ${baseName}`;
         }
