@@ -10,9 +10,8 @@
  *     generator field or method, with live updates.
  *   - Owns the click/hover handlers for the map (info-panel popups,
  *     hovered-cell tooltip).
- *   - Owns the two visual overlay layers (elevation, sea depth) —
- *     these have their own canvases and CSS-transform pan/zoom that
- *     piggybacks on the generator's viewport.
+ *   - Owns the elevation overlay layer — its own canvas with
+ *     CSS-transform pan/zoom that piggybacks on the generator's viewport.
  */
 
 import { VoronoiGenerator } from './voronoi-generator.js';
@@ -94,16 +93,13 @@ const generateBtn = document.getElementById('generate-btn');
 const generateBtnSidebar = document.getElementById('generate-btn-sidebar');
 
 // DOM Elements - Heightmap
-const noiseAlgorithm = document.getElementById('noise-algorithm');
 const noiseFrequency = document.getElementById('noise-frequency');
 const noiseFrequencyValue = document.getElementById('noise-frequency-value');
 const noiseOctaves = document.getElementById('noise-octaves');
 const noiseOctavesValue = document.getElementById('noise-octaves-value');
 const seaLevel = document.getElementById('sea-level');
 const seaLevelValue = document.getElementById('sea-level-value');
-const falloffType = document.getElementById('falloff-type');
-const falloffStrength = document.getElementById('falloff-strength');
-const falloffStrengthValue = document.getElementById('falloff-strength-value');
+const heightmapTemplate = document.getElementById('heightmap-template');
 const smoothing = document.getElementById('smoothing');
 const smoothingValue = document.getElementById('smoothing-value');
 const smoothingStrength = document.getElementById('smoothing-strength');
@@ -163,8 +159,6 @@ const zoomLevelDisplay = document.getElementById('zoom-level');
 // DOM Elements - Overlays
 const heightmapOverlay = document.getElementById('heightmap-overlay');
 const toggleHeightmapBtn = document.getElementById('toggle-heightmap');
-const depthOverlay = document.getElementById('depth-overlay');
-const toggleDepthBtn = document.getElementById('toggle-depth');
 
 // DOM Elements - Export
 const exportJsonBtn = document.getElementById('export-json');
@@ -226,13 +220,11 @@ async function generate() {
     
     // Get heightmap options from UI
     const heightmapOptions = {
-        algorithm: noiseAlgorithm.value,
         frequency: parseFloat(noiseFrequency.value),
         octaves: parseInt(noiseOctaves.value),
         seaLevel: parseFloat(seaLevel.value),
-        falloff: falloffType.value,
-        falloffStrength: parseFloat(falloffStrength.value),
-        islandDensity: parseFloat(islandDensity.value)
+        islandDensity: parseFloat(islandDensity.value),
+        template: heightmapTemplate.value
     };
     
     try {
@@ -369,14 +361,12 @@ async function generateHeightmapWithLoading() {
     
     const options = {
         seed: seed + 1000,
-        algorithm: noiseAlgorithm.value,
         frequency: parseFloat(noiseFrequency.value),
         octaves: parseInt(noiseOctaves.value),
         seaLevel: parseFloat(seaLevel.value),
-        falloff: falloffType.value,
-        falloffStrength: parseFloat(falloffStrength.value),
         smoothing: parseInt(smoothing.value),
-        smoothingStrength: parseFloat(smoothingStrength.value)
+        smoothingStrength: parseFloat(smoothingStrength.value),
+        template: heightmapTemplate.value
     };
     
     generator.generateHeightmap(options);
@@ -425,6 +415,18 @@ function generateHeightmap() {
 
 generateHeightmapBtn.addEventListener('click', generateHeightmap);
 
+// Auto-regenerate when the heightmap template changes. The user
+// expects "switch the world shape" to take effect immediately rather
+// than requiring a separate Generate click. We use the fast-path
+// regen (generateHeightmap) which keeps the existing point scatter
+// and just rebuilds the heightmap + downstream layers.
+if (heightmapTemplate) {
+    heightmapTemplate.addEventListener('change', () => {
+        if (!generator.points || generator.cellCount === 0) return;
+        generateHeightmap();
+    });
+}
+
 // Update slider value displays
 noiseFrequency.addEventListener('input', (e) => {
     noiseFrequencyValue.textContent = parseFloat(e.target.value).toFixed(1);
@@ -436,10 +438,6 @@ noiseOctaves.addEventListener('input', (e) => {
 
 seaLevel.addEventListener('input', (e) => {
     seaLevelValue.textContent = parseFloat(e.target.value).toFixed(2);
-});
-
-falloffStrength.addEventListener('input', (e) => {
-    falloffStrengthValue.textContent = parseFloat(e.target.value).toFixed(2);
 });
 
 smoothing.addEventListener('input', (e) => {
@@ -918,7 +916,7 @@ function renderHeightmapOverlay() {
 }
 
 function applyOverlayTransform() {
-    if (!heightmapOverlay && !depthOverlay) return;
+    if (!heightmapOverlay || !heightmapOverlayActive) return;
     
     const last = lastOverlayViewport;
     const curr = generator.viewport;
@@ -928,20 +926,13 @@ function applyOverlayTransform() {
     const dx = curr.x - last.x * scale;
     const dy = curr.y - last.y * scale;
     
-    const cssTransform = `translate(${dx}px, ${dy}px) scale(${scale})`;
-    if (heightmapOverlayActive && heightmapOverlay) {
-        heightmapOverlay.style.transformOrigin = '0 0';
-        heightmapOverlay.style.transform = cssTransform;
-    }
-    if (depthOverlayActive && depthOverlay) {
-        depthOverlay.style.transformOrigin = '0 0';
-        depthOverlay.style.transform = cssTransform;
-    }
+    heightmapOverlay.style.transformOrigin = '0 0';
+    heightmapOverlay.style.transform = `translate(${dx}px, ${dy}px) scale(${scale})`;
 }
 
 function resetOverlayTransform() {
-    if (heightmapOverlay) heightmapOverlay.style.transform = '';
-    if (depthOverlay) depthOverlay.style.transform = '';
+    if (!heightmapOverlay) return;
+    heightmapOverlay.style.transform = '';
     lastOverlayViewport = {
         x: generator.viewport.x,
         y: generator.viewport.y,
@@ -949,128 +940,6 @@ function resetOverlayTransform() {
     };
 }
 
-// ─── Sea-depth overlay ───
-// Mirror of the heightmap-overlay machinery, but it draws WATER cells
-// shaded by depth (light blue near the coast, deep blue far below sea
-// level). Independent of the elevation overlay — both can be on at
-// once and the user gets a layered view of land elevation + sea depth.
-let depthOverlayActive = false;
-let depthCtx = null;
-
-if (toggleDepthBtn && depthOverlay) {
-    depthCtx = depthOverlay.getContext('2d');
-    
-    toggleDepthBtn.addEventListener('click', () => {
-        depthOverlayActive = !depthOverlayActive;
-        toggleDepthBtn.classList.toggle('active', depthOverlayActive);
-        depthOverlay.classList.toggle('active', depthOverlayActive);
-        
-        if (depthOverlayActive) {
-            // Sync viewport reference if depth is the FIRST overlay
-            // turned on (so its transform math matches the live map);
-            // if heightmap is already on, lastOverlayViewport is
-            // already correct.
-            if (!heightmapOverlayActive) {
-                lastOverlayViewport = {
-                    x: generator.viewport.x,
-                    y: generator.viewport.y,
-                    zoom: generator.viewport.zoom
-                };
-            }
-            renderDepthOverlay();
-        }
-    });
-}
-
-/**
- * Repaint the sea-depth overlay canvas. Iterates only water cells
- * (ocean and lakes) and shades each by depth, ramping pale icy blue
- * at the shore to navy at the abyss. The canvas is rendered at the
- * generator's current viewport transform; pan/zoom is handled by
- * applyOverlayTransform() in between full repaints.
- */
-function renderDepthOverlay() {
-    if (!depthOverlay || !depthCtx) return;
-    if (!generator.heights || !generator.voronoi) return;
-    
-    const dpr = generator.dpr || window.devicePixelRatio || 1;
-    depthOverlay.width = generator.width * dpr;
-    depthOverlay.height = generator.height * dpr;
-    depthOverlay.style.width = generator.width + 'px';
-    depthOverlay.style.height = generator.height + 'px';
-    
-    depthCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    depthCtx.clearRect(0, 0, generator.width, generator.height);
-    
-    depthCtx.save();
-    depthCtx.translate(generator.viewport.x, generator.viewport.y);
-    depthCtx.scale(generator.viewport.zoom, generator.viewport.zoom);
-    
-    const heights = generator.heights;
-    const numCells = generator.cellCount;
-    
-    // Heights: sea level = 0, ocean floor = roughly -4000m. Draw water
-    // cells (and lake cells, which carry water-class but positive
-    // height in this.lakeCells — we cover those by also reading
-    // lakeCells if present).
-    const minDepth = -4000;
-    const lakeCells = generator.lakeCells || null;
-    
-    depthCtx.lineWidth = 1.5 / generator.viewport.zoom;
-    depthCtx.lineJoin = 'round';
-    
-    for (let i = 0; i < numCells; i++) {
-        const h = heights[i];
-        const isLake = lakeCells && lakeCells.has(i);
-        // Skip non-water cells. Water = ocean (h<0) or lake.
-        if (h >= 0 && !isLake) continue;
-        
-        let polygon;
-        try {
-            polygon = generator.voronoi.cellPolygon(i);
-        } catch (e) {
-            continue;
-        }
-        if (!polygon || polygon.length < 3) continue;
-        
-        // Depth in 0..1: 0 = at sea level (lightest), 1 = deepest.
-        // Lake cells get treated as shallow water.
-        let depth01;
-        if (isLake) {
-            depth01 = 0.15;
-        } else {
-            depth01 = Math.min(1, Math.max(0, h / minDepth));
-        }
-        
-        // Contrast curve so the gradient leans toward shallow tones —
-        // most ocean is "deep" so without bending the curve, the whole
-        // sea reads as one flat dark blue and you can't see the
-        // continental shelf.
-        const contrast = Math.pow(depth01, 0.55);
-        
-        // Blue ramp: shallow = pale icy blue, deep = navy.
-        // RGB interpolation between (210,232,242) and (28,52,98).
-        const sr = 210, sg = 232, sb = 242;
-        const dr =  28, dg =  52, db =  98;
-        const r = Math.round(sr + (dr - sr) * contrast);
-        const g = Math.round(sg + (dg - sg) * contrast);
-        const b = Math.round(sb + (db - sb) * contrast);
-        const color = `rgb(${r}, ${g}, ${b})`;
-        
-        depthCtx.fillStyle = color;
-        depthCtx.strokeStyle = color;
-        depthCtx.beginPath();
-        depthCtx.moveTo(polygon[0][0], polygon[0][1]);
-        for (let j = 1; j < polygon.length; j++) {
-            depthCtx.lineTo(polygon[j][0], polygon[j][1]);
-        }
-        depthCtx.closePath();
-        depthCtx.fill();
-        depthCtx.stroke();
-    }
-    
-    depthCtx.restore();
-}
 
 // Update overlay when map is re-rendered (full render)
 const originalRender = generator.render.bind(generator);
@@ -1080,17 +949,13 @@ generator.render = function(...args) {
         resetOverlayTransform();
         renderHeightmapOverlay();
     }
-    if (depthOverlayActive) {
-        resetOverlayTransform();
-        renderDepthOverlay();
-    }
 };
 
 // Apply CSS transform during low-res render (interaction)
 const originalRenderLowRes = generator.renderLowRes.bind(generator);
 generator.renderLowRes = function(...args) {
     originalRenderLowRes(...args);
-    if (heightmapOverlayActive || depthOverlayActive) {
+    if (heightmapOverlayActive) {
         applyOverlayTransform();
     }
 };
@@ -1691,12 +1556,10 @@ setTimeout(() => {
     // Pass heightmap options for land-biased generation
     const heightmapOptions = {
         seed: seed + 1000,
-        algorithm: noiseAlgorithm.value,
         frequency: parseFloat(noiseFrequency.value),
         seaLevel: parseFloat(seaLevel.value),
-        falloff: falloffType.value,
-        falloffStrength: parseFloat(falloffStrength.value),
-        islandDensity: parseFloat(islandDensity.value)
+        islandDensity: parseFloat(islandDensity.value),
+        template: heightmapTemplate.value
     };
     
     const metrics = generator.generate(count, distribution, seed, heightmapOptions);
@@ -1708,14 +1571,12 @@ setTimeout(() => {
     setTimeout(() => {
         const heightOptions = {
             seed: seed + 1000,
-            algorithm: noiseAlgorithm.value,
             frequency: parseFloat(noiseFrequency.value),
             octaves: parseInt(noiseOctaves.value),
             seaLevel: parseFloat(seaLevel.value),
-            falloff: falloffType.value,
-            falloffStrength: parseFloat(falloffStrength.value),
             smoothing: parseInt(smoothing.value),
-            smoothingStrength: parseFloat(smoothingStrength.value)
+            smoothingStrength: parseFloat(smoothingStrength.value),
+            template: heightmapTemplate.value
         };
         
         generator.generateHeightmap(heightOptions);
@@ -1817,12 +1678,10 @@ const STYLE_PRESETS = {
         label: 'Middle-earth',
         // Big single continent, eroded mountainous, prominent rivers, several
         // kingdoms with varying sizes — Westmarch / Gondor / Mordor feel
-        'noise-algorithm': 'eroded',
         'noise-frequency': 2.5,
         'noise-octaves': 6,
         'sea-level': 0.42,
-        'falloff-type': 'continental',
-        'falloff-strength': 0.75,
+        'heightmap-template': 'continents',
         'smoothing': 1,
         'coast-jaggedness': 0.6,
         'island-density': 0.2,
@@ -1840,12 +1699,10 @@ const STYLE_PRESETS = {
         label: 'Westeros',
         // Long N-S continent with many kingdoms (the Seven Kingdoms!),
         // moderate jaggedness, lots of rivers
-        'noise-algorithm': 'continental',
         'noise-frequency': 3.0,
         'noise-octaves': 6,
         'sea-level': 0.45,
-        'falloff-type': 'continental',
-        'falloff-strength': 0.7,
+        'heightmap-template': 'pangea',
         'smoothing': 0,
         'coast-jaggedness': 0.7,
         'island-density': 0.35,
@@ -1862,12 +1719,10 @@ const STYLE_PRESETS = {
     earthlike: {
         label: 'Earth-like',
         // Two-continent configuration with realistic erosion and lots of variety
-        'noise-algorithm': 'fbm',
         'noise-frequency': 3.5,
         'noise-octaves': 7,
         'sea-level': 0.5,
-        'falloff-type': 'two-continents',
-        'falloff-strength': 0.6,
+        'heightmap-template': 'continents',
         'smoothing': 1,
         'coast-jaggedness': 0.55,
         'island-density': 0.4,
@@ -1884,12 +1739,10 @@ const STYLE_PRESETS = {
     alien: {
         label: 'Alien World',
         // Strange noise + warped terrain + extreme jaggedness
-        'noise-algorithm': 'multiwarp',
         'noise-frequency': 5.0,
         'noise-octaves': 8,
         'sea-level': 0.35,
-        'falloff-type': 'none',
-        'falloff-strength': 0.3,
+        'heightmap-template': 'shattered',
         'smoothing': 0,
         'coast-jaggedness': 0.95,
         'island-density': 0.7,
@@ -1906,12 +1759,10 @@ const STYLE_PRESETS = {
     archipelago: {
         label: 'Archipelago Realms',
         // Tons of islands, smaller kingdoms each on their own
-        'noise-algorithm': 'fbm',
         'noise-frequency': 4.0,
         'noise-octaves': 6,
         'sea-level': 0.55,
-        'falloff-type': 'archipelago',
-        'falloff-strength': 0.5,
+        'heightmap-template': 'archipelago',
         'smoothing': 1,
         'coast-jaggedness': 0.7,
         'island-density': 0.8,
@@ -1928,12 +1779,10 @@ const STYLE_PRESETS = {
     frozen: {
         label: 'Frozen North',
         // Lake-world preset, jagged coastline, fewer kingdoms (harsh land)
-        'noise-algorithm': 'ridged',
         'noise-frequency': 3.0,
         'noise-octaves': 7,
         'sea-level': 0.4,
-        'falloff-type': 'lake-world',
-        'falloff-strength': 0.6,
+        'heightmap-template': 'continents',
         'smoothing': 0,
         'coast-jaggedness': 0.85,
         'island-density': 0.5,

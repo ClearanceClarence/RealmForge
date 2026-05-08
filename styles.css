@@ -410,6 +410,17 @@ body {
     font-style: italic;
 }
 
+/* Version label under the subtitle on the loading screen.
+   Smaller and quieter so it reads as supplementary info without
+   competing with the workshop title. */
+.loading-version {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: #8a7a6a;
+    margin: 6px 0 0;
+}
+
 /* Progress Area */
 .loading-progress { 
     width: 100%;
@@ -1453,27 +1464,6 @@ select:focus { outline: none; border-color: var(--accent); }
 
 #heightmap-overlay.active {
     opacity: 0.8;
-}
-
-/* Sea-depth overlay sits in the same z-stack as the heightmap
-   overlay but uses a different blend mode tuned for water cells.
-   Multiply works well over the pale ocean fills — it deepens the
-   blue progressively as the sample height drops. */
-#depth-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    pointer-events: none;
-    opacity: 0;
-    mix-blend-mode: multiply;
-    transition: opacity 0.3s ease;
-    z-index: 5;
-    will-change: transform;
-    transform-origin: 0 0;
-}
-
-#depth-overlay.active {
-    opacity: 0.85;
 }
 
 /* Overlay toggle buttons */

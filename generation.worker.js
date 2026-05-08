@@ -17,15 +17,27 @@
 
 importScripts('https://cdn.jsdelivr.net/npm/d3-delaunay@6.0.4/dist/d3-delaunay.min.js');
 
-// PRNG
-const PRNG = {
-    seed: 12345,
-    setSeed(s) { this.seed = s >>> 0; },
-    random() {
-        this.seed = (this.seed * 1103515245 + 12345) & 0x7fffffff;
-        return this.seed / 0x7fffffff;
-    }
-};
+// SeedForge's UMD wrapper falls back to `global` when `window` isn't
+// defined. Workers don't have either, so we alias `self` to both
+// before importing so the library's `global.PRNG = ...` assignment
+// lands on `self.PRNG` and is reachable from the rest of this file.
+self.global = self;
+self.window = self;
+importScripts('seedforge.js');
+
+// PRNG — singleton wrapper around SeedForge, mirroring the main-thread
+// API in prng.js. The worker context has a global `PRNG` namespace
+// from the importScripts, but we shadow it with our own const that
+// exposes setSeed/random for the worker's existing call sites.
+const PRNG = (() => {
+    let instance = new self.PRNG.PRNG(12345, 'sfc32');
+    return {
+        setSeed(seed) {
+            instance = new self.PRNG.PRNG(seed, 'sfc32');
+        },
+        random() { return instance.random(); }
+    };
+})();
 
 // Simplex Noise
 const Noise = {

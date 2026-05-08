@@ -14,6 +14,8 @@ import {
 } from './map-constants.js';
 import { renderingMethods } from './rendering-methods.js';
 import { TileCache } from './tile-cache.js';
+import { Voronoi, makeBoundaryPoints } from './voronoi.js';
+import { applyTemplate, templates as heightmapTemplates } from './heightmap-templates.js';
 
 /**
  * Procedural fantasy map generator built on Voronoi tessellation.
@@ -540,8 +542,11 @@ export class VoronoiGenerator {
         const dimsChanged = (sx !== 1 || sy !== 1) && this.points && this.points.length > 0;
         
         if (dimsChanged) {
-            // Scale Voronoi seed points
-            for (let i = 0; i < this.points.length; i += 2) {
+            // Scale Voronoi seed points. Only scale REAL points
+            // (cellCount * 2 entries); phantoms past that point are
+            // re-generated fresh by updateDiagram() at the end of resize.
+            const realLen = this.cellCount * 2;
+            for (let i = 0; i < realLen; i += 2) {
                 this.points[i]     *= sx;
                 this.points[i + 1] *= sy;
             }
@@ -733,25 +738,65 @@ export class VoronoiGenerator {
             falloff = 'radial',
             falloffStrength = 0.7,
             smoothing = 0,       // Number of smoothing iterations (0 = none)
-            smoothingStrength = 0.6  // How much to blend with neighbors (0-1)
+            smoothingStrength = 0.6,  // How much to blend with neighbors (0-1)
+            template = null      // Optional: name of a heightmap template
+                                 // (e.g. 'volcano', 'archipelago'). When set,
+                                 // the noise + falloff path below is bypassed
+                                 // and the template builds the heightmap from
+                                 // composed primitives instead.
         } = options;
         
         // Store settings for potential redraw
-        this._lastHeightmapOptions = { seed, algorithm, frequency, octaves, seaLevel, falloff, falloffStrength, smoothing, smoothingStrength };
+        this._lastHeightmapOptions = { seed, algorithm, frequency, octaves, seaLevel, falloff, falloffStrength, smoothing, smoothingStrength, template };
         
         this.seaLevel = seaLevel;
+        PRNG.setSeed(seed);
         
         // Clear cached landmasses
         this.landmasses = null;
         this.landmassBoundaries = null;
         
-        // Initialize noise
-        Noise.init(seed);
-        
-        // Allocate arrays
+        // Allocate arrays before either path runs.
         this.heights = new Float32Array(this.cellCount);  // Elevation in meters
         this.elevations = this.heights;  // Alias
         this.terrain = new Uint8Array(this.cellCount);
+        
+        // Template path: skip the noise+falloff pipeline entirely and
+        // hand off to the template builder. Coastal subdivision and
+        // ocean cull (the existing post-passes) still run on the result.
+        if (template) {
+            const ok = applyTemplate(this, template);
+            if (!ok) {
+                console.warn(`Unknown heightmap template "${template}", falling back to noise pipeline`);
+            } else {
+                // Coastal jaggedness pipeline still applies post-template.
+                const jagged = this.coastJaggedness ?? 0;
+                if (jagged > 0) {
+                    this._applyCoastalNoise(seed, jagged);
+                    this._subdivideCoastalCells(seed, jagged);
+                }
+                if (smoothing > 0) {
+                    this.smoothHeights(smoothing, smoothingStrength);
+                }
+                if (jagged > 0) {
+                    this._applyCoastalNoise(seed + 999, jagged * 0.85, 4.0);
+                }
+                // Deep-ocean cull temporarily disabled — produced too few
+                // cells in the open sea, leaving sparse meshes that read
+                // as empty. Re-enable when the keep-curve is retuned.
+                // this._cullDeepOceanCells(seed);
+                
+                this.clearContourCache();
+                if (this.tileCache) this.tileCache.invalidate();
+                this.metrics.heightmapTime = performance.now() - start;
+                this.render();
+                return;
+            }
+        }
+        
+        // Standard noise + falloff path.
+        // Initialize noise
+        Noise.init(seed);
         
         const cx = this.width / 2;
         const cy = this.height / 2;
@@ -871,6 +916,19 @@ export class VoronoiGenerator {
         if (jagged > 0) {
             this._applyCoastalNoise(seed + 999, jagged * 0.85, 4.0);
         }
+        
+        // Cull dense cells from deep ocean. The coast has been
+        // subdivided to a finer scale and looks great, but the open
+        // ocean uses the same cell density — and ocean cells far from
+        // shore carry no information that anyone will ever zoom in on.
+        // We remove a fraction of them, scaled by distance from the
+        // coast, leaving sparse "deep water" cells that radiate out
+        // from a few seed points (the look in Azgaar's generator).
+        // Inland equivalent culling is intentionally skipped — interior
+        // cells host kingdoms, cities, rivers, and the user does zoom
+        // in on land.
+        // Deep-ocean cull temporarily disabled — see template path above.
+        // this._cullDeepOceanCells(seed);
         
         // Clear contour cache so it regenerates with new heights
         this.clearContourCache();
@@ -1202,17 +1260,14 @@ export class VoronoiGenerator {
         // existing cell-grid coasts into a finer-resolution coastline.
         const extraPerCell = Math.max(2, Math.round(jaggedness * 6));
         
-        // Use a small dedicated PRNG sequence so subdivision is
-        // deterministic for a given seed, but doesn't disturb the main
-        // PRNG stream.
-        let rngState = (seed | 0) ^ 0xc0a51eaf;
-        const rand = () => {
-            // xorshift32 — fast, deterministic, good enough for jitter
-            rngState ^= rngState << 13;
-            rngState ^= rngState >>> 17;
-            rngState ^= rngState << 5;
-            return ((rngState >>> 0) / 0xffffffff);
-        };
+        // Dedicated PRNG stream for the subdivision pass. Fork from
+        // the main PRNG so subdivision randomness is reproducible per
+        // seed but doesn't perturb the main stream — meaning future
+        // refactors of subdivision can change how many random values
+        // it consumes without shifting downstream kingdom/city/road
+        // placement.
+        const subRng = PRNG.fork('subdivide-coast');
+        const rand = () => subRng.random();
         
         // 3) Scatter new points within each coastal cell's polygon.
         // We use rejection sampling against the cell's bounding box —
@@ -1272,18 +1327,22 @@ export class VoronoiGenerator {
         
         if (newPoints.length === 0) return;
         
-        // 4) Save the OLD delaunay before we rebuild — we use it to look
+        // 4) Save the OLD voronoi before we rebuild — we use it to look
         // up the parent cell of each cell in the new diagram.
-        const oldDelaunay = this.delaunay;
+        const oldVoronoi = this.voronoi;
         const oldHeights = this.heights;
         const oldCellCount = this.cellCount;
         
         // 5) Build the merged points array and rebuild the diagram.
-        const oldLen = this.points.length;
-        const merged = new Float64Array(oldLen + newPoints.length);
-        merged.set(this.points, 0);
+        // Important: copy ONLY the real points (first oldCellCount * 2
+        // entries) — this.points may also contain phantom boundary
+        // points appended by updateDiagram, but those get re-added
+        // fresh by the next updateDiagram call.
+        const realLen = oldCellCount * 2;
+        const merged = new Float64Array(realLen + newPoints.length);
+        for (let i = 0; i < realLen; i++) merged[i] = this.points[i];
         for (let i = 0; i < newPoints.length; i++) {
-            merged[oldLen + i] = newPoints[i];
+            merged[realLen + i] = newPoints[i];
         }
         this.points = merged;
         this.cellCount = merged.length / 2;
@@ -1301,7 +1360,7 @@ export class VoronoiGenerator {
             } else {
                 const px = this.points[i * 2];
                 const py = this.points[i * 2 + 1];
-                const parent = oldDelaunay.find(px, py);
+                const parent = oldVoronoi.find(px, py);
                 newHeights[i] = (parent >= 0 && parent < oldCellCount)
                     ? oldHeights[parent]
                     : 0;
@@ -1316,6 +1375,145 @@ export class VoronoiGenerator {
         }
         
         // Invalidate caches
+        this._coastlineCache = null;
+        this._contourCache = null;
+    }
+    
+    /**
+     * Remove a fraction of ocean cells far from shore so the deep
+     * ocean uses sparse, large cells while the coast keeps its fine
+     * detail. Every culled point is dropped from `this.points`; the
+     * Voronoi is rebuilt; whoever now owns each rebuilt cell inherits
+     * the parent cell's height, so terrain shape is preserved.
+     *
+     * The cull is probabilistic and keyed on distance-from-coast (in
+     * cell hops): cells right next to land are kept; cells in deep
+     * water are dropped with high probability. Tunable via the
+     * `keepProb` curve below.
+     *
+     * Land cells are never culled — kingdoms, cities, rivers, and
+     * roads all live inland and benefit from full cell density.
+     *
+     * Runs near the end of generateHeightmap, after coastal noise has
+     * stabilised cell statuses. Must run BEFORE downstream features
+     * (kingdoms, rivers, etc.) since cell indices change.
+     */
+    _cullDeepOceanCells(seed) {
+        if (!this.heights || !this.voronoi) return;
+        if (this.cellCount < 2000) return;   // too few cells to bother
+        
+        // 1) BFS from coast: distance from coast in cell-graph hops.
+        //    Coast = ocean cell with at least one land neighbour.
+        const dist = new Int16Array(this.cellCount);
+        for (let i = 0; i < this.cellCount; i++) dist[i] = -1;
+        const queue = [];
+        for (let i = 0; i < this.cellCount; i++) {
+            if (this.heights[i] >= ELEVATION.SEA_LEVEL) continue;
+            for (const n of this.voronoi.neighbors(i)) {
+                if (this.heights[n] >= ELEVATION.SEA_LEVEL) {
+                    dist[i] = 0;
+                    queue.push(i);
+                    break;
+                }
+            }
+        }
+        // BFS forward through ocean cells. Land stays at -1 (we don't
+        // cull land, but we also don't expand the wave through it).
+        let head = 0;
+        while (head < queue.length) {
+            const c = queue[head++];
+            const d = dist[c];
+            for (const n of this.voronoi.neighbors(c)) {
+                if (dist[n] !== -1) continue;
+                if (this.heights[n] >= ELEVATION.SEA_LEVEL) continue;
+                dist[n] = d + 1;
+                queue.push(n);
+            }
+        }
+        
+        // 2) Probabilistic keep curve. The first few hops from the
+        //    shore stay nearly intact — these ocean cells are what
+        //    SHAPES the land cells' polygons. If we cull them too
+        //    aggressively, land cells along the coast bulge outward
+        //    into the (now-empty) ocean space because their new
+        //    Voronoi neighbours are far away. Only cells that are
+        //    several hops from any shore (true open ocean) get
+        //    dropped, and even then we keep enough to maintain a
+        //    visible Voronoi mesh in the open water.
+        //
+        //    keepProb(d):
+        //       0   -> 1.00   (shore — keep all)
+        //       1   -> 1.00   (one hop — keep all, polygon-shapers)
+        //       2   -> 0.95   (still polygon-shapers for d=1)
+        //       3   -> 0.70   (start culling — keep majority)
+        //       4   -> 0.50
+        //       5   -> 0.40
+        //       >=6 -> 0.35   (deep ocean — sparser but still meshed)
+        const keepProbCurve = [1.0, 1.0, 0.95, 0.70, 0.50, 0.40, 0.35];
+        const keepProb = (d) => d < 0
+            ? 1   // land (or unreached) — always keep
+            : keepProbCurve[Math.min(d, keepProbCurve.length - 1)];
+        
+        // 3) Decide which point indices survive. Fork the PRNG so the
+        //    cull is deterministic per seed but doesn't perturb the
+        //    main stream — see same rationale as in subdivision above.
+        const cullRng = PRNG.fork('cull-deep-ocean');
+        const rand = () => cullRng.random();
+        
+        const keep = new Uint8Array(this.cellCount);
+        let kept = 0;
+        for (let i = 0; i < this.cellCount; i++) {
+            if (rand() < keepProb(dist[i])) {
+                keep[i] = 1;
+                kept++;
+            }
+        }
+        // Belt-and-braces safety: never cull more than 90% of cells
+        // overall. With the aggressive curve above, very-ocean-heavy
+        // maps can legitimately end at ~30% of the original count;
+        // anything below 10% would mean we've broken something and
+        // should bail.
+        if (kept < this.cellCount * 0.10) return;
+        
+        // 4) Build the new points array. We also build an index map
+        //    so we can directly carry heights forward by index instead
+        //    of going through delaunay.find(). The map is the cleanest
+        //    way to guarantee that a kept cell keeps its EXACT old
+        //    height — no risk of `find()` returning a different nearby
+        //    cell at floating-point boundary positions.
+        const newPoints = new Float64Array(kept * 2);
+        const newToOld = new Int32Array(kept);
+        let w = 0;
+        for (let i = 0; i < this.cellCount; i++) {
+            if (!keep[i]) continue;
+            newPoints[w * 2]     = this.points[i * 2];
+            newPoints[w * 2 + 1] = this.points[i * 2 + 1];
+            newToOld[w] = i;
+            w++;
+        }
+        
+        // 5) Rebuild the diagram.
+        const oldHeights = this.heights;
+        
+        this.points = newPoints;
+        this.cellCount = kept;
+        this.updateDiagram();
+        
+        // 6) Carry heights forward by direct index lookup.
+        //    new cell `i` is the old cell `newToOld[i]`.
+        const newHeights = new Float32Array(this.cellCount);
+        for (let i = 0; i < this.cellCount; i++) {
+            newHeights[i] = oldHeights[newToOld[i]];
+        }
+        this.heights = newHeights;
+        
+        // 7) Reclassify terrain.
+        this.terrain = new Uint8Array(this.cellCount);
+        for (let i = 0; i < this.cellCount; i++) {
+            this.terrain[i] = this.heights[i] >= ELEVATION.SEA_LEVEL ? 1 : 0;
+        }
+        
+        // Caches that depend on the cell graph are now stale.
         this._coastlineCache = null;
         this._contourCache = null;
     }
@@ -6272,9 +6470,39 @@ export class VoronoiGenerator {
      * Update Delaunay triangulation and Voronoi diagram
      */
     updateDiagram() {
-        // Use flat array constructor for best performance
-        this.delaunay = new d3.Delaunay(this.points);
-        this.voronoi = this.delaunay.voronoi([0, 0, this.width, this.height]);
+        if (!this.points || !this.cellCount) return;
+        
+        // Build the Voronoi diagram on top of mapbox/delaunator.
+        //
+        // Boundary points: append a ring of phantom points just outside
+        // the map rect so every REAL cell ends up bounded (no infinite
+        // hull cells). This is what Azgaar does and what d3-delaunay
+        // achieved internally via a clipping bounding box. The phantoms
+        // get cell indices >= this.cellCount and are ignored by the
+        // Voronoi class's neighbour walks and render loop.
+        //
+        // Spacing: scaled to roughly the map's natural cell spacing so
+        // boundary cells are the same order of size as real ones.
+        const realCount = this.cellCount;
+        const cellSpacing = Math.sqrt((this.width * this.height) / Math.max(1, realCount));
+        const boundary = makeBoundaryPoints(this.width, this.height, cellSpacing * 2);
+        
+        const totalLen = realCount * 2 + boundary.length;
+        const augmented = new Float64Array(totalLen);
+        augmented.set(this.points.subarray(0, realCount * 2), 0);
+        for (let i = 0; i < boundary.length; i++) {
+            augmented[realCount * 2 + i] = boundary[i];
+        }
+        
+        this.delaunay = new window.Delaunator(augmented);
+        this.voronoi = new Voronoi(this.delaunay, augmented, realCount);
+        
+        // Keep this.points pointing at the augmented array. Real cells
+        // still index correctly (this.points[i*2] for i < cellCount);
+        // anything past cellCount is a phantom and never read.
+        // Existing callers that iterate "for (i=0; i<cellCount; i++)"
+        // are unaffected.
+        this.points = augmented;
     }
     
     /**
@@ -6322,7 +6550,7 @@ export class VoronoiGenerator {
         
         // Convert screen to world coordinates
         const world = this.screenToWorld(screenX, screenY);
-        return this.delaunay.find(world.x, world.y);
+        return this.voronoi.find(world.x, world.y);
     }
     
     

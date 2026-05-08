@@ -270,6 +270,7 @@
                 </div>
                 <h1 class="loading-title">RealmForge</h1>
                 <p class="loading-subtitle">Cartographer's Workshop</p>
+                <p class="loading-version">v1.1.0</p>
                 <div class="title-ornament bottom">
                     <span class="ornament-wing">─────</span>
                     <span class="ornament-center">⚜</span>
@@ -428,19 +429,6 @@
                             <span><span class="sec-icon">⛰</span>Terrain<span class="sec-chevron">▾</span></span>
                             <button class="ctrl-action-btn" id="generate-heightmap-btn" data-tooltip="Regenerate the entire heightmap with current settings">Regenerate</button>
                         </div>
-                        <div class="ctrl-row" data-tooltip="Noise algorithm — different types produce different terrain shapes">
-                            <span class="ctrl-label">Type</span>
-                            <select id="noise-algorithm" class="ctrl-select">
-                                <option value="continental" selected>Continental</option>
-                                <option value="eroded">Eroded</option>
-                                <option value="multiwarp">Warped</option>
-                                <option value="swiss">Hills</option>
-                                <option value="valleys">Valleys</option>
-                                <option value="terraced">Plateaus</option>
-                                <option value="ridged">Ridges</option>
-                                <option value="fbm">FBM</option>
-                            </select>
-                        </div>
                         <div class="ctrl-slider" data-tooltip="Lower = larger continents; higher = smaller, more numerous landmasses">
                             <span>Scale</span>
                             <input type="range" id="noise-frequency" min="0.5" max="8" step="0.1" value="3">
@@ -456,32 +444,21 @@
                             <input type="range" id="sea-level" min="0" max="0.8" step="0.01" value="0.4">
                             <span class="ctrl-val" id="sea-level-value">0.40</span>
                         </div>
-                        <div class="ctrl-row" data-tooltip="Overall world shape — controls how landmasses are arranged">
-                            <span class="ctrl-label">World</span>
-                            <select id="falloff-type" class="ctrl-select">
-                                <optgroup label="Worlds">
-                                    <option value="continental" selected>Continent</option>
-                                    <option value="archipelago">Archipelago</option>
-                                    <option value="two-continents">Two Continents</option>
-                                    <option value="isthmus">Isthmus (Sea N &amp; S)</option>
-                                    <option value="pangaea">Pangaea (Inland Seas)</option>
-                                    <option value="coastal">Coastal</option>
-                                    <option value="inland-sea">Inland Sea</option>
-                                    <option value="lake-world">Lake World</option>
-                                    <option value="peninsula">Peninsulas &amp; Fjords</option>
-                                    <option value="atoll">Atoll / Ring Island</option>
-                                </optgroup>
-                                <optgroup label="Basic">
-                                    <option value="none">Open (no edges)</option>
-                                    <option value="radial">Island (radial)</option>
-                                    <option value="square">Square edge</option>
-                                </optgroup>
+                        <div class="ctrl-row" data-tooltip="Predefined continent shape — sculpts a recognizable world from primitives (hills, ranges, troughs, masks).">
+                            <span class="ctrl-label">Template</span>
+                            <select id="heightmap-template" class="ctrl-select">
+                                <option value="coastal" selected>Coastal</option>
+                                <option value="continents">Continents</option>
+                                <option value="volcano">Volcano</option>
+                                <option value="highIsland">High Island</option>
+                                <option value="lowIsland">Low Island</option>
+                                <option value="archipelago">Archipelago</option>
+                                <option value="atoll">Atoll</option>
+                                <option value="mediterranean">Mediterranean</option>
+                                <option value="pangea">Pangea</option>
+                                <option value="isthmus">Isthmus</option>
+                                <option value="shattered">Shattered</option>
                             </select>
-                        </div>
-                        <div class="ctrl-slider" data-tooltip="How strongly the World shape is enforced">
-                            <span>Strength</span>
-                            <input type="range" id="falloff-strength" min="0" max="1" step="0.05" value="0.7">
-                            <span class="ctrl-val" id="falloff-strength-value">0.70</span>
                         </div>
                         <div class="ctrl-slider" data-tooltip="Smooths terrain — softer hills, less noise">
                             <span>Smooth</span>
@@ -658,7 +635,6 @@
             <main class="canvas-area">
                 <canvas id="voronoi-canvas"></canvas>
                 <canvas id="heightmap-overlay"></canvas>
-                <canvas id="depth-overlay"></canvas>
                 <svg id="sea-route-svg" class="map-svg"></svg>
                 <svg id="river-svg" class="map-svg"></svg>
                 <svg id="kingdom-svg" class="map-svg"></svg>
@@ -682,18 +658,13 @@
                         </svg>
                         <span>Elevation</span>
                     </button>
-                    <button class="overlay-toggle-btn" id="toggle-depth" title="Toggle Sea Depth Overlay">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M2 12c2-2 4-2 6 0s4 2 6 0 4-2 6 0M2 18c2-2 4-2 6 0s4 2 6 0 4-2 6 0M2 6c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/>
-                        </svg>
-                        <span>Sea Depth</span>
-                    </button>
                 </div>
             </main>
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6"></script>
+    <script src="seedforge.js"></script>
+    <script src="https://unpkg.com/delaunator@5.0.0/delaunator.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/d3-contour@4"></script>
     
     <!-- Loading Progress -->

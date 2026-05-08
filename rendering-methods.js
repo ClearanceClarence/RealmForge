@@ -149,7 +149,7 @@ render() {
         ctx.strokeStyle = this.colors.delaunay;
         ctx.lineWidth = 0.5 / this.viewport.zoom;
         ctx.beginPath();
-        this.delaunay.render(ctx);
+        this.voronoi.render(ctx);
         ctx.stroke();
     }
     
@@ -1556,7 +1556,7 @@ _sampleHeightAt(x, y) {
     }
     
     // Use Delaunay to find containing triangle (fast point location)
-    const cellIdx = this.delaunay.find(x, y);
+    const cellIdx = this.voronoi.find(x, y);
     if (cellIdx < 0 || cellIdx >= this.cellCount) {
         return -1000;
     }
@@ -1756,7 +1756,7 @@ _findBestKingdomLabelPosition(cells, kingdomId) {
         const py = minY + gy * stepY;
         for (let gx = 0; gx < gridW; gx++) {
             const px = minX + gx * stepX;
-            const nearest = this.delaunay.find(px, py);
+            const nearest = this.voronoi.find(px, py);
             if (componentSet.has(nearest)) inside[gx + gy * gridW] = 1;
         }
     }
@@ -3478,7 +3478,7 @@ _updateLabelSVG() {
                             for (let dx = -1; dx <= 1; dx++) {
                                 const sx = cx + dx * hw;
                                 const sy = cy + dy * hh;
-                                const cellIdx = this.delaunay.find(sx, sy);
+                                const cellIdx = this.voronoi.find(sx, sy);
                                 if (!clusterCellSet.has(cellIdx)) {
                                     allInside = false;
                                     break;
@@ -3883,7 +3883,7 @@ _generateContourCache() {
             const wy = (gy + 0.5) * cellHeight;
             
             // Find cell at this point
-            const cellIndex = this.delaunay.find(wx, wy);
+            const cellIndex = this.voronoi.find(wx, wy);
             const elevation = cellIndex >= 0 ? this.heights[cellIndex] : 0;
             
             grid[gy * gridWidth + gx] = elevation;
